@@ -1,0 +1,3050 @@
+openapi: 3.0.3
+info:
+  title: Hyper Fleet Native API
+  description: |
+    Hyper Fleet Native API provides comprehensive management of virtual machines (sandboxes), 
+    file system operations, execution environments, and organizational resources.
+
+    All endpoints except `/api/register` require the `X-API-Key` header for authentication.
+  version: 1.0.0
+  contact:
+    name: Hyper Fleet Support
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:33944/api
+    description: Local development server
+  - url: https://api.hyperfleet.io/api
+    description: Production server
+
+tags:
+  - name: Authentication
+    description: User registration and authentication
+  - name: Organizations
+    description: Organization and API key management
+  - name: Sandboxes
+    description: Virtual machine (sandbox) lifecycle management
+  - name: Execution
+    description: Command execution and PTY session management
+  - name: File System
+    description: File and directory operations
+  - name: Images
+    description: Base image management
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: "API key for authentication (format: hf_...)"
+
+  schemas:
+    # Generic API Response for single resource
+    ApiResponseSandbox:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          nullable: true
+          example: Sandbox details fetched successfully
+        data:
+          $ref: "#/components/schemas/Sandbox"
+    # Common Response Types
+    SuccessResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: Operation completed successfully
+        data:
+          type: object
+          description: Response data (structure varies by endpoint)
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: Invalid request
+        details:
+          type: string
+          example: Additional error details
+
+    # Registration
+    RegisterRequest:
+      type: object
+      required:
+        - name
+        - email
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+          example: Admin User
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          example: admin@example.com
+
+    RegisterResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: User registered successfully
+        data:
+          type: object
+          properties:
+            orgId:
+              type: string
+              example: 65ae1234567890abcdef1234
+            apiKey:
+              type: string
+              example: hf_1234567890abcdef
+
+    # Organization
+    Organization:
+      type: object
+      properties:
+        id:
+          type: string
+          example: 65ae1234567890abcdef1234
+        name:
+          type: string
+          example: My Organization
+        ownerId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        members:
+          type: array
+          items:
+            type: string
+        plan:
+          type: string
+          example: free
+        usage:
+          type: integer
+          example: 5
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+
+    # API Keys
+    GenerateAPIKeyRequest:
+      type: object
+      required:
+        - orgId
+        - keyName
+      properties:
+        orgId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        keyName:
+          type: string
+          example: CI/CD Key
+
+    GeneratedAPIKeyResponse:
+      type: object
+      properties:
+        plainKey:
+          type: string
+          description: Only returned once at generation time
+          example: hf_1234567890abcdef
+        keyId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        keyName:
+          type: string
+          example: CI/CD Key
+        orgId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        createdAt:
+          type: string
+          format: date-time
+        expiresIn:
+          type: string
+          example: Key expires in 1 year
+
+    APIKeyResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: 65ae1234567890abcdef1234
+        orgId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        name:
+          type: string
+          example: CI/CD Key
+        createdBy:
+          type: string
+          example: 65ae1234567890abcdef1234
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        isActive:
+          type: boolean
+          example: true
+        updatedAt:
+          type: string
+          format: date-time
+
+    # Sandbox
+    CreateSandboxRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
+          description: DNS-1123 subdomain format
+          example: vm-01
+        templateId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        cpu:
+          type: integer
+          minimum: 1
+          maximum: 8
+          example: 2
+          description: Number of vCPUs
+        mem:
+          type: integer
+          minimum: 1024
+          maximum: 16384
+          example: 2048
+          description: Memory in MiB
+        orgId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        userId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        sync:
+          type: boolean
+          description: "If true (default), creation blocks until the agent responds (fast readiness check, ~2s timeout)"
+          example: true
+          default: true
+        envVars:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables to set on the sandbox
+          example:
+            DEBUG: "true"
+            LOG_LEVEL: "info"
+
+    RestoreSandboxRequest:
+      type: object
+      required:
+        - new_id
+        - snapshot_path
+        - orgId
+      properties:
+        new_id:
+          type: string
+          example: vm-restored
+        snapshot_path:
+          type: string
+          example: /var/lib/snapshots/snapshot-123.tar.gz
+        new_ip:
+          type: string
+          example: 192.168.1.100
+        cold:
+          type: boolean
+          default: false
+          description: Start in stopped state
+        cpu:
+          type: integer
+          minimum: 1
+          maximum: 8
+          example: 2
+        mem:
+          type: integer
+          minimum: 1024
+          maximum: 16384
+          example: 2048
+        orgId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        userId:
+          type: string
+          example: 65ae1234567890abcdef1234
+
+    Sandbox:
+      type: object
+      properties:
+        id:
+          type: string
+          example: 65ae1234567890abcdef1234
+        name:
+          type: string
+          example: vm-01
+        imageId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        ip:
+          type: string
+          example: 192.168.1.100
+        cpu:
+          type: integer
+          example: 2
+        mem:
+          type: integer
+          example: 2048
+        status:
+          type: string
+          enum: [running, stopped, paused, error]
+          example: running
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          example: 65ae1234567890abcdef1234
+        orgId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        envVars:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables set on the sandbox
+          example:
+            DEBUG: "true"
+            LOG_LEVEL: "info"
+
+    # Generic API Response for list with pagination
+    ApiResponseSandboxesList:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: Sandboxes fetched
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Sandbox"
+        meta:
+          type: object
+          properties:
+            page:
+              type: integer
+              example: 1
+              description: Current page number
+            limit:
+              type: integer
+              example: 3
+              description: Number of items per page (actual page size used)
+            total:
+              type: integer
+              example: 25
+              description: Total number of sandboxes
+            totalPages:
+              type: integer
+              example: 9
+              description: Total number of pages
+
+    Snapshot:
+      type: object
+      properties:
+        id:
+          type: string
+          example: snapshot-123
+        created_at:
+          type: string
+          format: date-time
+        full_path:
+          type: string
+          example: /var/lib/snapshots/snapshot-123.tar.gz
+
+    # Execution
+    ExecRequest:
+      type: object
+      required:
+        - command
+      properties:
+        command:
+          type: string
+          example: ls -la /root
+        args:
+          type: array
+          items:
+            type: string
+          example: [-la, /root]
+        timeout:
+          type: integer
+          default: 30
+          example: 30
+          description: Timeout in seconds (ignored if background=true)
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            PATH: /usr/bin:/bin
+        cwd:
+          type: string
+          example: /root
+        background:
+          type: boolean
+          default: false
+          description: If true, starts process in background and returns PID immediately
+
+    ExecResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: ok
+        data:
+          type: object
+          properties:
+            stdout:
+              type: string
+              example: |
+                total 16
+                drwx------  2 root root 4096 Jan  1 12:00 .
+                drwxr-xr-x 18 root root 4096 Jan  1 12:00 ..
+            stderr:
+              type: string
+            exitCode:
+              type: integer
+              example: 0
+
+    # Background Process Management
+    ProcessInfo:
+      type: object
+      properties:
+        pid:
+          type: integer
+          example: 1234
+        command:
+          type: string
+          example: sleep 3600
+        startTime:
+          type: string
+          format: date-time
+        running:
+          type: boolean
+          description: Whether the process is currently running
+          example: true
+        exitCode:
+          type: integer
+          nullable: true
+          description: Exit code if process has finished (null if still running)
+          example: 0
+
+    CommandRunResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        pid:
+          type: integer
+          example: 1234
+        command:
+          type: string
+          example: sleep 3600
+
+    CommandListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        processes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProcessInfo"
+
+    CommandKillResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: Process killed
+
+    CommandWaitResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        exitCode:
+          type: integer
+          example: 0
+        error:
+          type: string
+          nullable: true
+
+    # PTY Sessions
+    CreatePTYSessionRequest:
+      type: object
+      properties:
+        cols:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 80
+          example: 80
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 24
+          example: 24
+
+    PTYSessionInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          example: session-123456
+        createdAt:
+          type: string
+          format: date-time
+        clients:
+          type: integer
+          example: 1
+        alive:
+          type: boolean
+          example: true
+
+    ExecuteInSessionRequest:
+      type: object
+      required:
+        - command
+      properties:
+        command:
+          type: string
+          example: top -b -n 1
+
+    ResizeTerminalRequest:
+      type: object
+      required:
+        - cols
+        - rows
+      properties:
+        cols:
+          type: integer
+          minimum: 1
+          maximum: 500
+          example: 100
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 200
+          example: 40
+
+    # Images
+    CreateImageRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: custom-image
+        version:
+          type: string
+          example: 1.0
+        path:
+          type: string
+          example: /var/lib/images/custom.img
+
+    Image:
+      type: object
+      properties:
+        _id:
+          type: string
+          example: 65ae1234567890abcdef1234
+        name:
+          type: string
+          example: ubuntu-22.04
+        tag:
+          type: string
+          example: latest
+        system:
+          type: boolean
+          example: false
+        orgId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+          example: 65ae1234567890abcdef1234
+
+    # File System
+    FileInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          example: file.txt
+        path:
+          type: string
+          example: /root/file.txt
+        size:
+          type: integer
+          example: 1024
+        mode:
+          type: string
+          example: 0644
+        isDir:
+          type: boolean
+          example: false
+        modTime:
+          type: string
+          format: date-time
+
+    FileStats:
+      type: object
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        size:
+          type: integer
+        mode:
+          type: string
+        isDir:
+          type: boolean
+        modTime:
+          type: string
+          format: date-time
+        uid:
+          type: integer
+        gid:
+          type: integer
+
+    DiskUsage:
+      type: object
+      properties:
+        path:
+          type: string
+        size:
+          type: integer
+          description: Size in bytes
+        humanReadable:
+          type: string
+          example: 1.5 GB
+
+    FileEvent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [created, modified, deleted, renamed, chmod]
+          example: created
+          description: Type of filesystem event
+        path:
+          type: string
+          example: /app/logs/app.log
+          description: Absolute path to the file
+        oldPath:
+          type: string
+          example: /app/logs/app.log.old
+          description: Previous path for rename events (optional)
+        size:
+          type: integer
+          format: int64
+          example: 1024
+          description: File size in bytes (optional)
+        timestamp:
+          type: string
+          format: date-time
+          example: "2024-01-27T09:12:34Z"
+          description: When the event occurred
+
+    CreateFileRequest:
+      type: object
+      properties:
+        content:
+          type: string
+          example: hello world
+
+    CompressRequest:
+      type: object
+      required:
+        - path
+      properties:
+        path:
+          type: string
+          example: /dir/to/compress
+        format:
+          type: string
+          enum: [tar, tar.gz, tar.bz2, zip]
+          default: tar.gz
+          example: tar.gz
+
+    ExtractRequest:
+      type: object
+      required:
+        - archive
+        - dest
+      properties:
+        archive:
+          type: string
+          example: /backup.tar.gz
+        dest:
+          type: string
+          example: /restore
+
+paths:
+  /register:
+    post:
+      tags:
+        - Authentication
+      summary: Register a new user
+      description: |
+        Create a new user account and default organization.
+        This is the only public endpoint - no authentication required.
+        **Important:** Save the returned API key immediately as it's only shown once.
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "200":
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /orgs/me:
+    get:
+      tags:
+        - Organizations
+      summary: Get current organization
+      description: Get the organization associated with the API key
+      operationId: getCurrentOrg
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Organization details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Organization"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /orgs/{orgId}/apikeys:
+    get:
+      tags:
+        - Organizations
+      summary: List API keys
+      description: Get all API keys for an organization
+      operationId: listAPIKeys
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: List of API keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/APIKeyResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      tags:
+        - Organizations
+      summary: Generate new API key
+      description: Create a new API key for the organization. The plain key is only returned once.
+      operationId: generateAPIKey
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateAPIKeyRequest"
+      responses:
+        "200":
+          description: API key generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneratedAPIKeyResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /orgs/{orgId}/apikeys/{keyId}:
+    delete:
+      tags:
+        - Organizations
+      summary: Revoke API key
+      description: Delete/revoke an API key
+      operationId: revokeAPIKey
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes:
+    get:
+      tags:
+        - Sandboxes
+      summary: List sandboxes
+      description: Get all sandboxes for the current organization with pagination support
+      operationId: listSandboxes
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+          example: 1
+          description: Page number (default 1, must be >= 1)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          example: 50
+          description: Number of sandboxes per page (min 1, max 100, default from server config)
+      responses:
+        "200":
+          description: List of sandboxes with pagination metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponseSandboxesList"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags:
+        - Sandboxes
+      summary: Create sandbox
+      description: Create a new virtual machine sandbox
+      operationId: createSandbox
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSandboxRequest"
+      responses:
+        "201":
+          description: Sandbox created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                    example: Sandbox created
+                  data:
+                    $ref: "#/components/schemas/Sandbox"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Sandbox already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/restore:
+    post:
+      tags:
+        - Sandboxes
+      summary: Restore sandbox from snapshot
+      description: Create a new sandbox from an existing snapshot
+      operationId: restoreSandbox
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestoreSandboxRequest"
+      responses:
+        "201":
+          description: Sandbox restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}:
+    get:
+      tags:
+        - Sandboxes
+      summary: Get sandbox details
+      description: Get detailed information about a specific sandbox
+      operationId: getSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponseSandbox"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags:
+        - Sandboxes
+      summary: Delete sandbox
+      description: Delete a sandbox and all its resources
+      operationId: deleteSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/stop:
+    post:
+      tags:
+        - Sandboxes
+      summary: Stop sandbox
+      description: Stop a running sandbox
+      operationId: stopSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/pause:
+    post:
+      tags:
+        - Sandboxes
+      summary: Pause sandbox
+      description: Pause a running sandbox
+      operationId: pauseSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/resume:
+    post:
+      tags:
+        - Sandboxes
+      summary: Resume sandbox
+      description: Resume a paused sandbox
+      operationId: resumeSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/snapshot:
+    post:
+      tags:
+        - Sandboxes
+      summary: Create snapshot
+      description: Create a snapshot of the sandbox
+      operationId: createSnapshot
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Snapshot"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/snapshots:
+    get:
+      tags:
+        - Sandboxes
+      summary: List snapshots
+      description: Get all snapshots for a sandbox
+      operationId: listSnapshots
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: List of snapshots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Snapshot"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/exec:
+    post:
+      tags:
+        - Execution
+      summary: Execute command (synchronous)
+      description: Execute a command in the sandbox and wait for the result
+      operationId: execCommand
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecRequest"
+      responses:
+        "200":
+          description: Command executed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/exec-stream:
+    post:
+      tags:
+        - Execution
+      summary: Execute command (SSE stream)
+      description: |
+        Execute a command and stream output as Server-Sent Events.
+        Events: `stdout`, `stderr`, and final `exit`.
+      operationId: execCommandStream
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecRequest"
+      responses:
+        "200":
+          description: SSE stream of command output
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |-
+                event: stdout
+                data: Hello from exec
+
+                event: stderr
+                data: warning: something happened
+
+                event: exit
+                data: {"exitCode":0}
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/commands/run:
+    post:
+      tags:
+        - Execution
+      summary: Start background process
+      description: Start a command as a background process and return its PID
+      operationId: runBackgroundCommand
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - command
+              properties:
+                command:
+                  type: string
+                  example: sleep 3600
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                cwd:
+                  type: string
+                  example: /root
+                timeout:
+                  type: integer
+                  description: Command timeout in seconds (0 = no timeout, max 900)
+                  minimum: 0
+                  maximum: 900
+                  example: 30
+      responses:
+        "200":
+          description: Process started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandRunResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/commands/list:
+    get:
+      tags:
+        - Execution
+      summary: List running processes
+      description: Get list of all running background processes in the sandbox
+      operationId: listBackgroundProcesses
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Process list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandListResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/commands/kill:
+    post:
+      tags:
+        - Execution
+      summary: Kill background process
+      description: Terminate a running background process by PID
+      operationId: killBackgroundProcess
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pid
+              properties:
+                pid:
+                  type: integer
+                  example: 1234
+      responses:
+        "200":
+          description: Process killed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandKillResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/commands/attach:
+    post:
+      tags:
+        - Execution
+      summary: Attach to process output (SSE stream)
+      description: |
+        Connect to a background process and stream its output as Server-Sent Events.
+        Events: `stdout`, `stderr`, `exit`, `error`.
+      operationId: attachToBackgroundProcess
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pid
+              properties:
+                pid:
+                  type: integer
+                  example: 1234
+      responses:
+        "200":
+          description: SSE stream of process output
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |-
+                event: stdout
+                data: Process output line 1
+
+                event: stdout
+                data: Process output line 2
+
+                event: exit
+                data: {"exitCode":0}
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/commands/wait:
+    post:
+      tags:
+        - Execution
+      summary: Wait for process completion
+      description: Block until a background process completes and return its exit code
+      operationId: waitForBackgroundProcess
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - pid
+              properties:
+                pid:
+                  type: integer
+                  example: 1234
+      responses:
+        "200":
+          description: Process completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandWaitResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Process not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/pty:
+    get:
+      tags:
+        - Execution
+      summary: Connect to ephemeral PTY (WebSocket)
+      description: |
+        Establish a WebSocket connection for temporary terminal access.
+        The WebSocket URL format is: `ws://host/api/sandboxes/{id}/pty`
+      operationId: connectPTY
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "101":
+          description: Switching to WebSocket protocol
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/pty/sessions:
+    post:
+      tags:
+        - Execution
+      summary: Create PTY session
+      description: Create a new PTY (pseudo-terminal) session for interactive commands
+      operationId: createPTYSession
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePTYSessionRequest"
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sessionId:
+                            type: string
+                            example: session-123456
+                          createdAt:
+                            type: string
+                            format: date-time
+                            example: 2024-01-27T10:15:00Z
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    get:
+      tags:
+        - Execution
+      summary: List PTY sessions
+      description: Get all active PTY sessions for a sandbox
+      operationId: listPTYSessions
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sessions:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/PTYSessionInfo"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/pty/sessions/{sessionId}:
+    get:
+      tags:
+        - Execution
+      summary: Connect to PTY session (WebSocket)
+      description: |
+        Establish a WebSocket connection to a PTY session for interactive terminal access.
+        The WebSocket URL format is: `ws://host/api/sandboxes/{id}/pty/sessions/{sessionId}`
+      operationId: connectPTYSession
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: session-123456
+      responses:
+        "101":
+          description: Switching to WebSocket protocol
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags:
+        - Execution
+      summary: Delete PTY session
+      description: Close and delete a PTY session
+      operationId: deletePTYSession
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: session-123456
+      responses:
+        "200":
+          description: Session deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/pty/sessions/{sessionId}/execute:
+    post:
+      tags:
+        - Execution
+      summary: Execute command in PTY session
+      description: Execute a command asynchronously in an existing PTY session
+      operationId: executeInPTYSession
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: session-123456
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteInSessionRequest"
+      responses:
+        "200":
+          description: Command executed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/pty/sessions/{sessionId}/buffer:
+    get:
+      tags:
+        - Execution
+      summary: Get output buffer
+      description: Get the current output buffer from a PTY session
+      operationId: getPTYBuffer
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: session-123456
+      responses:
+        "200":
+          description: Output buffer
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          output:
+                            type: string
+                            example: Command output text
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/pty/sessions/{sessionId}/resize:
+    post:
+      tags:
+        - Execution
+      summary: Resize terminal
+      description: Resize the terminal dimensions for a PTY session
+      operationId: resizeTerminal
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: session-123456
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResizeTerminalRequest"
+      responses:
+        "200":
+          description: Terminal resized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files:
+    get:
+      tags:
+        - File System
+      summary: List files
+      description: List files and directories in a path
+      operationId: listFiles
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /root
+      responses:
+        "200":
+          description: List of files
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                    example: ok
+                  data:
+                    type: object
+                    properties:
+                      success:
+                        type: boolean
+                        example: true
+                      files:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/FileInfo"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox or path not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags:
+        - File System
+      summary: Delete file or directory
+      description: Delete a file or directory
+      operationId: deleteFile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /root/file.txt
+      responses:
+        "200":
+          description: File deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/upload:
+    post:
+      tags:
+        - File System
+      summary: Upload file
+      description: Upload a file to the sandbox
+      operationId: uploadFile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /root/script.sh
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: File uploaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/download:
+    get:
+      tags:
+        - File System
+      summary: Download file
+      description: Download a file from the sandbox
+      operationId: downloadFile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /root/output.log
+      responses:
+        "200":
+          description: File content
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/head-tail:
+    get:
+      tags:
+        - File System
+      summary: Read file head or tail
+      description: Get the first or last N lines of a file
+      operationId: headTail
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /var/log/syslog
+        - name: lines
+          in: query
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+          example: 50
+        - name: head
+          in: query
+          schema:
+            type: boolean
+            default: true
+          description: If true, return head (first lines), if false, return tail (last lines)
+          example: false
+      responses:
+        "200":
+          description: File content (head or tail)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/search:
+    get:
+      tags:
+        - File System
+      summary: Search files
+      description: Search for files matching a pattern
+      operationId: searchFiles
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /var/log
+        - name: pattern
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "*.error"
+      responses:
+        "200":
+          description: Matching files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Path not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/mkdir:
+    post:
+      tags:
+        - File System
+      summary: Create directory
+      description: Create a new directory
+      operationId: createDirectory
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /new/dir
+      responses:
+        "200":
+          description: Directory created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid path or already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/create:
+    post:
+      tags:
+        - File System
+      summary: Create file
+      description: Create a new file with optional content
+      operationId: createFile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /file.txt
+        - name: content
+          in: query
+          schema:
+            type: string
+          example: hello
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFileRequest"
+      responses:
+        "200":
+          description: File created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid path
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/copy:
+    post:
+      tags:
+        - File System
+      summary: Copy file or directory
+      description: Copy a file or directory to a new location
+      operationId: copyFile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /src
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /dst
+      responses:
+        "200":
+          description: File copied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid paths or source not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/move:
+    post:
+      tags:
+        - File System
+      summary: Move file or directory
+      description: Move or rename a file or directory
+      operationId: moveFile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /src
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /dst
+      responses:
+        "200":
+          description: File moved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid paths or source not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/chmod:
+    post:
+      tags:
+        - File System
+      summary: Change file permissions
+      description: Change the permissions (mode) of a file or directory
+      operationId: changePermissions
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /script.sh
+        - name: mode
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-7]{3,4}$"
+          example: "755"
+          description: Octal file mode (e.g., 755, 0644)
+      responses:
+        "200":
+          description: Permissions changed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid mode or path not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/stat:
+    get:
+      tags:
+        - File System
+      summary: Get file stats
+      description: Get detailed information about a file or directory
+      operationId: statFile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /file.txt
+      responses:
+        "200":
+          description: File statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/du:
+    get:
+      tags:
+        - File System
+      summary: Disk usage
+      description: Get disk usage for a path
+      operationId: diskUsage
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /dir
+      responses:
+        "200":
+          description: Disk usage information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Path not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/compress:
+    post:
+      tags:
+        - File System
+      summary: Compress file or directory
+      description: Create an archive from a file or directory
+      operationId: compressFile
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /dir
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [tar, tar.gz, tar.bz2, zip]
+            default: tar.gz
+          example: tar.gz
+      responses:
+        "200":
+          description: File compressed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid path or format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/extract:
+    post:
+      tags:
+        - File System
+      summary: Extract archive
+      description: Extract an archive to a destination directory
+      operationId: extractArchive
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: archive
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /backup.tar.gz
+        - name: dest
+          in: query
+          required: true
+          schema:
+            type: string
+          example: /restore
+      responses:
+        "200":
+          description: Archive extracted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid archive or destination
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/watch:
+    post:
+      tags:
+        - File System
+      summary: Start watching a directory
+      description: Start monitoring a directory for file system events (create, modify, delete, rename) with optional recursion and hidden-dir filtering.
+      operationId: startWatch
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - path
+              properties:
+                path:
+                  type: string
+                  example: /app/logs
+                recursive:
+                  type: boolean
+                  default: false
+                ignoreHidden:
+                  type: boolean
+                  description: Skip directories that start with '.'
+                  default: true
+      responses:
+        "200":
+          description: Watch session started successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  message:
+                    type: string
+                    example: watch started
+                  data:
+                    type: object
+                    properties:
+                      sessionId:
+                        type: string
+                        format: uuid
+                        example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        "400":
+          description: Invalid path or parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/files/watch/{sessionId}/stream:
+    get:
+      tags:
+        - File System
+      summary: Stream file watch events (WebSocket)
+      description: |
+        **RECOMMENDED:** Real-time WebSocket streaming of file system events.
+
+        Connect via WebSocket to receive events as they occur. This is more efficient than polling
+        the `/events` endpoint and provides immediate notification of file system changes.
+
+        **WebSocket Protocol:**
+        - Client connects to this endpoint
+        - Server upgrades connection to WebSocket
+        - Events are pushed to client as JSON objects
+        - Connection stays open until client disconnects or session is stopped
+
+        **Event Format:** Each message is a FileEvent object (same as polling endpoint)
+      operationId: streamWatchEvents
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      responses:
+        "101":
+          description: Switching Protocols - WebSocket connection established
+        "400":
+          description: Invalid session ID or upgrade failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox or session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /images:
+    get:
+      tags:
+        - Images
+      summary: List images
+      description: Get all available base images
+      operationId: listImages
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: List of images
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Image"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      tags:
+        - Images
+      summary: Create image
+      description: Create or register a new base image
+      operationId: createImage
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateImageRequest"
+      responses:
+        "201":
+          description: Image created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Image"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /images/{id}:
+    get:
+      tags:
+        - Images
+      summary: Get image by ID
+      description: Get detailed information about a specific image
+      operationId: getImage
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Image details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Image"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Image not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags:
+        - Images
+      summary: Delete image
+      description: Delete a base image
+      operationId: deleteImage
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Image deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Image not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /images/name/{name}:
+    get:
+      tags:
+        - Images
+      summary: Get image by name
+      description: Get an image by its name
+      operationId: getImageByName
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          example: ubuntu-22.04
+      responses:
+        "200":
+          description: Image details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Image"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Image not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

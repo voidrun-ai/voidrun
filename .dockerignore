@@ -1,0 +1,59 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Build and test outputs
+*.o
+*.a
+*.so
+.DS_Store
+__pycache__
+*.pyc
+
+# Binaries
+*.exe
+*.dll
+
+# Dependencies
+vendor/
+node_modules/
+
+# Test coverage
+*.out
+coverage.txt
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Documentation (not needed in image)
+*.md
+LICENSE
+CHANGELOG
+
+# Script files not needed in production
+scripts/
+*.sh
+test*.go
+
+# Static files that might be large
+static/node_modules/
+
+# Configuration examples
+*.example
+*.sample

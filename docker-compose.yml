@@ -1,0 +1,101 @@
+version: '3.9'
+
+services:
+  # MongoDB service for application data
+  mongo:
+    image: mongo:7.0-alpine
+    container_name: hyper-fleet-mongo
+    hostname: mongo
+    ports:
+      - '27017:27017'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: Qaz123wsx123
+      MONGO_INITDB_DATABASE: vr-db
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - hyper-fleet-network
+    restart: unless-stopped
+
+  # Hyper-Fleet-Native API Server
+  voidrun:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voidrun
+    hostname: voidrun
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - '8080:8080'
+    environment:
+      SERVER_PORT: 8080
+      SERVER_HOST: 0.0.0.0
+      MONGO_URI: mongodb://root:Qaz123wsx123@mongo:27017/vr-db?authSource=admin
+      MONGO_DB: vr-db
+      BASE_IMAGES_DIR: /var/lib/hyper-fleet/base-images
+      INSTANCES_DIR: /var/lib/hyper-fleet/instances
+      KERNEL_PATH: /var/lib/hyper-fleet/base-images/vmlinux
+      BRIDGE_NAME: vmbr0
+      GATEWAY_IP: 192.168.100.1/22
+      NETWORK_CIDR: 192.168.100.0/22
+      SUBNET_PREFIX: 192.168.100.
+      SYSTEM_USER_NAME: System
+      SYSTEM_USER_EMAIL: system@local
+      SANDBOX_DEFAULT_VCPUS: 1
+      SANDBOX_DEFAULT_MEMORY_MB: 1024
+      SANDBOX_DEFAULT_DISK_MB: 5120
+      SANDBOX_DEFAULT_IMAGE: debian
+      HEALTH_ENABLED: 'true'
+      HEALTH_INTERVAL_SEC: 60
+      HEALTH_CONCURRENCY: 16
+      API_KEY_CACHE_TTL_SECONDS: 3600
+
+    volumes:
+      # Mount host machine paths for hyper-fleet storage
+      - /var/lib/hyper-fleet/base-images:/var/lib/hyper-fleet/base-images:ro
+      - /var/lib/hyper-fleet/instances:/var/lib/hyper-fleet/instances:rw
+      - hyper-fleet-logs:/app/logs
+
+    networks:
+      - hyper-fleet-network
+
+    restart: unless-stopped
+
+    # Resource limits (adjust based on your host machine)
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '2'
+          memory: 2G
+
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/vms']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  mongo-data:
+    driver: local
+  mongo-config:
+    driver: local
+  hyper-fleet-logs:
+    driver: local
+
+networks:
+  hyper-fleet-network:
+    driver: bridge

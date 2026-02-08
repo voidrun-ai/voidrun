@@ -1,0 +1,42 @@
+package service
+
+import (
+	"context"
+
+	"voidrun/internal/model"
+	"voidrun/internal/repository"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+// OrgService handles organization logic
+type OrgService struct {
+	repo repository.IOrgRepository
+}
+
+func NewOrgService(repo repository.IOrgRepository) *OrgService {
+	return &OrgService{repo: repo}
+}
+
+// EnsureDefaultOrg checks for an owner org and creates one if missing
+func (s *OrgService) EnsureDefaultOrg(ctx context.Context, ownerID primitive.ObjectID, name string) (*model.Organization, error) {
+	existing, err := s.repo.FindByOwner(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
+	}
+	org := &model.Organization{
+		Name:    name,
+		OwnerID: ownerID,
+		Members: []primitive.ObjectID{ownerID},
+		Plan:    "free",
+	}
+	return s.repo.Create(ctx, org)
+}
+
+// GetByID returns org by ObjectID
+func (s *OrgService) GetByID(ctx context.Context, id primitive.ObjectID) (*model.Organization, error) {
+	return s.repo.FindByID(ctx, id)
+}
