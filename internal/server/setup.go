@@ -73,6 +73,7 @@ type Handlers struct {
 	Auth     *handler.AuthHandler
 	PTY      *handler.PTYHandler
 	Commands *handler.CommandsHandler
+	Version  *handler.VersionHandler
 }
 
 func InitHandlers(services *Services) *Handlers {
@@ -86,6 +87,7 @@ func InitHandlers(services *Services) *Handlers {
 		Auth:     handler.NewAuthHandler(services.User, services.Org, services.APIKey),
 		PTY:      handler.NewPTYHandler(services.PTY, services.PTYSession, services.Sandbox),
 		Commands: handler.NewCommandsHandler(services.Commands, services.Sandbox),
+		Version:  handler.NewVersionHandler(),
 	}
 }
 

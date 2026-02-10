@@ -7,6 +7,7 @@ import (
 
 	"voidrun/internal/config"
 	"voidrun/internal/middleware"
+	"voidrun/internal/version"
 	"voidrun/pkg/machine"
 
 	"github.com/gin-gonic/gin"
@@ -78,7 +79,15 @@ func (s *Server) Close() error {
 // Run starts the server
 func (s *Server) Run() error {
 	s.startHealthMonitor()
-	fmt.Printf("🚀 Hyper-Fleet Server running on %s\n", s.cfg.Server.Address())
+	ver := version.Get()
+	versionLine := fmt.Sprintf("%s", ver.Version)
+	if ver.Commit != "" {
+		versionLine = fmt.Sprintf("%s (%s)", ver.Version, ver.Commit)
+	}
+	if ver.BuildTime != "" {
+		versionLine = fmt.Sprintf("%s built %s", versionLine, ver.BuildTime)
+	}
+	fmt.Printf("🚀 VoidRun Server %s running on %s\n", versionLine, s.cfg.Server.Address())
 	return s.router.Run(s.cfg.Server.Address())
 }
 
@@ -109,6 +118,9 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services) *gin.Engine {
 	r.Static("/ui", "./static")
 
 	api := r.Group("/api")
+
+	// Public metadata routes
+	api.GET("/version", h.Version.Get)
 
 	// Registration route (no auth)
 	api.POST("/register", h.Auth.Register)

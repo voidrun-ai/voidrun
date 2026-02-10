@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build \
     -trimpath \
     -ldflags="-s -w" \
-    -o hyper-server \
+    -o voidrun \
     ./cmd/server/main.go
 
 # Build setup-net CLI
@@ -48,11 +48,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build \
     -trimpath \
     -ldflags="-s -w" \
-    -o hyper-setup-net \
+    -o voidrun-setup-net \
     ./cmd/setup-net/main.go
 
 # Verify binary was created
-RUN ls -lh /build/hyper-server
+RUN ls -lh /build/voidrun
 
 # Stage 2: Runtime stage
 FROM alpine:3.20
@@ -75,48 +75,21 @@ RUN apk add --no-cache \
 #     adduser -D -u 1000 -G voidrun voidrun
 
 # Copy binary from builder
-COPY --from=builder /build/hyper-server /usr/local/bin/hyper-server
-COPY --from=builder /build/hyper-setup-net /usr/local/bin/hyper-setup-net
+COPY --from=builder /build/voidrun /usr/local/bin/voidrun
+COPY --from=builder /build/voidrun-setup-net /usr/local/bin/voidrun-setup-net
 
 # Copy static files (dashboard)
 COPY static /app/static
 
 # Create necessary directories
 RUN mkdir -p /app/logs && \
-    chmod +x /usr/local/bin/hyper-server
+    chmod +x /usr/local/bin/voidrun
 
 # Set working directory
 WORKDIR /app
 
-# # Health check
-# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-#     CMD curl -f http://localhost:8080/vms || exit 1
-
 # Expose the API port
 EXPOSE 8080
 
-# Set environment variables with defaults
-ENV SERVER_PORT=8080
-ENV SERVER_HOST=0.0.0.0
-ENV MONGO_URI=mongodb://root:Qaz123wsx123@mongo:27017/vr-db?authSource=admin
-ENV MONGO_DB=vr-db
-ENV BASE_IMAGES_DIR=/root/void-run-test/base-images
-ENV INSTANCES_DIR=/root/void-run-test/instances
-ENV KERNEL_PATH=/root/void-run-test/base-images/vmlinux
-ENV BRIDGE_NAME=vmbr0
-ENV GATEWAY_IP=10.20.0.1/22
-ENV NETWORK_CIDR=10.20.0.0/22
-ENV SUBNET_PREFIX=10.20.0.
-ENV SYSTEM_USER_NAME=System
-ENV SYSTEM_USER_EMAIL=system@local
-ENV SANDBOX_DEFAULT_VCPUS=1
-ENV SANDBOX_DEFAULT_MEMORY_MB=1024
-ENV SANDBOX_DEFAULT_DISK_MB=5120
-ENV SANDBOX_DEFAULT_IMAGE=debian
-ENV HEALTH_ENABLED=true
-ENV HEALTH_INTERVAL_SEC=60
-ENV HEALTH_CONCURRENCY=16
-ENV API_KEY_CACHE_TTL_SECONDS=3600
-
 # Run the server
-CMD ["hyper-server"]
+CMD ["voidrun"]

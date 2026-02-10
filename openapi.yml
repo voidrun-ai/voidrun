@@ -1,21 +1,21 @@
 openapi: 3.0.3
 info:
-  title: Hyper Fleet Native API
+  title: VoidRun API
   description: |
-    Hyper Fleet Native API provides comprehensive management of virtual machines (sandboxes), 
+    VoidRun API provides comprehensive management of virtual machines (sandboxes), 
     file system operations, execution environments, and organizational resources.
 
     All endpoints except `/api/register` require the `X-API-Key` header for authentication.
   version: 1.0.0
   contact:
-    name: Hyper Fleet Support
+    name: VoidRun Support
   license:
     name: Proprietary
 
 servers:
   - url: http://localhost:33944/api
     description: Local development server
-  - url: https://api.hyperfleet.io/api
+  - url: https://api.void-run.com/api
     description: Production server
 
 tags:

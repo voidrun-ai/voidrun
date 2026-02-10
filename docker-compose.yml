@@ -25,7 +25,6 @@ services:
       - voidrun-network
     restart: unless-stopped
 
-  # Hyper-Fleet-Native API Server
   voidrun:
     build:
       context: .
