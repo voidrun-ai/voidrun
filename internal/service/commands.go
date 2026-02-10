@@ -23,7 +23,7 @@ func NewCommandsService(cfg *config.Config) *CommandsService {
 }
 
 // Run starts a background process
-func (s *CommandsService) Run(vmInstance string, req model.CommandRunRequest) (*model.CommandRunResponse, error) {
+func (s *CommandsService) Run(sbxInstance string, req model.CommandRunRequest) (*model.CommandRunResponse, error) {
 	// Create payload for agent
 	payload := map[string]interface{}{
 		"command": req.Command,
@@ -38,7 +38,7 @@ func (s *CommandsService) Run(vmInstance string, req model.CommandRunRequest) (*
 	}
 
 	// Send to agent via HTTP
-	resp, err := AgentCommand(context.Background(), nil, vmInstance, bytes.NewReader(body), "/run", http.MethodPost)
+	resp, err := AgentCommand(context.Background(), nil, sbxInstance, bytes.NewReader(body), "/run", http.MethodPost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to communicate with agent: %w", err)
 	}
@@ -58,9 +58,9 @@ func (s *CommandsService) Run(vmInstance string, req model.CommandRunRequest) (*
 }
 
 // List returns all running processes
-func (s *CommandsService) List(vmInstance string) (*model.CommandListResponse, error) {
+func (s *CommandsService) List(sbxInstance string) (*model.CommandListResponse, error) {
 	// Send request to agent
-	resp, err := AgentCommand(context.Background(), nil, vmInstance, nil, "/processes", http.MethodGet)
+	resp, err := AgentCommand(context.Background(), nil, sbxInstance, nil, "/processes", http.MethodGet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to communicate with agent: %w", err)
 	}
@@ -80,7 +80,7 @@ func (s *CommandsService) List(vmInstance string) (*model.CommandListResponse, e
 }
 
 // Kill terminates a process
-func (s *CommandsService) Kill(vmInstance string, pid int) (*model.CommandKillResponse, error) {
+func (s *CommandsService) Kill(sbxInstance string, pid int) (*model.CommandKillResponse, error) {
 	payload := map[string]interface{}{
 		"pid": pid,
 	}
@@ -90,7 +90,7 @@ func (s *CommandsService) Kill(vmInstance string, pid int) (*model.CommandKillRe
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	resp, err := AgentCommand(context.Background(), nil, vmInstance, bytes.NewReader(body), "/kill", http.MethodPost)
+	resp, err := AgentCommand(context.Background(), nil, sbxInstance, bytes.NewReader(body), "/kill", http.MethodPost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to communicate with agent: %w", err)
 	}
@@ -110,7 +110,7 @@ func (s *CommandsService) Kill(vmInstance string, pid int) (*model.CommandKillRe
 }
 
 // Attach streams output from a running process
-func (s *CommandsService) Attach(vmInstance string, pid int, writer io.Writer, flush func()) error {
+func (s *CommandsService) Attach(sbxInstance string, pid int, writer io.Writer, flush func()) error {
 	payload := map[string]interface{}{
 		"pid": pid,
 	}
@@ -120,7 +120,7 @@ func (s *CommandsService) Attach(vmInstance string, pid int, writer io.Writer, f
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	resp, err := AgentCommand(context.Background(), nil, vmInstance, bytes.NewReader(body), "/attach", http.MethodPost)
+	resp, err := AgentCommand(context.Background(), nil, sbxInstance, bytes.NewReader(body), "/attach", http.MethodPost)
 	if err != nil {
 		return fmt.Errorf("failed to communicate with agent: %w", err)
 	}
@@ -153,7 +153,7 @@ func (s *CommandsService) Attach(vmInstance string, pid int, writer io.Writer, f
 }
 
 // Wait waits for a process to complete
-func (s *CommandsService) Wait(vmInstance string, pid int) (*model.CommandWaitResponse, error) {
+func (s *CommandsService) Wait(sbxInstance string, pid int) (*model.CommandWaitResponse, error) {
 	payload := map[string]interface{}{
 		"pid": pid,
 	}
@@ -163,7 +163,7 @@ func (s *CommandsService) Wait(vmInstance string, pid int) (*model.CommandWaitRe
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	resp, err := AgentCommand(context.Background(), nil, vmInstance, bytes.NewReader(body), "/wait", http.MethodPost)
+	resp, err := AgentCommand(context.Background(), nil, sbxInstance, bytes.NewReader(body), "/wait", http.MethodPost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to communicate with agent: %w", err)
 	}

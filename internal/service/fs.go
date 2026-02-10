@@ -13,15 +13,13 @@ import (
 	"strings"
 )
 
-// FSService handles filesystem operations for VMs using shared HTTP client
 type FSService struct {
 	client *http.Client
 }
 
-// NewFSService creates a new filesystem service using the shared VM HTTP client
 func NewFSService() *FSService {
 	return &FSService{
-		client: GetVMHTTPClient(),
+		client: GetSandboxHTTPClient(),
 	}
 }
 
@@ -32,11 +30,10 @@ func NewFSServiceWithClient(client *http.Client) *FSService {
 	}
 }
 
-// ListFiles lists files in a directory on the VM
-func (s *FSService) ListFiles(ctx context.Context, vmID, path string) (*http.Response, error) {
+func (s *FSService) ListFiles(ctx context.Context, sbxID, path string) (*http.Response, error) {
 	u := url.URL{
 		Scheme:   "http",
-		Host:     vmID,
+		Host:     sbxID,
 		Path:     "/ls",
 		RawQuery: "path=" + url.QueryEscape(path),
 	}
@@ -47,8 +44,8 @@ func (s *FSService) ListFiles(ctx context.Context, vmID, path string) (*http.Res
 	return s.client.Do(req)
 }
 
-// DownloadFile downloads a file from the VM
-func (s *FSService) DownloadFile(ctx context.Context, vmID, filePath string) (*http.Response, error) {
+// DownloadFile downloads a file from the sandbox
+func (s *FSService) DownloadFile(ctx context.Context, sbxID, filePath string) (*http.Response, error) {
 	// Ensure path starts with /
 	if !strings.HasPrefix(filePath, "/") {
 		filePath = "/" + filePath
@@ -56,7 +53,7 @@ func (s *FSService) DownloadFile(ctx context.Context, vmID, filePath string) (*h
 
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmID,
+		Host:   sbxID,
 		Path:   "/files" + filePath,
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
@@ -66,8 +63,8 @@ func (s *FSService) DownloadFile(ctx context.Context, vmID, filePath string) (*h
 	return s.client.Do(req)
 }
 
-// UploadFile uploads a file to the VM
-func (s *FSService) UploadFile(ctx context.Context, vmID, targetPath string, body io.Reader, contentLength, contentType string) (*http.Response, error) {
+// UploadFile uploads a file to the sandbox
+func (s *FSService) UploadFile(ctx context.Context, sbxID, targetPath string, body io.Reader, contentLength, contentType string) (*http.Response, error) {
 	// Ensure path starts with /
 	if !strings.HasPrefix(targetPath, "/") {
 		targetPath = "/" + targetPath
@@ -75,7 +72,7 @@ func (s *FSService) UploadFile(ctx context.Context, vmID, targetPath string, bod
 
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmID,
+		Host:   sbxID,
 		Path:   "/upload" + targetPath,
 	}
 
@@ -98,8 +95,8 @@ func (s *FSService) UploadFile(ctx context.Context, vmID, targetPath string, bod
 	return s.client.Do(req)
 }
 
-// DeleteFile deletes a file on the VM
-func (s *FSService) DeleteFile(ctx context.Context, vmID, filePath string) (*http.Response, error) {
+// DeleteFile deletes a file on the sandbox
+func (s *FSService) DeleteFile(ctx context.Context, sbxID, filePath string) (*http.Response, error) {
 	clean := filepath.Clean(filePath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -112,11 +109,11 @@ func (s *FSService) DeleteFile(ctx context.Context, vmID, filePath string) (*htt
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
-// CreateDirectory creates a directory on the VM
-func (s *FSService) CreateDirectory(ctx context.Context, vmID, dirPath string) (*http.Response, error) {
+// CreateDirectory creates a directory on the sandbox
+func (s *FSService) CreateDirectory(ctx context.Context, sbxID, dirPath string) (*http.Response, error) {
 	clean := filepath.Clean(dirPath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -129,11 +126,11 @@ func (s *FSService) CreateDirectory(ctx context.Context, vmID, dirPath string) (
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
-// CreateFile creates a blank file on the VM
-func (s *FSService) CreateFile(ctx context.Context, vmID, filePath string) (*http.Response, error) {
+// CreateFile creates a blank file on the sandbox
+func (s *FSService) CreateFile(ctx context.Context, sbxID, filePath string) (*http.Response, error) {
 	clean := filepath.Clean(filePath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -150,11 +147,11 @@ func (s *FSService) CreateFile(ctx context.Context, vmID, filePath string) (*htt
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
-// MoveFile moves/renames a file on the VM
-func (s *FSService) MoveFile(ctx context.Context, vmID, sourcePath, destPath string) (*http.Response, error) {
+// MoveFile moves/renames a file on the sandbox
+func (s *FSService) MoveFile(ctx context.Context, sbxID, sourcePath, destPath string) (*http.Response, error) {
 	src := filepath.Clean(sourcePath)
 	dst := filepath.Clean(destPath)
 	if !strings.HasPrefix(src, "/") {
@@ -176,11 +173,11 @@ func (s *FSService) MoveFile(ctx context.Context, vmID, sourcePath, destPath str
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
-// StatFile gets file metadata from the VM
-func (s *FSService) StatFile(ctx context.Context, vmID, filePath string) (*http.Response, error) {
+// StatFile gets file metadata from the sandbox
+func (s *FSService) StatFile(ctx context.Context, sbxID, filePath string) (*http.Response, error) {
 	clean := filepath.Clean(filePath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -194,11 +191,11 @@ func (s *FSService) StatFile(ctx context.Context, vmID, filePath string) (*http.
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
-// CopyFile copies/duplicates a file on the VM
-func (s *FSService) CopyFile(ctx context.Context, vmID, sourcePath, destPath string) (*http.Response, error) {
+// CopyFile copies/duplicates a file on the sandbox
+func (s *FSService) CopyFile(ctx context.Context, sbxID, sourcePath, destPath string) (*http.Response, error) {
 	src := filepath.Clean(sourcePath)
 	dst := filepath.Clean(destPath)
 	if !strings.HasPrefix(src, "/") {
@@ -220,11 +217,11 @@ func (s *FSService) CopyFile(ctx context.Context, vmID, sourcePath, destPath str
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
 // HeadTail returns first or last N lines of a file
-func (s *FSService) HeadTail(ctx context.Context, vmID, filePath string, lines int, isHead bool) (*http.Response, error) {
+func (s *FSService) HeadTail(ctx context.Context, sbxID, filePath string, lines int, isHead bool) (*http.Response, error) {
 	clean := filepath.Clean(filePath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -250,11 +247,11 @@ func (s *FSService) HeadTail(ctx context.Context, vmID, filePath string, lines i
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
-// ChangePermissions changes file permissions on the VM
-func (s *FSService) ChangePermissions(ctx context.Context, vmID, filePath, mode string) (*http.Response, error) {
+// ChangePermissions changes file permissions on the sandbox
+func (s *FSService) ChangePermissions(ctx context.Context, sbxID, filePath, mode string) (*http.Response, error) {
 	clean := filepath.Clean(filePath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -270,11 +267,11 @@ func (s *FSService) ChangePermissions(ctx context.Context, vmID, filePath, mode 
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
 // DiskUsage returns disk usage of a directory
-func (s *FSService) DiskUsage(ctx context.Context, vmID, dirPath string) (*http.Response, error) {
+func (s *FSService) DiskUsage(ctx context.Context, sbxID, dirPath string) (*http.Response, error) {
 	clean := filepath.Clean(dirPath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -288,11 +285,11 @@ func (s *FSService) DiskUsage(ctx context.Context, vmID, dirPath string) (*http.
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
 // SearchFiles searches for files matching a pattern
-func (s *FSService) SearchFiles(ctx context.Context, vmID, dirPath, pattern string) (*http.Response, error) {
+func (s *FSService) SearchFiles(ctx context.Context, sbxID, dirPath, pattern string) (*http.Response, error) {
 	clean := filepath.Clean(dirPath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -308,11 +305,11 @@ func (s *FSService) SearchFiles(ctx context.Context, vmID, dirPath, pattern stri
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
 // CompressFile compresses a file or directory
-func (s *FSService) CompressFile(ctx context.Context, vmID, sourcePath, format string) (*http.Response, error) {
+func (s *FSService) CompressFile(ctx context.Context, sbxID, sourcePath, format string) (*http.Response, error) {
 	clean := filepath.Clean(sourcePath)
 	if !strings.HasPrefix(clean, "/") {
 		clean = "/" + clean
@@ -339,11 +336,11 @@ func (s *FSService) CompressFile(ctx context.Context, vmID, sourcePath, format s
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
 // ExtractArchive extracts an archive file
-func (s *FSService) ExtractArchive(ctx context.Context, vmID, archivePath, destPath string) (*http.Response, error) {
+func (s *FSService) ExtractArchive(ctx context.Context, sbxID, archivePath, destPath string) (*http.Response, error) {
 	archive := filepath.Clean(archivePath)
 	if !strings.HasPrefix(archive, "/") {
 		archive = "/" + archive
@@ -374,16 +371,16 @@ func (s *FSService) ExtractArchive(ctx context.Context, vmID, archivePath, destP
 		return nil, err
 	}
 
-	return s.ExecCommand(ctx, vmID, bytes.NewReader(body))
+	return s.ExecCommand(ctx, sbxID, bytes.NewReader(body))
 }
 
-// ExecCommand executes a command on the VM
-func (s *FSService) ExecCommand(ctx context.Context, vmID string, body io.Reader) (*http.Response, error) {
-	return ExecAgentCommand(ctx, s.client, vmID, body)
+// ExecCommand executes a command on the sandbox
+func (s *FSService) ExecCommand(ctx context.Context, sbxID string, body io.Reader) (*http.Response, error) {
+	return ExecAgentCommand(ctx, s.client, sbxID, body)
 }
 
 // StartWatch starts watching a directory for file changes
-func (s *FSService) StartWatch(ctx context.Context, vmID, path string, recursive bool, ignoreHidden bool) (*http.Response, error) {
+func (s *FSService) StartWatch(ctx context.Context, sbxID, path string, recursive bool, ignoreHidden bool) (*http.Response, error) {
 	payload := map[string]interface{}{
 		"action":       "start",
 		"path":         path,
@@ -397,7 +394,7 @@ func (s *FSService) StartWatch(ctx context.Context, vmID, path string, recursive
 
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmID,
+		Host:   sbxID,
 		Path:   "/watch",
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", u.String(), bytes.NewReader(body))

@@ -2,22 +2,21 @@ package machine
 
 import (
 	"fmt"
-	"voidrun/internal/config"
-	"voidrun/internal/model"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
+	"voidrun/internal/config"
+	"voidrun/internal/model"
 )
 
-// Restore creates a new VM from a snapshot
 func Restore(cfg config.Config, newID, snapshotPath, ip string, cold bool) error {
 	newInstanceDir := GetInstanceDir(newID)
-	log.Printf(">> Restoring VM ID: %s from Snapshot: %s\n", newID, snapshotPath)
+	log.Printf(">> Restoring Sandbox ID: %s from Snapshot: %s\n", newID, snapshotPath)
 
 	if _, err := os.Stat(newInstanceDir); err == nil {
-		return fmt.Errorf("VM ID %s already exists", newID)
+		return fmt.Errorf("Sandbox ID %s already exists", newID)
 	}
 
 	if err := os.MkdirAll(newInstanceDir, 0755); err != nil {
@@ -66,7 +65,7 @@ func Restore(cfg config.Config, newID, snapshotPath, ip string, cold bool) error
 	// Send Resume (only for live restore)
 	if !cold {
 		fmt.Println("   [+] Waiting for socket to resume...")
-		client := NewAPIClientForVM(newID)
+		client := NewAPIClientForSandbox(newID)
 
 		if err := client.WaitForSocket(2 * time.Second); err != nil {
 			return fmt.Errorf("socket timed out waiting for resume: %w", err)
@@ -78,7 +77,7 @@ func Restore(cfg config.Config, newID, snapshotPath, ip string, cold bool) error
 		if err := client.Send("vm.resume"); err != nil {
 			fmt.Printf("   [!] Resume warning: %v\n", err)
 		} else {
-			fmt.Println("   [+] VM Resumed!")
+			fmt.Println("   [+] Sandbox Resumed!")
 		}
 	}
 

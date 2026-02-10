@@ -81,8 +81,6 @@ func HandleJSONResponse(c *gin.Context, resp *http.Response) {
 	contentType := resp.Header.Get("Content-Type")
 	status := resp.StatusCode
 
-	// log.Printf("[FS] VM Response: status=%d, content-type=%s, body=%s", status, contentType, strings.TrimSpace(string(bodyBytes)))
-
 	// Prefer pass-through of JSON without decoding; wrap in our standard envelope using RawMessage
 	if strings.Contains(contentType, "application/json") {
 		raw := json.RawMessage(bodyBytes)
@@ -133,9 +131,9 @@ func (h *FSHandler) ListFiles(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.ListFiles(c.Request.Context(), vmID, path)
+	resp, err := h.fsService.ListFiles(c.Request.Context(), sbxInstance, path)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to list files", err.Error()))
 		return
@@ -163,9 +161,9 @@ func (h *FSHandler) DownloadFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.DownloadFile(c.Request.Context(), vmID, filePath)
+	resp, err := h.fsService.DownloadFile(c.Request.Context(), sbxInstance, filePath)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to download file", err.Error()))
 		return
@@ -210,7 +208,7 @@ func (h *FSHandler) UploadFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var bodyReader io.Reader
 	var contentLength string
@@ -266,7 +264,7 @@ func (h *FSHandler) UploadFile(c *gin.Context) {
 
 	resp, err := h.fsService.UploadFile(
 		c.Request.Context(),
-		vmID,
+		sbxInstance,
 		targetPath,
 		bodyReader,
 		contentLength,
@@ -296,9 +294,9 @@ func (h *FSHandler) DeleteFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.DeleteFile(c.Request.Context(), vmID, filePath)
+	resp, err := h.fsService.DeleteFile(c.Request.Context(), sbxInstance, filePath)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to delete file", err.Error()))
 		return
@@ -321,9 +319,9 @@ func (h *FSHandler) CreateDirectory(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.CreateDirectory(c.Request.Context(), vmID, dirPath)
+	resp, err := h.fsService.CreateDirectory(c.Request.Context(), sbxInstance, dirPath)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to create directory", err.Error()))
 		return
@@ -348,9 +346,9 @@ func (h *FSHandler) MoveFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.MoveFile(c.Request.Context(), vmID, sourcePath, destPath)
+	resp, err := h.fsService.MoveFile(c.Request.Context(), sbxInstance, sourcePath, destPath)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to move file", err.Error()))
 		return
@@ -373,9 +371,9 @@ func (h *FSHandler) CreateFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.CreateFile(c.Request.Context(), vmID, filePath)
+	resp, err := h.fsService.CreateFile(c.Request.Context(), sbxInstance, filePath)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to create file", err.Error()))
 		return
@@ -398,9 +396,9 @@ func (h *FSHandler) StatFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.StatFile(c.Request.Context(), vmID, filePath)
+	resp, err := h.fsService.StatFile(c.Request.Context(), sbxInstance, filePath)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to get file info", err.Error()))
 		return
@@ -424,9 +422,9 @@ func (h *FSHandler) CopyFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.CopyFile(c.Request.Context(), vmID, from, to)
+	resp, err := h.fsService.CopyFile(c.Request.Context(), sbxInstance, from, to)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to copy file", err.Error()))
 		return
@@ -467,9 +465,9 @@ func (h *FSHandler) HeadTail(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.HeadTail(c.Request.Context(), vmID, path, lines, isHead)
+	resp, err := h.fsService.HeadTail(c.Request.Context(), sbxInstance, path, lines, isHead)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to read file", err.Error()))
 		return
@@ -503,9 +501,9 @@ func (h *FSHandler) ChangePermissions(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.ChangePermissions(c.Request.Context(), vmID, path, mode)
+	resp, err := h.fsService.ChangePermissions(c.Request.Context(), sbxInstance, path, mode)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to change permissions", err.Error()))
 		return
@@ -527,9 +525,9 @@ func (h *FSHandler) DiskUsage(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.DiskUsage(c.Request.Context(), vmID, path)
+	resp, err := h.fsService.DiskUsage(c.Request.Context(), sbxInstance, path)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to get disk usage", err.Error()))
 		return
@@ -566,9 +564,9 @@ func (h *FSHandler) SearchFiles(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.SearchFiles(c.Request.Context(), vmID, path, pattern)
+	resp, err := h.fsService.SearchFiles(c.Request.Context(), sbxInstance, path, pattern)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to search files", err.Error()))
 		return
@@ -592,9 +590,9 @@ func (h *FSHandler) CompressFile(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.CompressFile(c.Request.Context(), vmID, path, format)
+	resp, err := h.fsService.CompressFile(c.Request.Context(), sbxInstance, path, format)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to compress file", err.Error()))
 		return
@@ -621,9 +619,9 @@ func (h *FSHandler) ExtractArchive(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.fsService.ExtractArchive(c.Request.Context(), vmID, archive, dest)
+	resp, err := h.fsService.ExtractArchive(c.Request.Context(), sbxInstance, archive, dest)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to extract archive", err.Error()))
 		return
@@ -652,14 +650,14 @@ func (h *FSHandler) StartWatch(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	ignoreHidden := true
 	if req.IgnoreHidden != nil {
 		ignoreHidden = *req.IgnoreHidden
 	}
 
-	resp, err := h.fsService.StartWatch(c.Request.Context(), vmID, req.Path, req.Recursive, ignoreHidden)
+	resp, err := h.fsService.StartWatch(c.Request.Context(), sbxInstance, req.Path, req.Recursive, ignoreHidden)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to start watch", err.Error()))
 		return
@@ -707,7 +705,7 @@ func (h *FSHandler) StreamWatchEvents(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmID := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	// Upgrade client connection to WebSocket
 	upgrader := websocket.Upgrader{
@@ -724,7 +722,7 @@ func (h *FSHandler) StreamWatchEvents(c *gin.Context) {
 	defer clientConn.Close()
 
 	// Connect to agent's WebSocket stream
-	agentURL := fmt.Sprintf("ws://%s/watch/stream?sessionId=%s", vmID, sessionID)
+	agentURL := fmt.Sprintf("ws://%s/watch/stream?sessionId=%s", sbxInstance, sessionID)
 
 	dialer := service.NewVsockWSDialer()
 	agentConn, _, err := dialer.DialContext(c.Request.Context(), agentURL, nil)

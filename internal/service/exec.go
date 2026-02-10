@@ -18,7 +18,6 @@ import (
 	"voidrun/pkg/util"
 )
 
-// ExecService handles command execution in VMs
 type ExecService struct {
 	cfg    *config.Config
 	client *http.Client
@@ -28,12 +27,12 @@ type ExecService struct {
 func NewExecService(cfg *config.Config) *ExecService {
 	return &ExecService{
 		cfg:    cfg,
-		client: GetVMHTTPClient(),
+		client: GetSandboxHTTPClient(),
 	}
 }
 
-// ValidateVMID validates the VM ID format
-func (s *ExecService) ValidateVMID(id string) bool {
+// ValidateSandboxID validates the sandbox ID format
+func (s *ExecService) ValidateSandboxID(id string) bool {
 	for _, r := range id {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
 			(r >= '0' && r <= '9') || r == '-' || r == '_') {
@@ -88,12 +87,12 @@ func (s *ExecService) ParseAndValidateRequest(req model.ExecRequest) (cmd string
 	return cmd, args, timeout, nil
 }
 
-// ExecuteCommand executes a command in a VM and streams the output
-func (s *ExecService) ExecuteCommand(vmID, cmd string, args []string, timeout int, writer io.Writer, flush func()) error {
+// ExecuteCommand executes a command in a sandbox and streams the output
+func (s *ExecService) ExecuteCommand(sbxID, cmd string, args []string, timeout int, writer io.Writer, flush func()) error {
 	// Use common DialVsock helper
-	conn, err := machine.DialVsock(vmID, 1024, 2*time.Second)
+	conn, err := machine.DialVsock(sbxID, 1024, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("VM not reachable: %w", err)
+		return fmt.Errorf("sandbox not reachable: %w", err)
 	}
 	defer conn.Close()
 
@@ -121,7 +120,7 @@ func (s *ExecService) ExecuteCommand(vmID, cmd string, args []string, timeout in
 		}
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("[exec] VM %s read error: %v", vmID, err)
+				log.Printf("[exec] sandbox %s read error: %v", sbxID, err)
 			}
 			break
 		}
@@ -131,7 +130,7 @@ func (s *ExecService) ExecuteCommand(vmID, cmd string, args []string, timeout in
 }
 
 // ExecSync executes a command synchronously via agent /exec endpoint and returns the result
-func (s *ExecService) ExecSync(ctx context.Context, vmID, command string, timeout int, env map[string]string, cwd string) (*http.Response, error) {
+func (s *ExecService) ExecSync(ctx context.Context, sbxID string, command string, timeout int, env map[string]string, cwd string) (*http.Response, error) {
 	payload := map[string]interface{}{
 		"cmd":     command,
 		"timeout": timeout,
@@ -148,11 +147,11 @@ func (s *ExecService) ExecSync(ctx context.Context, vmID, command string, timeou
 		return nil, err
 	}
 
-	return ExecAgentCommand(ctx, s.client, vmID, bytes.NewReader(body))
+	return ExecAgentCommand(ctx, s.client, sbxID, bytes.NewReader(body))
 }
 
 // ExecStreamSSE executes a command and streams SSE output from the agent /exec-stream endpoint.
-func (s *ExecService) ExecStreamSSE(ctx context.Context, vmID, command string, timeout int, env map[string]string, cwd string, writer io.Writer, flush func()) error {
+func (s *ExecService) ExecStreamSSE(ctx context.Context, sbxID string, command string, timeout int, env map[string]string, cwd string, writer io.Writer, flush func()) error {
 	payload := map[string]interface{}{
 		"cmd":     command,
 		"timeout": timeout,
@@ -169,7 +168,7 @@ func (s *ExecService) ExecStreamSSE(ctx context.Context, vmID, command string, t
 		return err
 	}
 
-	resp, err := AgentCommand(ctx, s.client, vmID, bytes.NewReader(body), "/exec-stream", http.MethodPost)
+	resp, err := AgentCommand(ctx, s.client, sbxID, bytes.NewReader(body), "/exec-stream", http.MethodPost)
 	if err != nil {
 		return err
 	}
@@ -203,11 +202,11 @@ func (s *ExecService) ExecStreamSSE(ctx context.Context, vmID, command string, t
 }
 
 // ExecuteCommandStream executes a command and streams NDJSON output with separate stdout/stderr
-func (s *ExecService) ExecuteCommandStream(vmID, cmd string, args []string, timeout int, writer io.Writer, flush func()) error {
+func (s *ExecService) ExecuteCommandStream(sbxID, cmd string, args []string, timeout int, writer io.Writer, flush func()) error {
 	// Use common DialVsock helper
-	conn, err := machine.DialVsock(vmID, 1024, 2*time.Second)
+	conn, err := machine.DialVsock(sbxID, 1024, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("VM not reachable: %w", err)
+		return fmt.Errorf("sandbox not reachable: %w", err)
 	}
 	defer conn.Close()
 
@@ -248,18 +247,18 @@ func (s *ExecService) ExecuteCommandStream(vmID, cmd string, args []string, time
 
 // ExecAgentCommand sends a JSON command payload to the agent /exec endpoint over HTTP.
 // Shared helper so FS and Exec services reuse identical logic.
-func ExecAgentCommand(ctx context.Context, client *http.Client, vmID string, body io.Reader) (*http.Response, error) {
-	return AgentCommand(ctx, client, vmID, body, "/exec", http.MethodPost)
+func ExecAgentCommand(ctx context.Context, client *http.Client, sbxID string, body io.Reader) (*http.Response, error) {
+	return AgentCommand(ctx, client, sbxID, body, "/exec", http.MethodPost)
 }
 
-func AgentCommand(ctx context.Context, client *http.Client, vmID string, body io.Reader, path string, method string) (*http.Response, error) {
+func AgentCommand(ctx context.Context, client *http.Client, sbxID string, body io.Reader, path string, method string) (*http.Response, error) {
 	if client == nil {
-		client = GetVMHTTPClient()
+		client = GetSandboxHTTPClient()
 	}
 
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmID,
+		Host:   sbxID,
 		Path:   path,
 	}
 

@@ -9,27 +9,26 @@ import (
 	"time"
 )
 
-// CreateSnapshot creates a snapshot of a running or paused VM
-func CreateSnapshot(vmID string) error {
-	instanceDir := GetInstanceDir(vmID)
-	socketPath := GetSocketPath(vmID)
+func CreateSnapshot(sbxID string) error {
+	instanceDir := GetInstanceDir(sbxID)
+	socketPath := GetSocketPath(sbxID)
 
-	log.Printf(">> Creating snapshot for VM ID: %s\n", vmID)
+	log.Printf(">> Creating snapshot for Sandbox ID: %s\n", sbxID)
 
 	client := NewAPIClient(socketPath)
 	if !client.IsSocketAvailable() {
-		return fmt.Errorf("VM socket not found. Is VM running?")
+		return fmt.Errorf("Sandbox socket not found. Is Sandbox running?")
 	}
 
-	// Check VM state
+	// Check Sandbox state
 	state, err := client.GetState()
 	log.Printf("   [+] Current State: %s\n", state)
 	if err != nil {
-		return fmt.Errorf("failed to get VM state: %w", err)
+		return fmt.Errorf("failed to get Sandbox state: %w", err)
 	}
 
 	if state != "Running" && state != "Paused" {
-		return fmt.Errorf("cannot snapshot VM in state: %s (Must be Running or Paused)", state)
+		return fmt.Errorf("cannot snapshot Sandbox in state: %s (Must be Running or Paused)", state)
 	}
 
 	// Pause if running
@@ -37,7 +36,7 @@ func CreateSnapshot(vmID string) error {
 		if err := client.Send("vm.pause"); err != nil {
 			return fmt.Errorf("pause failed: %w", err)
 		}
-		fmt.Println("   [+] VM Paused")
+		fmt.Println("   [+] Sandbox Paused")
 	}
 
 	// Prepare directories
@@ -70,7 +69,7 @@ func CreateSnapshot(vmID string) error {
 		if err := client.Send("vm.resume"); err != nil {
 			return fmt.Errorf("resume failed: %w", err)
 		}
-		fmt.Println("   [+] VM Resumed")
+		fmt.Println("   [+] Sandbox Resumed")
 	}
 
 	// Copy disk and finalize in background

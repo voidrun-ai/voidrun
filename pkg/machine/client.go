@@ -18,7 +18,6 @@ const (
 	GuestAgentPort = 1024
 )
 
-// InstancesRoot is the base path for VM instances (set from config)
 var InstancesRoot string
 
 // SetInstancesRoot sets the instances root directory from configuration
@@ -37,7 +36,6 @@ type APIClient struct {
 	timeout    time.Duration
 }
 
-// NewAPIClient creates a new API client for a VM
 func NewAPIClient(socketPath string) *APIClient {
 	return &APIClient{
 		socketPath: socketPath,
@@ -45,9 +43,8 @@ func NewAPIClient(socketPath string) *APIClient {
 	}
 }
 
-// NewAPIClientForVM creates an API client for a VM by ID
-func NewAPIClientForVM(vmID string) *APIClient {
-	return NewAPIClient(GetSocketPath(vmID))
+func NewAPIClientForSandbox(sandboxID string) *APIClient {
+	return NewAPIClient(GetSocketPath(sandboxID))
 }
 
 // httpClient creates an HTTP client that connects via Unix socket
@@ -99,7 +96,6 @@ func (c *APIClient) Get(endpoint string) ([]byte, error) {
 	return body, nil
 }
 
-// GetState returns the current VM state
 func (c *APIClient) GetState() (string, error) {
 	body, err := c.Get("vm.info")
 	if err != nil {
@@ -154,7 +150,6 @@ func (c *APIClient) request(endpoint string, body []byte) error {
 	return nil
 }
 
-// IsSocketAvailable checks if the VM socket exists
 func (c *APIClient) IsSocketAvailable() bool {
 	_, err := os.Stat(c.socketPath)
 	return err == nil
@@ -173,22 +168,16 @@ func (c *APIClient) WaitForSocket(timeout time.Duration) error {
 }
 
 func (c *APIClient) GetStateWithContext(ctx context.Context) (string, error) {
-	// 1. Setup Transport
-	// We define a custom transport here to ensure 'DisableKeepAlives' is true
-	// and to ensure the Dial function actually respects the 'ctx' deadline.
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
-			// This is critical: pass 'ctx' to DialContext.
-			// If your RefreshStatuses loop times out, this kills the connection attempt instantly.
 			return d.DialContext(ctx, "unix", c.socketPath)
 		},
-		DisableKeepAlives: true, // Essential for 1000 VMs to prevent "too many open files"
+		DisableKeepAlives: true,
 	}
 
 	client := &http.Client{
 		Transport: transport,
-		// We don't set a fixed Timeout here; we rely on the ctx passed by the caller
 	}
 
 	// 2. Prepare Request
@@ -207,7 +196,6 @@ func (c *APIClient) GetStateWithContext(ctx context.Context) (string, error) {
 
 	// 4. Handle API Errors
 	if resp.StatusCode != http.StatusOK {
-		// Read a small amount of the body for debugging purposes if it fails
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
@@ -217,8 +205,6 @@ func (c *APIClient) GetStateWithContext(ctx context.Context) (string, error) {
 		State string `json:"state"`
 	}
 
-	// FIX: Use NewDecoder instead of Unmarshal.
-	// resp.Body is an io.ReadCloser, NewDecoder reads from it directly.
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return "", fmt.Errorf("failed to decode state: %w", err)
 	}
@@ -228,42 +214,22 @@ func (c *APIClient) GetStateWithContext(ctx context.Context) (string, error) {
 
 // Path helpers
 
-// GetInstanceDir returns the instance directory for a VM
-func GetInstanceDir(vmID string) string {
-	return fmt.Sprintf("%s/%s", InstancesRoot, vmID)
+func GetInstanceDir(sbxID string) string {
+	return fmt.Sprintf("%s/%s", InstancesRoot, sbxID)
 }
 
-// GetSocketPath returns the socket path for a VM
-func GetSocketPath(vmID string) string {
-	return fmt.Sprintf("%s/%s/vm.sock", InstancesRoot, vmID)
+func GetSocketPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/vm.sock", InstancesRoot, sbxID)
 }
 
-// GetVsockPath returns the vsock path for a VM
-func GetVsockPath(vmID string) string {
-	return fmt.Sprintf("%s/%s/vsock.sock", InstancesRoot, vmID)
+func GetVsockPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/vsock.sock", InstancesRoot, sbxID)
 }
 
-// GetPIDPath returns the PID file path for a VM
-func GetPIDPath(vmID string) string {
-	return fmt.Sprintf("%s/%s/vm.pid", InstancesRoot, vmID)
+func GetPIDPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/vm.pid", InstancesRoot, sbxID)
 }
 
-// GetTapPath returns the TAP file path for a VM
-func GetTapPath(vmID string) string {
-	return fmt.Sprintf("%s/%s/vm.tap", InstancesRoot, vmID)
+func GetTapPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/vm.tap", InstancesRoot, sbxID)
 }
-
-// UNUSED: GetLogPath returns the log file path for a VM
-// func GetLogPath(vmID string) string {
-// 	return fmt.Sprintf("%s/%s/vm.log", InstancesRoot, vmID)
-// }
-
-// UNUSED: GetOverlayPath returns the overlay disk path for a VM
-// func GetOverlayPath(vmID string) string {
-// 	return fmt.Sprintf("%s/%s/overlay.qcow2", InstancesRoot, vmID)
-// }
-
-// UNUSED: GetSnapshotsDir returns the snapshots directory for a VM
-// func GetSnapshotsDir(vmID string) string {
-// 	return fmt.Sprintf("%s/%s/snapshots", InstancesRoot, vmID)
-// }

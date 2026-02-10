@@ -23,56 +23,12 @@ type AgentRequest struct {
 	Args []string `json:"args"`
 }
 
-// DialVsock establishes a connection to a VM's vsock via Cloud Hypervisor's unix socket relay.
-// It performs the required "CONNECT <port>" handshake and validates the "OK" response.
-// The returned connection is ready for use and has no deadline set.
-// func DialVsock(vmID string, port uint32, timeout time.Duration) (net.Conn, error) {
-// 	if timeout == 0 {
-// 		timeout = 2 * time.Second
-// 	}
-
-// 	socketPath := GetVsockPath(vmID)
-
-// 	// Dial the Cloud Hypervisor Unix Socket
-// 	conn, err := net.DialTimeout("unix", socketPath, timeout)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to dial vsock unix socket: %w", err)
-// 	}
-
-// 	// Cloud Hypervisor Handshake: "CONNECT <port>\n"
-// 	conn.SetDeadline(time.Now().Add(timeout))
-// 	handshake := fmt.Sprintf("CONNECT %d\n", port)
-// 	if _, err = conn.Write([]byte(handshake)); err != nil {
-// 		conn.Close()
-// 		return nil, fmt.Errorf("handshake write failed: %w", err)
-// 	}
-
-// 	// Verify Handshake Response "OK <port>\n" or just "OK"
-// 	buf := make([]byte, 32)
-// 	n, err := conn.Read(buf)
-// 	if err != nil {
-// 		conn.Close()
-// 		return nil, fmt.Errorf("handshake read failed: %w", err)
-// 	}
-
-// 	resp := string(buf[:n])
-// 	if !strings.HasPrefix(resp, "OK") {
-// 		conn.Close()
-// 		return nil, fmt.Errorf("vsock handshake failed, CLH replied: %s", resp)
-// 	}
-
-// 	// Remove deadline for subsequent operations
-// 	conn.SetDeadline(time.Time{})
-
-// 	return conn, nil
-// }
-
-func DialVsock(vmID string, port uint32, timeout time.Duration) (net.Conn, error) {
+func DialVsock(sbxID string, port uint32, timeout time.Duration) (net.Conn, error) {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
 
-	socketPath := GetVsockPath(vmID)
+	socketPath := GetVsockPath(sbxID)
 	if _, err := os.Stat(socketPath); err != nil {
 		return nil, fmt.Errorf("vsock socket not found: %w", err)
 	}
@@ -138,10 +94,9 @@ func DialVsock(vmID string, port uint32, timeout time.Duration) (net.Conn, error
 	return result, nil
 }
 
-// ExecuteCommand connects to the VM's vsock via the host unix socket and executes a command
-func ExecuteCommand(vmID string, cmd string, args []string) (*AgentResponse, error) {
+func ExecuteCommand(sbxID string, cmd string, args []string) (*AgentResponse, error) {
 	// Use the common DialVsock helper
-	conn, err := DialVsock(vmID, GuestAgentPort, 2*time.Second)
+	conn, err := DialVsock(sbxID, GuestAgentPort, 2*time.Second)
 	if err != nil {
 		return nil, err
 	}

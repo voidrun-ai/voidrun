@@ -10,20 +10,17 @@ import (
 	"voidrun/pkg/machine"
 )
 
-// VMHTTPClient is a shared HTTP client for VM vsock communication
-var VMHTTPClient *http.Client
+var SandboxHTTPClient *http.Client
 
-// InitVMHTTPClient creates and returns a shared HTTP client optimized for vsock communication
-func InitVMHTTPClient() *http.Client {
-	if VMHTTPClient != nil {
-		return VMHTTPClient
+func InitSandboxHTTPClient() *http.Client {
+	if SandboxHTTPClient != nil {
+		return SandboxHTTPClient
 	}
 
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// addr comes in as "vmID:80" — extract vmID
-			vmID := strings.Split(addr, ":")[0]
-			return machine.DialVsock(vmID, 1024, 5*time.Second)
+			sbxID := strings.Split(addr, ":")[0]
+			return machine.DialVsock(sbxID, 1024, 5*time.Second)
 		},
 		// Connection Pooling
 		MaxIdleConns:        1000,
@@ -38,18 +35,17 @@ func InitVMHTTPClient() *http.Client {
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
-	VMHTTPClient = &http.Client{
+	SandboxHTTPClient = &http.Client{
 		Transport: tr,
 		Timeout:   0, // No global timeout — large files need time
 	}
 
-	return VMHTTPClient
+	return SandboxHTTPClient
 }
 
-// GetVMHTTPClient returns the shared VM HTTP client, initializing if needed
-func GetVMHTTPClient() *http.Client {
-	if VMHTTPClient == nil {
-		return InitVMHTTPClient()
+func GetSandboxHTTPClient() *http.Client {
+	if SandboxHTTPClient == nil {
+		return InitSandboxHTTPClient()
 	}
-	return VMHTTPClient
+	return SandboxHTTPClient
 }

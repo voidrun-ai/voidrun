@@ -19,12 +19,10 @@ const (
 	maxMemMiB = 16384 // Max 16 GiB per sandbox
 )
 
-// SandboxHandler handles VM-related HTTP requests
 type SandboxHandler struct {
 	sandboxService *service.SandboxService
 }
 
-// NewVMHandler creates a new VM handler
 func NewSandboxHandler(sandboxService *service.SandboxService) *SandboxHandler {
 	return &SandboxHandler{sandboxService: sandboxService}
 }
@@ -53,19 +51,19 @@ func (h *SandboxHandler) List(c *gin.Context) {
 		}
 	}
 
-	vms, total, actualPageSize, err := h.sandboxService.ListByOrgPaginated(c.Request.Context(), orgIDHex.(string), page, pageSize)
+	sbxList, total, actualPageSize, err := h.sandboxService.ListByOrgPaginated(c.Request.Context(), orgIDHex.(string), page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-	if vms == nil {
-		vms = []*model.Sandbox{}
+	if sbxList == nil {
+		sbxList = []*model.Sandbox{}
 	}
 
 	// Calculate total pages for convenience
 	totalPages := (total + int64(actualPageSize) - 1) / int64(actualPageSize)
 
-	c.JSON(http.StatusOK, model.NewSuccessResponseWithMeta("Sandboxes fetched", vms, map[string]interface{}{
+	c.JSON(http.StatusOK, model.NewSuccessResponseWithMeta("Sandboxes fetched", sbxList, map[string]interface{}{
 		"page":       page,
 		"limit":      actualPageSize,
 		"total":      total,
@@ -120,7 +118,7 @@ func (h *SandboxHandler) Create(c *gin.Context) {
 	spec, err := h.sandboxService.Create(c.Request.Context(), req)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if err.Error() == "VM ID already exists in DB" {
+		if err.Error() == "Sandbox ID already exists in DB" {
 			status = http.StatusConflict
 		}
 		c.JSON(status, model.NewErrorResponse(err.Error(), ""))
@@ -130,7 +128,6 @@ func (h *SandboxHandler) Create(c *gin.Context) {
 	c.JSON(http.StatusCreated, model.NewSuccessResponse("Sandbox created", spec))
 }
 
-// Restore handles POST /vms/restore
 func (h *SandboxHandler) Restore(c *gin.Context) {
 	var req model.RestoreSandboxRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -175,7 +172,6 @@ func (h *SandboxHandler) Restore(c *gin.Context) {
 	c.JSON(http.StatusCreated, model.NewSuccessResponse("Sandbox restored", gin.H{"ip": ip}))
 }
 
-// Get handles GET /vms/:id
 func (h *SandboxHandler) Get(c *gin.Context) {
 	id := c.Param("id")
 
@@ -188,7 +184,6 @@ func (h *SandboxHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox details fetched", sandbox))
 }
 
-// Delete handles DELETE /vms/:id
 func (h *SandboxHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 
@@ -200,22 +195,18 @@ func (h *SandboxHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox deleted", nil))
 }
 
-// Stop handles POST /vms/:id/stop
 func (h *SandboxHandler) Stop(c *gin.Context) {
 	h.sandboxAction(c, "stop", h.sandboxService.Stop)
 }
 
-// Pause handles POST /vms/:id/pause
 func (h *SandboxHandler) Pause(c *gin.Context) {
 	h.sandboxAction(c, "pause", h.sandboxService.Pause)
 }
 
-// Resume handles POST /vms/:id/resume
 func (h *SandboxHandler) Resume(c *gin.Context) {
 	h.sandboxAction(c, "resume", h.sandboxService.Resume)
 }
 
-// Snapshot handles POST /vms/:id/snapshot
 func (h *SandboxHandler) Snapshot(c *gin.Context) {
 	id := c.Param("id")
 
@@ -229,7 +220,6 @@ func (h *SandboxHandler) Snapshot(c *gin.Context) {
 	}))
 }
 
-// ListSnapshots handles GET /vms/:id/snapshots
 func (h *SandboxHandler) ListSnapshots(c *gin.Context) {
 	id := c.Param("id")
 
@@ -242,7 +232,6 @@ func (h *SandboxHandler) ListSnapshots(c *gin.Context) {
 	c.JSON(http.StatusOK, snaps)
 }
 
-// Upload handles POST /vms/:id/upload - upload file or folder to sandbox
 func (h *SandboxHandler) Upload(c *gin.Context) {
 	id := c.Param("id")
 
@@ -301,7 +290,6 @@ func (h *SandboxHandler) sandboxAction(c *gin.Context, action string, fn func(st
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox "+action+"d", nil))
 }
 
-// GetSnapshotsBasePath returns the base path for VM snapshots
 func GetSnapshotsBasePath(id string) string {
 	pwd, _ := filepath.Abs(".")
 	return filepath.Join(pwd, "instances", id, "snapshots")

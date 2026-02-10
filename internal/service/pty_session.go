@@ -19,7 +19,7 @@ type PTYSessionService struct {
 // NewPTYSessionService creates a new PTY session service
 func NewPTYSessionService() *PTYSessionService {
 	return &PTYSessionService{
-		client: GetVMHTTPClient(),
+		client: GetSandboxHTTPClient(),
 	}
 }
 
@@ -66,11 +66,10 @@ type agentPTYSessionResponse struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// CreateSession creates a new PTY session in the VM
-func (s *PTYSessionService) CreateSession(ctx context.Context, vmInstance string) (*PTYSessionResponse, error) {
+func (s *PTYSessionService) CreateSession(ctx context.Context, sbxInstance string) (*PTYSessionResponse, error) {
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmInstance,
+		Host:   sbxInstance,
 		Path:   "/pty/sessions",
 	}
 
@@ -101,7 +100,7 @@ func (s *PTYSessionService) CreateSession(ctx context.Context, vmInstance string
 
 	// If agent returned empty sessionId, fetch the sessions list to get the most recent one
 	if agentResult.SessionID == "" {
-		listResp, err := s.ListSessions(ctx, vmInstance)
+		listResp, err := s.ListSessions(ctx, sbxInstance)
 		if err != nil {
 			return nil, fmt.Errorf("session created but failed to fetch session details: %w", err)
 		}
@@ -136,11 +135,10 @@ type agentPTYSessionsListResponse struct {
 	Sessions []agentPTYSessionInfo `json:"sessions"`
 }
 
-// ListSessions returns all active sessions in the VM
-func (s *PTYSessionService) ListSessions(ctx context.Context, vmInstance string) (*PTYSessionsListResponse, error) {
+func (s *PTYSessionService) ListSessions(ctx context.Context, sbxInstance string) (*PTYSessionsListResponse, error) {
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmInstance,
+		Host:   sbxInstance,
 		Path:   "/pty/sessions",
 	}
 
@@ -183,10 +181,10 @@ func (s *PTYSessionService) ListSessions(ctx context.Context, vmInstance string)
 }
 
 // DeleteSession deletes a PTY session
-func (s *PTYSessionService) DeleteSession(ctx context.Context, vmInstance, sessionID string) error {
+func (s *PTYSessionService) DeleteSession(ctx context.Context, sbxInstance, sessionID string) error {
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmInstance,
+		Host:   sbxInstance,
 		Path:   fmt.Sprintf("/pty/sessions/%s", sessionID),
 	}
 
@@ -210,10 +208,10 @@ func (s *PTYSessionService) DeleteSession(ctx context.Context, vmInstance, sessi
 }
 
 // ExecuteCommand sends a command to a PTY session
-func (s *PTYSessionService) ExecuteCommand(ctx context.Context, vmInstance, sessionID, command string) error {
+func (s *PTYSessionService) ExecuteCommand(ctx context.Context, sbxInstance, sessionID, command string) error {
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmInstance,
+		Host:   sbxInstance,
 		Path:   fmt.Sprintf("/pty/sessions/%s/execute", sessionID),
 	}
 
@@ -246,10 +244,10 @@ func (s *PTYSessionService) ExecuteCommand(ctx context.Context, vmInstance, sess
 }
 
 // GetBuffer retrieves the session's output buffer
-func (s *PTYSessionService) GetBuffer(ctx context.Context, vmInstance, sessionID string) (*PTYBufferResponse, error) {
+func (s *PTYSessionService) GetBuffer(ctx context.Context, sbxInstance, sessionID string) (*PTYBufferResponse, error) {
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmInstance,
+		Host:   sbxInstance,
 		Path:   fmt.Sprintf("/pty/sessions/%s/buffer", sessionID),
 	}
 
@@ -278,10 +276,10 @@ func (s *PTYSessionService) GetBuffer(ctx context.Context, vmInstance, sessionID
 }
 
 // ResizeTerminal resizes the terminal dimensions
-func (s *PTYSessionService) ResizeTerminal(ctx context.Context, vmInstance, sessionID string, rows, cols uint16) error {
+func (s *PTYSessionService) ResizeTerminal(ctx context.Context, sbxInstance, sessionID string, rows, cols uint16) error {
 	u := url.URL{
 		Scheme: "http",
-		Host:   vmInstance,
+		Host:   sbxInstance,
 		Path:   fmt.Sprintf("/pty/sessions/%s/resize", sessionID),
 	}
 

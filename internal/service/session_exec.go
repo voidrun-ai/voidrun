@@ -73,16 +73,15 @@ func (s *SessionExecService) ValidateSessionRequest(req *model.SessionExecReques
 	return nil
 }
 
-// Send forwards the session action to the VM agent and returns the agent's response
-func (s *SessionExecService) Send(vmID string, req model.SessionExecRequest) (*model.SessionExecResponse, error) {
+func (s *SessionExecService) Send(sbxID string, req model.SessionExecRequest) (*model.SessionExecResponse, error) {
 	if err := s.ValidateSessionRequest(&req); err != nil {
 		return nil, err
 	}
 
 	// Use common DialVsock helper
-	conn, err := machine.DialVsock(vmID, 1024, 2*time.Second)
+	conn, err := machine.DialVsock(sbxID, 1024, 2*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("VM not reachable: %w", err)
+		return nil, fmt.Errorf("Sandbox not reachable: %w", err)
 	}
 	defer conn.Close()
 
@@ -99,24 +98,24 @@ func (s *SessionExecService) Send(vmID string, req model.SessionExecRequest) (*m
 
 	if !agentResp.Success {
 		if agentResp.Error != "" {
-			s.logSessionEvent(vmID, req.SessionID, req.Action, req.Command, req.Input, agentResp.Output, agentResp.Error)
+			s.logSessionEvent(sbxID, req.SessionID, req.Action, req.Command, req.Input, agentResp.Output, agentResp.Error)
 			return &agentResp, fmt.Errorf("%s", agentResp.Error)
 		}
-		s.logSessionEvent(vmID, req.SessionID, req.Action, req.Command, req.Input, agentResp.Output, "session action failed")
+		s.logSessionEvent(sbxID, req.SessionID, req.Action, req.Command, req.Input, agentResp.Output, "session action failed")
 		return &agentResp, fmt.Errorf("session action failed")
 	}
 
-	s.logSessionEvent(vmID, req.SessionID, req.Action, req.Command, req.Input, agentResp.Output, "")
+	s.logSessionEvent(sbxID, req.SessionID, req.Action, req.Command, req.Input, agentResp.Output, "")
 
 	return &agentResp, nil
 }
 
 // StreamExec sends an exec_stream action and proxies NDJSON chunks to the client
-func (s *SessionExecService) StreamExec(vmID, sessionID, command string, writer io.Writer, flush func()) error {
+func (s *SessionExecService) StreamExec(sbxID, sessionID, command string, writer io.Writer, flush func()) error {
 	// Use common DialVsock helper
-	conn, err := machine.DialVsock(vmID, 1024, 2*time.Second)
+	conn, err := machine.DialVsock(sbxID, 1024, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("VM not reachable: %w", err)
+		return fmt.Errorf("Sandbox not reachable: %w", err)
 	}
 	defer conn.Close()
 
@@ -153,11 +152,11 @@ func (s *SessionExecService) StreamExec(vmID, sessionID, command string, writer 
 }
 
 // logSessionEvent appends a structured line per session action under the instance directory
-func (s *SessionExecService) logSessionEvent(vmID, sessionID, action, command, input, output, errMsg string) {
+func (s *SessionExecService) logSessionEvent(sbxID, sessionID, action, command, input, output, errMsg string) {
 	if strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	base := filepath.Join(s.cfg.Paths.InstancesDir, vmID, "session-logs")
+	base := filepath.Join(s.cfg.Paths.InstancesDir, sbxID, "session-logs")
 	if mkErr := os.MkdirAll(base, 0o755); mkErr != nil {
 		return
 	}

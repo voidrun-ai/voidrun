@@ -59,7 +59,6 @@ FROM alpine:3.20
 
 # Install runtime dependencies
 # Note: cloud-hypervisor must be installed on the host at /usr/local/bin/cloud-hypervisor
-# This keeps VM processes outside pod memory limits
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \

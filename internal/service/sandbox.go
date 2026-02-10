@@ -44,12 +44,10 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 	}
 }
 
-// List returns all VMs
 func (s *SandboxService) List(ctx context.Context) ([]*model.Sandbox, error) {
 	return s.repo.Find(ctx, nil, options.FindOptions{})
 }
 
-// ListByOrgPaginated returns paginated VMs for a specific org and the actual page size used
 func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgIDHex string, page, pageSize int) ([]*model.Sandbox, int64, int, error) {
 	if page < 1 {
 		page = 1
@@ -88,18 +86,17 @@ func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgIDHex string
 		"status":    1,
 		"createdAt": 1,
 	})
-	vms, err := s.repo.Find(ctx, filter, opts)
+	sbxList, err := s.repo.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 
-	if vms == nil {
-		vms = []*model.Sandbox{}
+	if sbxList == nil {
+		sbxList = []*model.Sandbox{}
 	}
-	return vms, total, pageSize, nil
+	return sbxList, total, pageSize, nil
 }
 
-// ListByOrg returns VMs for a specific org
 func (s *SandboxService) ListByOrg(ctx context.Context, orgIDHex string) ([]*model.Sandbox, error) {
 	orgID, err := util.ParseObjectID(orgIDHex)
 	if err != nil {
@@ -119,18 +116,17 @@ func (s *SandboxService) ListByOrg(ctx context.Context, orgIDHex string) ([]*mod
 		"status":    1,
 		"createdAt": 1,
 	})
-	vms, err := s.repo.Find(ctx, filter, opts)
+	sbxList, err := s.repo.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	if vms == nil {
-		vms = []*model.Sandbox{}
+	if sbxList == nil {
+		sbxList = []*model.Sandbox{}
 	}
-	return vms, nil
+	return sbxList, nil
 }
 
-// Get returns a VM by ID
 func (s *SandboxService) Get(ctx context.Context, id string) (*model.Sandbox, bool) {
 	sandbox, err := s.repo.FindByID(ctx, id)
 	if err != nil || sandbox == nil {
@@ -139,12 +135,10 @@ func (s *SandboxService) Get(ctx context.Context, id string) (*model.Sandbox, bo
 	return sandbox, true
 }
 
-// Exists checks if a VM exists
 func (s *SandboxService) Exists(ctx context.Context, id string) bool {
 	return s.repo.Exists(ctx, id)
 }
 
-// Create creates a new VM
 func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequest) (*model.Sandbox, error) {
 	ip, err := s.repo.NextAvailableIP()
 	if err != nil {
@@ -189,7 +183,6 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		os.RemoveAll(filepath.Dir(overlay))
 	}
 
-	// Start VM
 	if err := machine.Start(*s.cfg, spec, overlay, ""); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
@@ -222,7 +215,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 
 	sandbox := &model.Sandbox{
 		ID:        objID,
-		Name:      req.Name, // Store the VM instance name
+		Name:      req.Name,
 		ImageId:   req.TemplateID,
 		IP:        ip,
 		CPU:       cpu,
@@ -242,7 +235,6 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	return sandbox, nil
 }
 
-// Restore restores a VM from a snapshot
 func (s *SandboxService) Restore(ctx context.Context, req model.RestoreSandboxRequest) (string, error) {
 	// Auto-assign IP if not provided
 	ip := req.NewIP
@@ -299,9 +291,7 @@ func (s *SandboxService) Restore(ctx context.Context, req model.RestoreSandboxRe
 	return ip, nil
 }
 
-// Delete stops and removes a VM
 func (s *SandboxService) Delete(ctx context.Context, id string) error {
-	// Delete the VM using its ObjectID (which is the directory name)
 	if err := machine.Delete(id); err != nil {
 		return fmt.Errorf("delete failed: %w", err)
 	}
@@ -314,32 +304,26 @@ func (s *SandboxService) Delete(ctx context.Context, id string) error {
 	return s.repo.Delete(ctx, objID)
 }
 
-// Stop stops a VM
 func (s *SandboxService) Stop(id string) error {
 	return machine.Stop(id)
 }
 
-// Pause pauses a VM
 func (s *SandboxService) Pause(id string) error {
 	return machine.Pause(id)
 }
 
-// Resume resumes a VM
 func (s *SandboxService) Resume(id string) error {
 	return machine.Resume(id)
 }
 
-// Info returns VM info
 func (s *SandboxService) Info(id string) (string, error) {
 	return machine.Info(id)
 }
 
-// CreateSnapshot creates a snapshot of a VM
 func (s *SandboxService) CreateSnapshot(id string) error {
 	return machine.CreateSnapshot(id)
 }
 
-// ListSnapshots lists all snapshots for a VM
 func (s *SandboxService) ListSnapshots(id string) ([]model.Snapshot, error) {
 	basePath := filepath.Join(s.cfg.Paths.InstancesDir, id, "snapshots")
 
@@ -386,7 +370,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		id := sb.ID.Hex()
 
 		// --- FAST PATH CHECKS ---
-		client := machine.NewAPIClientForVM(id)
+		client := machine.NewAPIClientForSandbox(id)
 		socketExists := client.IsSocketAvailable() // Fast os.Stat check
 
 		// Case 1: DB says Stopped + Socket is GONE.
@@ -411,14 +395,13 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 			newState := "stopped"
 
 			if socketExists {
-				// Use timeout to prevent hanging on stuck VMMs
 				apiCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 				defer cancel()
 
-				vmState, err := client.GetStateWithContext(apiCtx)
+				sbxState, err := client.GetStateWithContext(apiCtx)
 				if err == nil {
 					// Map Cloud Hypervisor States to your App States
-					switch strings.ToLower(vmState) {
+					switch strings.ToLower(sbxState) {
 					case "running", "runningvirtualized":
 						newState = "running"
 					case "paused":
@@ -433,7 +416,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 				} else {
 					// Socket exists, but API refused connection or timed out.
 					// Process is likely zombie or unresponsive. Treat as stopped.
-					fmt.Printf("[health] VM %s unresponsive (socket exists): %v\n", id, err)
+					fmt.Printf("[health] Sandbox %s unresponsive (socket exists): %v\n", id, err)
 					newState = "stopped"
 				}
 			}
@@ -457,7 +440,7 @@ func (s *SandboxService) GetSnapshotsBasePath(id string) string {
 	return filepath.Join(pwd, "instances", id, "snapshots")
 }
 
-func waitForAgent(vmID string, timeout time.Duration) error {
+func waitForAgent(sbxID string, timeout time.Duration) error {
 	defer timer.Track("Agent Readiness Wait")()
 	deadline := time.Now().Add(timeout)
 	sleep := 50 * time.Millisecond
@@ -468,21 +451,20 @@ func waitForAgent(vmID string, timeout time.Duration) error {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		resp, err := AgentCommand(ctx, nil, vmID, nil, "", http.MethodGet)
+		resp, err := AgentCommand(ctx, nil, sbxID, nil, "", http.MethodGet)
 		cancel()
 
 		if err == nil {
 			resp.Body.Close()
-			log.Printf("   [Agent] Ready on %s\n", vmID)
+			log.Printf("   [Agent] Ready on %s\n", sbxID)
 			return nil
 		}
 
-		// log.Printf("   [Agent] VSOCK dial %s: err=%v\n", vmID, err)
+		// log.Printf("   [Agent] VSOCK dial %s: err=%v\n", sbxID, err)
 		time.Sleep(sleep)
 	}
 }
 
-// UploadFile uploads a file directly into a running sandbox VM
 // Large files are streamed in binary mode to avoid base64 overhead
 func (s *SandboxService) UploadFile(ctx context.Context, sandboxID, filename, targetPath string, fileSize int64, fileContent io.Reader) error {
 	// Get sandbox to verify it exists
@@ -496,14 +478,13 @@ func (s *SandboxService) UploadFile(ctx context.Context, sandboxID, filename, ta
 		targetPath = "/" + targetPath
 	}
 
-	// Create destination path inside VM
 	fullPath := filepath.Join(targetPath, filename)
 
 	// Use the file service to write the file via agent
 	socketPath := filepath.Join(s.cfg.Paths.InstancesDir, sandbox.ID.Hex(), "vsock.sock")
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("VM not reachable: %w", err)
+		return fmt.Errorf("Sandbox not reachable: %w", err)
 	}
 	defer conn.Close()
 
@@ -520,7 +501,7 @@ func (s *SandboxService) UploadFile(ctx context.Context, sandboxID, filename, ta
 	}
 
 	if !strings.HasPrefix(string(buf[:n]), "OK") {
-		return fmt.Errorf("VM agent not ready: %s", string(buf[:n]))
+		return fmt.Errorf("Sandbox agent not ready: %s", string(buf[:n]))
 	}
 
 	// Send file_write request using binary streaming (no base64)
@@ -565,22 +546,20 @@ func (s *SandboxService) UploadFile(ctx context.Context, sandboxID, filename, ta
 		return fmt.Errorf("%s", resp.Error)
 	}
 
-	fmt.Printf("✓ File uploaded to VM: %s -> %s (%d bytes)\n", filename, fullPath, fileSize)
+	fmt.Printf("✓ File uploaded to Sandbox: %s -> %s (%d bytes)\n", filename, fullPath, fileSize)
 	return nil
 }
 
-// executeCommandInVM executes a command inside a running VM via its agent socket
-func (s *SandboxService) executeCommandInVM(vmID, cmd string) error {
-	socketPath := filepath.Join(s.cfg.Paths.InstancesDir, vmID, "vsock.sock")
+func (s *SandboxService) executeCommandInSandbox(sbxID, cmd string) error {
+	socketPath := filepath.Join(s.cfg.Paths.InstancesDir, sbxID, "vsock.sock")
 
-	// Connect to VM socket with timeout
+	// Connect to Sandbox socket with timeout
 	conn, err := net.DialTimeout("unix", socketPath, 3*time.Second)
 	if err != nil {
-		return fmt.Errorf("VM not reachable: %w", err)
+		return fmt.Errorf("Sandbox not reachable: %w", err)
 	}
 	defer conn.Close()
 
-	// Handshake with VM agent
 	conn.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := conn.Write([]byte("CONNECT 1024\n")); err != nil {
 		return fmt.Errorf("handshake failed: %w", err)
@@ -595,10 +574,10 @@ func (s *SandboxService) executeCommandInVM(vmID, cmd string) error {
 
 	resp := string(buf[:n])
 	if !strings.HasPrefix(resp, "OK") {
-		return fmt.Errorf("VM agent not ready: %s", resp)
+		return fmt.Errorf("Sandbox agent not ready: %s", resp)
 	}
 
-	// Send command to VM agent
+	// Send command to Sandbox agent
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	agentReq := map[string]interface{}{
@@ -620,14 +599,14 @@ func (s *SandboxService) executeCommandInVM(vmID, cmd string) error {
 
 	respStr := string(respBuf[:n])
 	if strings.Contains(respStr, "error") || strings.Contains(respStr, "failed") {
-		return fmt.Errorf("VM command failed: %s", respStr)
+		return fmt.Errorf("Sandbox command failed: %s", respStr)
 	}
 
 	return nil
 }
 
 // setAgentEnvVars sends environment variables to the agent for the sandbox
-func setAgentEnvVars(vmID string, envVars map[string]string) error {
+func setAgentEnvVars(sbxID string, envVars map[string]string) error {
 	if len(envVars) == 0 {
 		return nil
 	}
@@ -643,7 +622,7 @@ func setAgentEnvVars(vmID string, envVars map[string]string) error {
 	defer cancel()
 
 	// Call agent's /env endpoint
-	resp, err := AgentCommand(ctx, nil, vmID, bytes.NewReader(jsonData), "/env", http.MethodPost)
+	resp, err := AgentCommand(ctx, nil, sbxID, bytes.NewReader(jsonData), "/env", http.MethodPost)
 	if err != nil {
 		return fmt.Errorf("failed to call agent /env endpoint: %w", err)
 	}
@@ -654,6 +633,6 @@ func setAgentEnvVars(vmID string, envVars map[string]string) error {
 		return fmt.Errorf("agent returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	fmt.Printf("[INFO] Environment variables set on sandbox %s: %v\n", vmID, envVars)
+	fmt.Printf("[INFO] Environment variables set on sandbox %s: %v\n", sbxID, envVars)
 	return nil
 }

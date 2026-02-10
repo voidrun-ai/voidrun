@@ -1,6 +1,6 @@
 # VoidRun API Server
 
-VoidRun is a Go API server for managing sandboxed VMs with file operations, command execution, PTY sessions, and organization/API key management. It exposes a REST API (with WebSocket streams for PTY and file watching) and persists state in MongoDB.
+VoidRun is a Go API server for managing sandboxes with file operations, command execution, PTY sessions, and organization/API key management. It exposes a REST API (with WebSocket streams for PTY and file watching) and persists state in MongoDB.
 
 ## Highlights
 

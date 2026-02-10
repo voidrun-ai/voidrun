@@ -5,9 +5,7 @@ import (
 	"os"
 )
 
-// Delete stops a VM and removes all its files
 func Delete(id string) error {
-	// Stop the VM (kill process and delete TAP)
 	if err := Stop(id); err != nil {
 		// Log the error but continue with directory deletion
 		fmt.Printf("Warning: Stop failed for %s: %v\n", id, err)
@@ -23,29 +21,27 @@ func Delete(id string) error {
 	return nil
 }
 
-// Pause pauses a running VM
 func Pause(id string) error {
-	client := NewAPIClientForVM(id)
+	client := NewAPIClientForSandbox(id)
 	if !client.IsSocketAvailable() {
-		return fmt.Errorf("VM not running")
+		return fmt.Errorf("Sandbox not running")
 	}
 	return client.Send("vm.pause")
 }
 
-// Resume resumes a paused VM
 func Resume(id string) error {
-	client := NewAPIClientForVM(id)
+	client := NewAPIClientForSandbox(id)
 	if !client.IsSocketAvailable() {
-		return fmt.Errorf("VM not running")
+		return fmt.Errorf("Sandbox not running")
 	}
 	return client.Send("vm.resume")
 }
 
 // Info returns the raw JSON info from Cloud Hypervisor
 func Info(id string) (string, error) {
-	client := NewAPIClientForVM(id)
+	client := NewAPIClientForSandbox(id)
 	if !client.IsSocketAvailable() {
-		return "", fmt.Errorf("VM not running (socket missing)")
+		return "", fmt.Errorf("Sandbox not running (socket missing)")
 	}
 
 	body, err := client.Get("vm.info")

@@ -9,7 +9,7 @@ import (
 // Sandbox represents the sandbox metadata stored in the database
 type Sandbox struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	Name      string             `bson:"name" json:"name"` // VM instance directory name
+	Name      string             `bson:"name" json:"name"`
 	ImageId   string             `bson:"imageId" json:"imageId"`
 	IP        string             `bson:"ip" json:"ip"`
 	CPU       int                `bson:"cpu" json:"cpu"`

@@ -29,14 +29,13 @@ func NewCommandsHandler(commandsService *service.CommandsService, sandboxService
 func (h *CommandsHandler) Run(c *gin.Context) {
 	id := c.Param("id")
 
-	// Resolve sandbox to VM instance name
 	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
 	if !found {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
 
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var req model.CommandRunRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -51,7 +50,7 @@ func (h *CommandsHandler) Run(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.commandsService.Run(vmInstance, req)
+	resp, err := h.commandsService.Run(sbxInstance, req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to run command", err.Error()))
 		return
@@ -71,9 +70,9 @@ func (h *CommandsHandler) List(c *gin.Context) {
 		return
 	}
 
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
-	resp, err := h.commandsService.List(vmInstance)
+	resp, err := h.commandsService.List(sbxInstance)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to list processes", err.Error()))
 		return
@@ -93,7 +92,7 @@ func (h *CommandsHandler) Kill(c *gin.Context) {
 		return
 	}
 
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var req model.CommandKillRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -106,7 +105,7 @@ func (h *CommandsHandler) Kill(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.commandsService.Kill(vmInstance, req.PID)
+	resp, err := h.commandsService.Kill(sbxInstance, req.PID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
@@ -126,7 +125,7 @@ func (h *CommandsHandler) Attach(c *gin.Context) {
 		return
 	}
 
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var req model.CommandAttachRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -145,7 +144,7 @@ func (h *CommandsHandler) Attach(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	if err := h.commandsService.Attach(vmInstance, req.PID, c.Writer, func() { c.Writer.Flush() }); err != nil {
+	if err := h.commandsService.Attach(sbxInstance, req.PID, c.Writer, func() { c.Writer.Flush() }); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
@@ -162,7 +161,7 @@ func (h *CommandsHandler) Wait(c *gin.Context) {
 		return
 	}
 
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var req model.CommandWaitRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -175,7 +174,7 @@ func (h *CommandsHandler) Wait(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.commandsService.Wait(vmInstance, req.PID)
+	resp, err := h.commandsService.Wait(sbxInstance, req.PID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return

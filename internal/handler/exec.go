@@ -37,15 +37,14 @@ func NewExecHandler(execService *service.ExecService, sessionService *service.Se
 func (h *ExecHandler) Exec(c *gin.Context) {
 	id := c.Param("id")
 
-	// Get sandbox from database to retrieve VM instance name
+	// Get sandbox from database to retrieve instance name
 	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
 	if !found {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
 
-	// Use the Mongo ID to locate the VM instance directory
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var req model.ExecRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -66,7 +65,7 @@ func (h *ExecHandler) Exec(c *gin.Context) {
 
 	// If background flag is set, delegate to commands service
 	if req.Background {
-		runResp, err := h.commandsService.Run(vmInstance, model.CommandRunRequest{
+		runResp, err := h.commandsService.Run(sbxInstance, model.CommandRunRequest{
 			Command: req.Command,
 			Env:     req.Env,
 			Cwd:     req.Cwd,
@@ -94,7 +93,7 @@ func (h *ExecHandler) Exec(c *gin.Context) {
 	}
 
 	// Execute command synchronously via agent /exec endpoint
-	resp, err := h.execService.ExecSync(c.Request.Context(), vmInstance, req.Command, timeout, req.Env, req.Cwd)
+	resp, err := h.execService.ExecSync(c.Request.Context(), sbxInstance, req.Command, timeout, req.Env, req.Cwd)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Command execution failed", err.Error()))
 		return
@@ -107,15 +106,13 @@ func (h *ExecHandler) Exec(c *gin.Context) {
 func (h *ExecHandler) SessionExec(c *gin.Context) {
 	id := c.Param("id")
 
-	// Resolve sandbox to VM instance name
 	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
 	if !found {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
 
-	// Use the Mongo ID to locate the VM instance directory
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var req model.SessionExecRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -123,7 +120,7 @@ func (h *ExecHandler) SessionExec(c *gin.Context) {
 		return
 	}
 
-	agentResp, err := h.sessionService.Send(vmInstance, req)
+	agentResp, err := h.sessionService.Send(sbxInstance, req)
 	if err != nil {
 		status := http.StatusBadRequest
 		if agentResp == nil {
@@ -145,7 +142,7 @@ func (h *ExecHandler) SessionExecStream(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var payload struct {
 		SessionID string `json:"sessionId"`
@@ -182,7 +179,7 @@ func (h *ExecHandler) SessionExecStream(c *gin.Context) {
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Cache-Control", "no-cache")
 
-	if err := h.sessionService.StreamExec(vmInstance, payload.SessionID, payload.Command, c.Writer, func() { c.Writer.Flush() }); err != nil {
+	if err := h.sessionService.StreamExec(sbxInstance, payload.SessionID, payload.Command, c.Writer, func() { c.Writer.Flush() }); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
@@ -210,7 +207,7 @@ func (h *ExecHandler) ExecStream(c *gin.Context) {
 		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
 		return
 	}
-	vmInstance := sandbox.ID.Hex()
+	sbxInstance := sandbox.ID.Hex()
 
 	var req model.ExecRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -242,7 +239,7 @@ func (h *ExecHandler) ExecStream(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	if err := h.execService.ExecStreamSSE(c.Request.Context(), vmInstance, req.Command, timeout, req.Env, req.Cwd, c.Writer, func() { c.Writer.Flush() }); err != nil {
+	if err := h.execService.ExecStreamSSE(c.Request.Context(), sbxInstance, req.Command, timeout, req.Env, req.Cwd, c.Writer, func() { c.Writer.Flush() }); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
