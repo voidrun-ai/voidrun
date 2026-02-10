@@ -88,9 +88,9 @@ SERVER_PORT=33944
 SERVER_HOST=
 MONGO_URI=mongodb://root:Qaz123wsx123@localhost:27017/vr-db?authSource=admin
 MONGO_DB=vr-db
-BASE_IMAGES_DIR=/var/lib/hyper-fleet/base-images
-INSTANCES_DIR=/var/lib/hyper-fleet/instances
-KERNEL_PATH=/var/lib/hyper-fleet/base-images/vmlinux
+BASE_IMAGES_DIR=/var/lib/voidrun/base-images
+INSTANCES_DIR=/var/lib/voidrun/instances
+KERNEL_PATH=/var/lib/voidrun/base-images/vmlinux
 BRIDGE_NAME=vmbr0
 GATEWAY_IP=192.168.100.1/22
 NETWORK_CIDR=192.168.100.0/22

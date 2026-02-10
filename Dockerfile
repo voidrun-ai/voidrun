@@ -72,8 +72,8 @@ RUN apk add --no-cache \
     qemu-img
 
 # Create non-root user (optional, for security)
-# RUN addgroup -g 1000 hyper-fleet && \
-#     adduser -D -u 1000 -G hyper-fleet hyper-fleet
+# RUN addgroup -g 1000 voidrun && \
+#     adduser -D -u 1000 -G voidrun voidrun
 
 # Copy binary from builder
 COPY --from=builder /build/hyper-server /usr/local/bin/hyper-server

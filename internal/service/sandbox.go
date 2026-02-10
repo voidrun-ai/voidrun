@@ -164,6 +164,9 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	if mem == 0 {
 		mem = s.cfg.Sandbox.DefaultMemoryMB
 	}
+	if req.TemplateID == "" {
+		req.TemplateID = s.cfg.Sandbox.DefaultImage
+	}
 
 	spec := model.SandboxSpec{
 		ID:        instanceID,

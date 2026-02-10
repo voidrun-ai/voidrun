@@ -74,9 +74,9 @@ type HealthConfig struct {
 const (
 	DefaultServerPort      = "33944"
 	DefaultServerHost      = ""
-	DefaultBaseImagesDir   = "/var/lib/hyper-fleet/base-images"
-	DefaultInstancesDir    = "/var/lib/hyper-fleet/instances"
-	DefaultKernelPath      = "/var/lib/hyper-fleet/base-images/vmlinux"
+	DefaultBaseImagesDir   = "/var/lib/voidrun/base-images"
+	DefaultInstancesDir    = "/var/lib/voidrun/instances"
+	DefaultKernelPath      = "/var/lib/voidrun/base-images/vmlinux"
 	DefaultBridgeName      = "vmbr0"
 	DefaultTapPrefix       = "ttap-"
 	DefaultGatewayIP       = "192.168.100.1/22"

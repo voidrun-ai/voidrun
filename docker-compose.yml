@@ -4,7 +4,7 @@ services:
   # MongoDB service for application data
   mongo:
     image: mongo:7.0-alpine
-    container_name: hyper-fleet-mongo
+    container_name: voidrun-mongo
     hostname: mongo
     ports:
       - '27017:27017'
@@ -22,7 +22,7 @@ services:
       retries: 5
       start_period: 10s
     networks:
-      - hyper-fleet-network
+      - voidrun-network
     restart: unless-stopped
 
   # Hyper-Fleet-Native API Server
@@ -42,9 +42,9 @@ services:
       SERVER_HOST: 0.0.0.0
       MONGO_URI: mongodb://root:Qaz123wsx123@mongo:27017/vr-db?authSource=admin
       MONGO_DB: vr-db
-      BASE_IMAGES_DIR: /var/lib/hyper-fleet/base-images
-      INSTANCES_DIR: /var/lib/hyper-fleet/instances
-      KERNEL_PATH: /var/lib/hyper-fleet/base-images/vmlinux
+      BASE_IMAGES_DIR: /var/lib/voidrun/base-images
+      INSTANCES_DIR: /var/lib/voidrun/instances
+      KERNEL_PATH: /var/lib/voidrun/base-images/vmlinux
       BRIDGE_NAME: vmbr0
       GATEWAY_IP: 192.168.100.1/22
       NETWORK_CIDR: 192.168.100.0/22
@@ -61,13 +61,13 @@ services:
       API_KEY_CACHE_TTL_SECONDS: 3600
 
     volumes:
-      # Mount host machine paths for hyper-fleet storage
-      - /var/lib/hyper-fleet/base-images:/var/lib/hyper-fleet/base-images:ro
-      - /var/lib/hyper-fleet/instances:/var/lib/hyper-fleet/instances:rw
-      - hyper-fleet-logs:/app/logs
+      # Mount host machine paths for voidrun storage
+      - /var/lib/voidrun/base-images:/var/lib/voidrun/base-images:ro
+      - /var/lib/voidrun/instances:/var/lib/voidrun/instances:rw
+      - voidrun-logs:/app/logs
 
     networks:
-      - hyper-fleet-network
+      - voidrun-network
 
     restart: unless-stopped
 
@@ -93,9 +93,9 @@ volumes:
     driver: local
   mongo-config:
     driver: local
-  hyper-fleet-logs:
+  voidrun-logs:
     driver: local
 
 networks:
-  hyper-fleet-network:
+  voidrun-network:
     driver: bridge
