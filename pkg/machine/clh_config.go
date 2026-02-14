@@ -14,9 +14,9 @@ type CLHConfig struct {
 }
 
 type PayloadConfig struct {
-	Kernel  string `json:"kernel"`
-	CmdLine string `json:"cmdline"`
-	// Initramfs string `json:"initramfs,omitempty"` // Add if needed later
+	Kernel    string `json:"kernel"`
+	CmdLine   string `json:"cmdline"`
+	Initramfs string `json:"initramfs,omitempty"`
 }
 
 type CpusConfig struct {

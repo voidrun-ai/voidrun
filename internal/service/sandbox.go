@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"voidrun/internal/config"
+	"voidrun/internal/metrics"
 	"voidrun/internal/model"
 	"voidrun/internal/repository"
 	"voidrun/pkg/machine"
@@ -33,14 +34,16 @@ type SandboxService struct {
 	repo      repository.ISandboxRepository
 	imageRepo repository.IImageRepository
 	cfg       *config.Config
+	metrics   *metrics.Manager
 }
 
 // NewSandboxService creates a new sandbox service
-func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, imageRepo repository.IImageRepository) *SandboxService {
+func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, imageRepo repository.IImageRepository, metricsManager *metrics.Manager) *SandboxService {
 	return &SandboxService{
 		repo:      repo,
 		imageRepo: imageRepo,
 		cfg:       cfg,
+		metrics:   metricsManager,
 	}
 }
 
@@ -158,6 +161,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	if mem == 0 {
 		mem = s.cfg.Sandbox.DefaultMemoryMB
 	}
+	diskMB := s.cfg.Sandbox.DefaultDiskMB
 	if req.TemplateID == "" {
 		req.TemplateID = s.cfg.Sandbox.DefaultImage
 	}
@@ -167,12 +171,12 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		Type:      req.TemplateID,
 		CPUs:      cpu,
 		MemoryMB:  mem,
-		DiskMB:    s.cfg.Sandbox.DefaultDiskMB,
+		DiskMB:    diskMB,
 		IPAddress: ip,
 	}
 
 	// Prepare storage (pass config by value, not pointer)
-	overlay, err := storage.PrepareInstance(*s.cfg, spec)
+	overlay, err := storage.PrepareInstance(ctx, *s.cfg, spec)
 	if err != nil {
 		return nil, fmt.Errorf("storage init failed: %w", err)
 	}
@@ -183,23 +187,27 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		os.RemoveAll(filepath.Dir(overlay))
 	}
 
+	bootStart := time.Now()
 	if err := machine.Start(*s.cfg, spec, overlay, ""); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
+	fmt.Printf("[boot] Sandbox %s booted in %s\n", spec.ID, time.Since(bootStart))
 
-	// Optional synchronous readiness gate: ensure the agent is reachable before returning.
 	syncEnabled := true
 	if req.Sync != nil {
 		syncEnabled = *req.Sync
 	}
 	if syncEnabled {
-		if err := waitForAgent(spec.ID, 2*time.Second); err != nil {
+		timeout := time.Duration(s.cfg.Sandbox.SyncTimeoutSec) * time.Second
+		readyStart := time.Now()
+		if err := waitForAgent(spec.ID, timeout); err != nil {
 			machine.Stop(spec.ID)
 			cleanup()
 			return nil, fmt.Errorf("agent not ready: %w", err)
 		}
+		fmt.Printf("[agent] Sandbox %s ready in %s\n", spec.ID, time.Since(readyStart))
 	}
 
 	// Save to DB as pointer with OrgID and CreatedBy
@@ -220,6 +228,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		IP:        ip,
 		CPU:       cpu,
 		Mem:       mem,
+		DiskMB:    diskMB,
 		OrgID:     orID,
 		EnvVars:   req.EnvVars, // Store env vars in the sandbox record
 		Status:    "running",
@@ -230,6 +239,10 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		machine.Stop(spec.ID)
 		cleanup()
 		return nil, fmt.Errorf("DB save failed: %w", err)
+	}
+
+	if s.metrics != nil {
+		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, machine.GetSocketPath(spec.ID), cpu, mem, diskMB)
 	}
 
 	return sandbox, nil
@@ -259,6 +272,7 @@ func (s *SandboxService) Restore(ctx context.Context, req model.RestoreSandboxRe
 	if mem == 0 {
 		mem = 1024
 	}
+	diskMB := s.cfg.Sandbox.DefaultDiskMB
 
 	// Perform restore
 	if err := machine.Restore(*s.cfg, instanceID, req.SnapshotPath, ip, req.Cold); err != nil {
@@ -278,6 +292,7 @@ func (s *SandboxService) Restore(ctx context.Context, req model.RestoreSandboxRe
 		IP:        ip,
 		CPU:       cpu,
 		Mem:       mem,
+		DiskMB:    diskMB,
 		OrgID:     orID,
 		CreatedBy: createdBy,
 		Status:    "running",
@@ -288,12 +303,19 @@ func (s *SandboxService) Restore(ctx context.Context, req model.RestoreSandboxRe
 		return "", fmt.Errorf("failed to save restored sandbox: %w", err)
 	}
 
+	if s.metrics != nil {
+		s.metrics.RegisterSandbox(instanceID, sandbox.Name, machine.GetSocketPath(instanceID), cpu, mem, diskMB)
+	}
+
 	return ip, nil
 }
 
 func (s *SandboxService) Delete(ctx context.Context, id string) error {
 	if err := machine.Delete(id); err != nil {
 		return fmt.Errorf("delete failed: %w", err)
+	}
+	if s.metrics != nil {
+		s.metrics.UnregisterSandbox(id)
 	}
 
 	// Delete from database using ObjectID
@@ -305,7 +327,13 @@ func (s *SandboxService) Delete(ctx context.Context, id string) error {
 }
 
 func (s *SandboxService) Stop(id string) error {
-	return machine.Stop(id)
+	if err := machine.Stop(id); err != nil {
+		return err
+	}
+	if s.metrics != nil {
+		s.metrics.UnregisterSandbox(id)
+	}
+	return nil
 }
 
 func (s *SandboxService) Pause(id string) error {
@@ -346,6 +374,34 @@ func (s *SandboxService) ListSnapshots(id string) ([]model.Snapshot, error) {
 		}
 	}
 	return snaps, nil
+}
+
+// RegisterMetricsForExisting registers running sandboxes with the metrics manager.
+func (s *SandboxService) RegisterMetricsForExisting(ctx context.Context) error {
+	if s.metrics == nil {
+		return nil
+	}
+
+	filter := bson.M{"status": "running"}
+	projection := bson.M{"_id": 1, "name": 1, "cpu": 1, "mem": 1, "diskMb": 1}
+	items, err := s.repo.Find(ctx, filter, options.FindOptions{Projection: projection})
+	if err != nil {
+		return err
+	}
+
+	for _, sb := range items {
+		if sb == nil {
+			continue
+		}
+		id := sb.ID.Hex()
+		diskMB := sb.DiskMB
+		if diskMB == 0 {
+			diskMB = s.cfg.Sandbox.DefaultDiskMB
+		}
+		s.metrics.RegisterSandbox(id, sb.Name, machine.GetSocketPath(id), sb.CPU, sb.Mem, diskMB)
+	}
+
+	return nil
 }
 
 // RefreshStatuses checks each sandbox health and updates status field in DB.
@@ -444,21 +500,26 @@ func waitForAgent(sbxID string, timeout time.Duration) error {
 	defer timer.Track("Agent Readiness Wait")()
 	deadline := time.Now().Add(timeout)
 	sleep := 50 * time.Millisecond
+	start := time.Now()
+	attempts := 0
+	var lastErr error
 
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("agent readiness timeout after %v", timeout)
+			return fmt.Errorf("agent readiness timeout after %v (%d attempts): last error: %v", timeout, attempts, lastErr)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		resp, err := AgentCommand(ctx, nil, sbxID, nil, "", http.MethodGet)
 		cancel()
+		attempts++
 
 		if err == nil {
 			resp.Body.Close()
-			log.Printf("   [Agent] Ready on %s\n", sbxID)
+			log.Printf("   [Agent] Ready on %s after %s (%d attempts)\n", sbxID, time.Since(start), attempts)
 			return nil
 		}
+		lastErr = err
 
 		// log.Printf("   [Agent] VSOCK dial %s: err=%v\n", sbxID, err)
 		time.Sleep(sleep)

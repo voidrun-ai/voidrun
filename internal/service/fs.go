@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"voidrun/internal/sandboxclient"
 )
 
 type FSService struct {
@@ -19,7 +21,7 @@ type FSService struct {
 
 func NewFSService() *FSService {
 	return &FSService{
-		client: GetSandboxHTTPClient(),
+		client: sandboxclient.GetSandboxHTTPClient(),
 	}
 }
 

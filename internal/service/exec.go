@@ -14,6 +14,7 @@ import (
 
 	"voidrun/internal/config"
 	"voidrun/internal/model"
+	"voidrun/internal/sandboxclient"
 	"voidrun/pkg/machine"
 	"voidrun/pkg/util"
 )
@@ -27,7 +28,7 @@ type ExecService struct {
 func NewExecService(cfg *config.Config) *ExecService {
 	return &ExecService{
 		cfg:    cfg,
-		client: GetSandboxHTTPClient(),
+		client: sandboxclient.GetSandboxHTTPClient(),
 	}
 }
 
@@ -253,7 +254,7 @@ func ExecAgentCommand(ctx context.Context, client *http.Client, sbxID string, bo
 
 func AgentCommand(ctx context.Context, client *http.Client, sbxID string, body io.Reader, path string, method string) (*http.Response, error) {
 	if client == nil {
-		client = GetSandboxHTTPClient()
+		client = sandboxclient.GetSandboxHTTPClient()
 	}
 
 	u := url.URL{

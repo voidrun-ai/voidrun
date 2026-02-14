@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"voidrun/internal/sandboxclient"
 )
 
 // PTYSessionService handles PTY session management via agent HTTP endpoints
@@ -19,7 +21,7 @@ type PTYSessionService struct {
 // NewPTYSessionService creates a new PTY session service
 func NewPTYSessionService() *PTYSessionService {
 	return &PTYSessionService{
-		client: GetSandboxHTTPClient(),
+		client: sandboxclient.GetSandboxHTTPClient(),
 	}
 }
 

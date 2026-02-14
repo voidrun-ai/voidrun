@@ -1,4 +1,4 @@
-package service
+package sandboxclient
 
 import (
 	"context"
@@ -10,11 +10,11 @@ import (
 	"voidrun/pkg/machine"
 )
 
-var SandboxHTTPClient *http.Client
+var sandboxHTTPClient *http.Client
 
 func InitSandboxHTTPClient() *http.Client {
-	if SandboxHTTPClient != nil {
-		return SandboxHTTPClient
+	if sandboxHTTPClient != nil {
+		return sandboxHTTPClient
 	}
 
 	tr := &http.Transport{
@@ -35,17 +35,17 @@ func InitSandboxHTTPClient() *http.Client {
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
-	SandboxHTTPClient = &http.Client{
+	sandboxHTTPClient = &http.Client{
 		Transport: tr,
-		Timeout:   0, // No global timeout — large files need time
+		Timeout:   0, // No global timeout, large files need time.
 	}
 
-	return SandboxHTTPClient
+	return sandboxHTTPClient
 }
 
 func GetSandboxHTTPClient() *http.Client {
-	if SandboxHTTPClient == nil {
+	if sandboxHTTPClient == nil {
 		return InitSandboxHTTPClient()
 	}
-	return SandboxHTTPClient
+	return sandboxHTTPClient
 }

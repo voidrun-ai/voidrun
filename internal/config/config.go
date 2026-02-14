@@ -19,6 +19,7 @@ type PathsConfig struct {
 	InstancesDir  string
 	DBPath        string
 	KernelPath    string
+	InitrdPath    string
 }
 
 // Network configuration
@@ -52,6 +53,8 @@ type Config struct {
 	SystemUser            SystemUserConfig
 	Sandbox               SandboxConfig
 	Health                HealthConfig
+	Metrics               MetricsConfig
+	CORS                  CORSConfig
 	APIKeyCacheTTLSeconds int
 }
 
@@ -61,6 +64,8 @@ type SandboxConfig struct {
 	DefaultMemoryMB int
 	DefaultDiskMB   int
 	DefaultImage    string
+	SyncTimeoutSec  int
+	DebugBootConsole bool
 }
 
 // Health monitor configuration
@@ -70,30 +75,66 @@ type HealthConfig struct {
 	Concurrency int
 }
 
+// Metrics configuration
+type MetricsConfig struct {
+	Enabled         bool
+	IntervalSec     int
+	DiskIntervalSec int
+	Concurrency     int
+	Path            string
+}
+
+// CORS configuration
+type CORSConfig struct {
+	Enabled          bool
+	AllowOrigins     []string
+	AllowMethods     []string
+	AllowHeaders     []string
+	ExposeHeaders    []string
+	AllowCredentials bool
+	MaxAgeSec        int
+}
+
 // Default configuration values
 const (
-	DefaultServerPort      = "33944"
-	DefaultServerHost      = ""
-	DefaultBaseImagesDir   = "/var/lib/voidrun/base-images"
-	DefaultInstancesDir    = "/var/lib/voidrun/instances"
-	DefaultKernelPath      = "/var/lib/voidrun/base-images/vmlinux"
-	DefaultBridgeName      = "vmbr0"
-	DefaultTapPrefix       = "ttap-"
-	DefaultGatewayIP       = "192.168.100.1/22"
-	DefaultNetworkCIDR     = "192.168.100.0/22"
-	DefaultSubnetPrefix    = "192.168.100."
-	DefaultMongoURI        = "mongodb://root:Qaz123wsx123@localhost:27017/vr-db?authSource=admin"
-	DefaultMongoDB         = "vr-db"
-	DefaultSystemUserName  = "System"
-	DefaultSystemUserEmail = "system@local"
-	DefaultSandboxVCPUs    = 1
-	DefaultSandboxMemoryMB = 1024
-	DefaultSandboxDiskMB   = 5120 // 5GB
-	DefaultSandboxImage    = "debian"
+	DefaultServerPort            = "33944"
+	DefaultServerHost            = ""
+	DefaultBaseImagesDir         = "/var/lib/voidrun/base-images"
+	DefaultInstancesDir          = "/var/lib/voidrun/instances"
+	DefaultKernelPath            = "/var/lib/voidrun/base-images/vmlinux"
+	DefaultInitrdPath            = ""
+	DefaultBridgeName            = "vmbr0"
+	DefaultTapPrefix             = "ttap-"
+	DefaultGatewayIP             = "192.168.100.1/22"
+	DefaultNetworkCIDR           = "192.168.100.0/22"
+	DefaultSubnetPrefix          = "192.168.100."
+	DefaultMongoURI              = "mongodb://root:Qaz123wsx123@localhost:27017/vr-db?authSource=admin"
+	DefaultMongoDB               = "vr-db"
+	DefaultSystemUserName        = "System"
+	DefaultSystemUserEmail       = "system@local"
+	DefaultSandboxVCPUs          = 1
+	DefaultSandboxMemoryMB       = 1024
+	DefaultSandboxDiskMB         = 5120 // 5GB
+	DefaultSandboxImage          = "debian"
+	DefaultSandboxSyncTimeoutSec = 5
+	DefaultSandboxDebugBootConsole = false
 	// Health monitor defaults
-	DefaultHealthEnabled         = true
-	DefaultHealthIntervalSec     = 60
-	DefaultHealthConcurrency     = 16
+	DefaultHealthEnabled          = true
+	DefaultHealthIntervalSec      = 60
+	DefaultHealthConcurrency      = 16
+	DefaultMetricsEnabled         = true
+	DefaultMetricsIntervalSec     = 10
+	DefaultMetricsDiskIntervalSec = 60
+	DefaultMetricsConcurrency     = 16
+	DefaultMetricsPath            = "/metrics"
+	// CORS defaults
+	DefaultCORSEnabled           = true
+	DefaultCORSAllowOrigins      = "*"
+	DefaultCORSAllowMethods      = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+	DefaultCORSAllowHeaders      = "Authorization,Content-Type,X-API-Key"
+	DefaultCORSExposeHeaders     = ""
+	DefaultCORSAllowCredentials  = false
+	DefaultCORSMaxAgeSec         = 600
 	DefaultAPIKeyCacheTTLSeconds = 3600 // 1 hour
 	// Pagination defaults
 	DefaultPageSize = 20
@@ -120,6 +161,7 @@ func New() *Config {
 			BaseImagesDir: getEnv("BASE_IMAGES_DIR", DefaultBaseImagesDir),
 			InstancesDir:  getEnv("INSTANCES_DIR", DefaultInstancesDir),
 			KernelPath:    getEnv("KERNEL_PATH", DefaultKernelPath),
+			InitrdPath:    getEnv("INITRD_PATH", DefaultInitrdPath),
 		},
 		Network: NetworkConfig{
 			BridgeName:   getEnv("BRIDGE_NAME", DefaultBridgeName),
@@ -141,11 +183,29 @@ func New() *Config {
 			DefaultMemoryMB: getEnvInt("SANDBOX_DEFAULT_MEMORY_MB", DefaultSandboxMemoryMB),
 			DefaultDiskMB:   getEnvInt("SANDBOX_DEFAULT_DISK_MB", DefaultSandboxDiskMB),
 			DefaultImage:    getEnv("SANDBOX_DEFAULT_IMAGE", DefaultSandboxImage),
+			SyncTimeoutSec:  getEnvInt("SANDBOX_SYNC_TIMEOUT_SEC", DefaultSandboxSyncTimeoutSec),
+			DebugBootConsole: getEnvBool("SANDBOX_DEBUG_BOOT_CONSOLE", DefaultSandboxDebugBootConsole),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),
 			IntervalSec: getEnvInt("HEALTH_INTERVAL_SEC", DefaultHealthIntervalSec),
 			Concurrency: getEnvInt("HEALTH_CONCURRENCY", DefaultHealthConcurrency),
+		},
+		Metrics: MetricsConfig{
+			Enabled:         getEnvBool("METRICS_ENABLED", DefaultMetricsEnabled),
+			IntervalSec:     getEnvInt("METRICS_INTERVAL_SEC", DefaultMetricsIntervalSec),
+			DiskIntervalSec: getEnvInt("METRICS_DISK_INTERVAL_SEC", DefaultMetricsDiskIntervalSec),
+			Concurrency:     getEnvInt("METRICS_CONCURRENCY", DefaultMetricsConcurrency),
+			Path:            getEnv("METRICS_PATH", DefaultMetricsPath),
+		},
+		CORS: CORSConfig{
+			Enabled:          getEnvBool("CORS_ENABLED", DefaultCORSEnabled),
+			AllowOrigins:     getEnvCSV("CORS_ALLOW_ORIGINS", DefaultCORSAllowOrigins),
+			AllowMethods:     getEnvCSV("CORS_ALLOW_METHODS", DefaultCORSAllowMethods),
+			AllowHeaders:     getEnvCSV("CORS_ALLOW_HEADERS", DefaultCORSAllowHeaders),
+			ExposeHeaders:    getEnvCSV("CORS_EXPOSE_HEADERS", DefaultCORSExposeHeaders),
+			AllowCredentials: getEnvBool("CORS_ALLOW_CREDENTIALS", DefaultCORSAllowCredentials),
+			MaxAgeSec:        getEnvInt("CORS_MAX_AGE_SEC", DefaultCORSMaxAgeSec),
 		},
 		APIKeyCacheTTLSeconds: getEnvInt("API_KEY_CACHE_TTL_SECONDS", DefaultAPIKeyCacheTTLSeconds),
 	}
@@ -182,6 +242,26 @@ func getEnvBool(key string, defaultValue bool) bool {
 		}
 	}
 	return defaultValue
+}
+
+func getEnvCSV(key, defaultValue string) []string {
+	value := defaultValue
+	if env, exists := os.LookupEnv(key); exists {
+		value = env
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // GetNetmask converts the NetworkCIDR (e.g., "192.168.100.0/22")

@@ -3,6 +3,7 @@ package server
 import (
 	"voidrun/internal/config"
 	"voidrun/internal/handler"
+	"voidrun/internal/metrics"
 	"voidrun/internal/model"
 	"voidrun/internal/repository"
 	"voidrun/internal/service"
@@ -44,12 +45,13 @@ type Services struct {
 	PTY        *service.VsockWSDialer
 	PTYSession *service.PTYSessionService
 	Commands   *service.CommandsService
+	Metrics    *metrics.Manager
 }
 
-func InitServices(cfg *config.Config, repos *Repositories) *Services {
+func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metrics.Manager) *Services {
 	return &Services{
 		User:       service.NewUserService(cfg, repos.User),
-		Sandbox:    service.NewSandboxService(cfg, repos.Sandbox, repos.Image),
+		Sandbox:    service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager),
 		Image:      service.NewImageService(cfg, repos.Image),
 		Exec:       service.NewExecService(cfg),
 		Session:    service.NewSessionExecService(cfg),
@@ -59,6 +61,7 @@ func InitServices(cfg *config.Config, repos *Repositories) *Services {
 		PTY:        service.NewVsockWSDialer(),
 		PTYSession: service.NewPTYSessionService(),
 		Commands:   service.NewCommandsService(cfg),
+		Metrics:    metricsManager,
 	}
 }
 

@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"voidrun/internal/config"
+	"voidrun/internal/metrics"
 	"voidrun/internal/middleware"
 	"voidrun/internal/version"
 	"voidrun/pkg/machine"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -21,12 +23,22 @@ type Server struct {
 	router   *gin.Engine
 	mongo    *mongo.Client
 	services *Services
+	metrics  *metrics.Manager
+	stopFn   context.CancelFunc
 }
 
 // New creates a new server instance
 func New(cfg *config.Config) (*Server, error) {
 	// Initialize machine package with config paths
 	machine.SetInstancesRoot(cfg.Paths.InstancesDir)
+	var metricsManager *metrics.Manager
+	var stopFn context.CancelFunc
+	if cfg.Metrics.Enabled {
+		metricsManager = metrics.NewManager(cfg.Metrics)
+		ctx, cancel := context.WithCancel(context.Background())
+		metricsManager.Start(ctx)
+		stopFn = cancel
+	}
 
 	mongoClient, err := Connect(cfg)
 	if err != nil {
@@ -35,7 +47,7 @@ func New(cfg *config.Config) (*Server, error) {
 	db := mongoClient.Database(cfg.Mongo.Database)
 
 	repos := InitRepositories(cfg, db)
-	services := InitServices(cfg, repos)
+	services := InitServices(cfg, repos, metricsManager)
 	handlers := InitHandlers(services)
 
 	if err := PopulateInitialData(cfg, repos); err != nil {
@@ -44,11 +56,19 @@ func New(cfg *config.Config) (*Server, error) {
 
 	router := setupRouter(cfg, handlers, services)
 
+	if metricsManager != nil {
+		if err := services.Sandbox.RegisterMetricsForExisting(context.Background()); err != nil {
+			fmt.Printf("[metrics] initial registration failed: %v\n", err)
+		}
+	}
+
 	return &Server{
 		cfg:      cfg,
 		router:   router,
 		mongo:    mongoClient,
 		services: services,
+		metrics:  metricsManager,
+		stopFn:   stopFn,
 	}, nil
 }
 
@@ -68,6 +88,9 @@ func Connect(cfg *config.Config) (*mongo.Client, error) {
 
 // Close disconnects MongoDB client
 func (s *Server) Close() error {
+	if s.stopFn != nil {
+		s.stopFn()
+	}
 	if s.mongo != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -113,6 +136,25 @@ func (s *Server) startHealthMonitor() {
 func setupRouter(cfg *config.Config, h *Handlers, s *Services) *gin.Engine {
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
+	if cfg.CORS.Enabled {
+		corsCfg := cors.Config{
+			AllowOrigins:     cfg.CORS.AllowOrigins,
+			AllowMethods:     cfg.CORS.AllowMethods,
+			AllowHeaders:     cfg.CORS.AllowHeaders,
+			ExposeHeaders:    cfg.CORS.ExposeHeaders,
+			AllowCredentials: cfg.CORS.AllowCredentials,
+			MaxAge:           time.Duration(cfg.CORS.MaxAgeSec) * time.Second,
+		}
+		if cfg.CORS.AllowCredentials && len(cfg.CORS.AllowOrigins) == 1 && cfg.CORS.AllowOrigins[0] == "*" {
+			corsCfg.AllowOrigins = nil
+			corsCfg.AllowOriginFunc = func(string) bool { return true }
+		}
+		r.Use(cors.New(corsCfg))
+	}
+	if cfg.Metrics.Enabled && s.Metrics != nil {
+		r.Use(s.Metrics.Middleware())
+		r.GET(cfg.Metrics.Path, gin.WrapH(s.Metrics.Handler()))
+	}
 
 	// Static files
 	r.Static("/ui", "./static")

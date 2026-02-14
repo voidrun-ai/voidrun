@@ -2,10 +2,6 @@ package machine
 
 import (
 	"fmt"
-	"voidrun/internal/config"
-	"voidrun/internal/model"
-	"voidrun/pkg/network"
-	"voidrun/pkg/timer"
 	"log"
 	"net"
 	"os"
@@ -14,6 +10,10 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+	"voidrun/internal/config"
+	"voidrun/internal/model"
+	"voidrun/pkg/network"
+	"voidrun/pkg/timer"
 )
 
 // Start handles Fresh Boot (API Injection) and Restore (API Restore)
@@ -126,19 +126,40 @@ func Start(cfg config.Config, spec model.SandboxSpec, overlayPath string, restor
 
 		envVars := ""
 
+		debugConsole := cfg.Sandbox.DebugBootConsole
+		if debugConsole {
+			log.Printf("   [Boot] Debug console enabled (vm log: %s)", logPath)
+		}
+		consoleArgs := "console=hvc0"
+		if debugConsole {
+			consoleArgs = "console=ttyS0 console=hvc0"
+		}
+
 		cmdLine := fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0 %s %s",
+			"%s root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0 %s %s",
+			consoleArgs,
 			kernelIPArgs,
 			envVars,
 		)
 		log.Printf("   [Kernel] CmdLine: %s\n", cmdLine)
 
+		payload := PayloadConfig{
+			Kernel:  cfg.Paths.KernelPath,
+			CmdLine: cmdLine,
+		}
+		if cfg.Paths.InitrdPath != "" {
+			initrdPath, _ := filepath.Abs(cfg.Paths.InitrdPath)
+			payload.Initramfs = initrdPath
+		}
+		log.Printf("   [CLH] Kernel: %s\n", payload.Kernel)
+		if payload.Initramfs != "" {
+			log.Printf("   [CLH] Initrd: %s\n", payload.Initramfs)
+		}
+		log.Printf("   [CLH] CmdLine: %s\n", payload.CmdLine)
+
 		// Create Config Struct
 		cfg := CLHConfig{
-			Payload: PayloadConfig{
-				Kernel:  cfg.Paths.KernelPath,
-				CmdLine: cmdLine,
-			},
+			Payload: payload,
 			Cpus: CpusConfig{
 				BootVcpus: spec.CPUs,
 				MaxVcpus:  spec.CPUs,
@@ -155,8 +176,18 @@ func Start(cfg config.Config, spec model.SandboxSpec, overlayPath string, restor
 			// Remove IP from here (Kernel handles it), just pass Layer 2 info
 			Net:     []NetConfig{{Tap: tapName, Mac: macAddr}},
 			Rng:     RngConfig{Src: "/dev/urandom"},
-			Serial:  ConsoleConfig{Mode: "Null"},
-			Console: ConsoleConfig{Mode: "Null"},
+			Serial:  ConsoleConfig{Mode: func() string {
+				if debugConsole {
+					return "Tty"
+				}
+				return "Null"
+			}()},
+			Console: ConsoleConfig{Mode: func() string {
+				if debugConsole {
+					return "Tty"
+				}
+				return "Null"
+			}()},
 			Vsock: &VsockConfig{
 				Cid:    getCidFromIP(spec.IPAddress),
 				Socket: vsockPath,
