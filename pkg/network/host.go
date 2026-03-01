@@ -4,8 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"voidrun/pkg/timer"
 	"net"
+	"voidrun/pkg/timer"
 
 	"github.com/vishvananda/netlink"
 )

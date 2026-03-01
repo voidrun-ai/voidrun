@@ -13,6 +13,7 @@ import (
 	"time"
 	"voidrun/internal/config"
 	"voidrun/internal/model"
+	"voidrun/pkg/machine"
 	"voidrun/pkg/timer"
 )
 
@@ -32,8 +33,9 @@ func PrepareInstance(ctx context.Context, cfg config.Config, spec model.SandboxS
 	baseName := spec.Type + "-base.qcow2"
 	basePath := filepath.Join(cfg.Paths.BaseImagesDir, baseName)
 
-	instanceDir := filepath.Join(cfg.Paths.InstancesDir, spec.ID)
-	overlayPath := filepath.Join(instanceDir, "overlay.qcow2")
+	// Use centralized path helpers
+	instanceDir := machine.GetInstanceDir(spec.ID)
+	overlayPath := machine.GetOverlayPath(spec.ID)
 
 	if _, err := os.Stat(basePath); os.IsNotExist(err) {
 		return "", fmt.Errorf("base image missing at path: %s (ensure you have created the base image)", basePath)

@@ -24,6 +24,7 @@ type IUserRepository interface {
 	// Add only specific methods here
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
 	EnsureSystemUser(u model.User) error
+	FindByIDs(ctx context.Context, ids []primitive.ObjectID) ([]*model.User, error)
 }
 
 type UserRepository struct {
@@ -116,4 +117,23 @@ func (r *UserRepository) Exists(ctx context.Context, id string) bool {
 	}
 	cnt, err := r.Count(ctx, bson.M{"_id": oid})
 	return err == nil && cnt > 0
+}
+
+// FindByIDs returns users matching the given object IDs
+func (r *UserRepository) FindByIDs(ctx context.Context, ids []primitive.ObjectID) ([]*model.User, error) {
+	if len(ids) == 0 {
+		return []*model.User{}, nil
+	}
+	filter := bson.M{"_id": bson.M{"$in": ids}}
+	cursor, err := r.collection.Find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var users []*model.User
+	if err = cursor.All(ctx, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
 }

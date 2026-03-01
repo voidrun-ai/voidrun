@@ -81,7 +81,7 @@ func (r *APIKeyRepository) FindByHash(ctx context.Context, hash string) (*model.
 
 // FindByOrgID retrieves all active API keys for an organization
 func (r *APIKeyRepository) FindByOrgID(ctx context.Context, orgID primitive.ObjectID) ([]*model.APIKey, error) {
-	cursor, err := r.collection.Find(ctx, bson.M{"orgId": orgID}, options.Find().SetSort(bson.M{"createdAt": -1}))
+	cursor, err := r.collection.Find(ctx, bson.M{"orgId": orgID}, options.Find().SetSort(bson.M{"_id": -1}))
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ func (r *APIKeyRepository) FindByOrgID(ctx context.Context, orgID primitive.Obje
 
 // FindActive retrieves all active API keys
 func (r *APIKeyRepository) FindActive(ctx context.Context) ([]*model.APIKey, error) {
-	cursor, err := r.collection.Find(ctx, bson.M{"isActive": true}, options.Find().SetSort(bson.M{"createdAt": -1}))
+	cursor, err := r.collection.Find(ctx, bson.M{"isActive": true}, options.Find().SetSort(bson.M{"_id": -1}))
 	if err != nil {
 		return nil, err
 	}

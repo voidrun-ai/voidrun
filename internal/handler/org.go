@@ -18,11 +18,23 @@ const maxKeyNameLength = 100
 type OrgHandler struct {
 	apiKeyService *service.APIKeyService
 	orgService    *service.OrgService
+	userService   *service.UserService
+}
+
+func orgToResponse(org *model.Organization) model.OrgResponse {
+	return model.OrgResponse{
+		ID:        org.ID.Hex(),
+		Name:      org.Name,
+		Plan:      org.Plan,
+		Usage:     org.UsageCount,
+		CreatedAt: org.CreatedAt,
+		UpdatedAt: org.UpdatedAt,
+	}
 }
 
 // NewOrgHandler creates a new OrgHandler
-func NewOrgHandler(orgSvc *service.OrgService, apiSvc *service.APIKeyService) *OrgHandler {
-	return &OrgHandler{apiKeyService: apiSvc, orgService: orgSvc}
+func NewOrgHandler(orgSvc *service.OrgService, apiSvc *service.APIKeyService, userSvc *service.UserService) *OrgHandler {
+	return &OrgHandler{apiKeyService: apiSvc, orgService: orgSvc, userService: userSvc}
 }
 
 // ensureOrgAccess checks that the path orgId matches the org in auth context
@@ -53,7 +65,53 @@ func (h *OrgHandler) GetCurrentOrg(c *gin.Context) {
 		return
 	}
 
-	org, err := h.orgService.GetByID(c.Request.Context(), orgID)
+	var userID *primitive.ObjectID
+	if userHex, ok := c.Get("userID"); ok {
+		if userIDStr, ok := userHex.(string); ok && strings.TrimSpace(userIDStr) != "" {
+			if parsedUserID, err := primitive.ObjectIDFromHex(userIDStr); err == nil {
+				userID = &parsedUserID
+			}
+		}
+	}
+
+	allOrgs, err := h.orgService.GetCurrentOrg(c.Request.Context(), orgID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	orgList := make([]model.OrgResponse, len(allOrgs))
+	for i, o := range allOrgs {
+		orgList[i] = orgToResponse(o)
+	}
+
+	resp := model.CurrentOrgResponse{
+		ActiveOrgID: orgID.Hex(),
+		Orgs:        orgList,
+	}
+	c.JSON(http.StatusOK, model.NewSuccessResponse("org", resp))
+}
+
+// GetOrgUsers returns users for an organization (GET /api/orgs/:orgId/users)
+func (h *OrgHandler) GetOrgUsers(c *gin.Context) {
+	// Check org access using path param
+	if !ensureOrgAccess(c) {
+		return
+	}
+
+	orgID := c.Param("orgId")
+	if err := validateObjectID(orgID); err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid org ID format", err.Error()))
+		return
+	}
+
+	objID, err := primitive.ObjectIDFromHex(orgID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse("invalid org id", err.Error()))
+		return
+	}
+
+	org, err := h.orgService.GetByID(c.Request.Context(), objID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
@@ -63,10 +121,26 @@ func (h *OrgHandler) GetCurrentOrg(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, model.NewSuccessResponse("org", gin.H{
-		"id":   org.ID.Hex(),
-		"name": org.Name,
-	}))
+	// Get users by member IDs
+	users, err := h.userService.GetByOrg(c.Request.Context(), org.Members)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	// Transform users to safe public format
+	publicUsers := make([]gin.H, len(users))
+	for i, u := range users {
+		publicUsers[i] = gin.H{
+			"id":        u.ID.Hex(),
+			"name":      u.Name,
+			"email":     u.Email,
+			"role":      u.Role,
+			"createdAt": u.CreatedAt,
+		}
+	}
+
+	c.JSON(http.StatusOK, model.NewSuccessResponse("users", publicUsers))
 }
 
 // GenerateAPIKey creates a new API key for an org (POST /api/orgs/:orgId/apikeys)

@@ -12,18 +12,6 @@ type CreateSandboxRequest struct {
 	EnvVars    map[string]string `json:"envVars,omitempty"`
 }
 
-// RestoreSandboxRequest represents the request to restore a sandbox from snapshot
-type RestoreSandboxRequest struct {
-	NewID        string `json:"new_id" binding:"required"`
-	SnapshotPath string `json:"snapshot_path" binding:"required"`
-	NewIP        string `json:"new_ip"`
-	Cold         bool   `json:"cold"`
-	CPU          int    `json:"cpu"`
-	Mem          int    `json:"mem"`
-	OrgID        string `json:"orgId"`
-	UserID       string `json:"userId"`
-}
-
 // ExecRequest represents a command execution request
 type ExecRequest struct {
 	Command    string            `json:"command"`

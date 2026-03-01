@@ -86,7 +86,7 @@ func InitHandlers(services *Services) *Handlers {
 		Image:    handler.NewImageHandler(services.Image),
 		Exec:     handler.NewExecHandler(services.Exec, services.Session, services.Sandbox, services.Commands),
 		FS:       handler.NewFSHandler(services.FS, services.Sandbox),
-		Org:      handler.NewOrgHandler(services.Org, services.APIKey),
+		Org:      handler.NewOrgHandler(services.Org, services.APIKey, services.User),
 		Auth:     handler.NewAuthHandler(services.User, services.Org, services.APIKey),
 		PTY:      handler.NewPTYHandler(services.PTY, services.PTYSession, services.Sandbox),
 		Commands: handler.NewCommandsHandler(services.Commands, services.Sandbox),

@@ -1091,6 +1091,48 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sandboxes/{id}/start:
+    post:
+      tags:
+        - Sandboxes
+      summary: Start sandbox
+      description: Start a stopped sandbox
+      operationId: startSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          description: Invalid request (sandbox not stopped)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sandboxes/{id}/stop:
     post:
       tags:

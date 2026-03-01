@@ -15,6 +15,7 @@ import (
 
 	"voidrun/internal/config"
 	"voidrun/internal/sandboxclient"
+	"voidrun/pkg/machine"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -742,8 +743,11 @@ func (m *Manager) markDiskScraped(vmID string) {
 }
 
 func overlaySizeBytes(socketPath string) (int64, error) {
+	// Extract sandbox ID from socket path to use centralized helper
 	instanceDir := filepath.Dir(socketPath)
-	path := filepath.Join(instanceDir, "overlay.qcow2")
+	sbxID := filepath.Base(instanceDir)
+	path := machine.GetOverlayPath(sbxID)
+
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, err

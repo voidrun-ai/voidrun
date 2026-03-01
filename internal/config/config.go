@@ -17,7 +17,6 @@ type ServerConfig struct {
 type PathsConfig struct {
 	BaseImagesDir string
 	InstancesDir  string
-	DBPath        string
 	KernelPath    string
 	InitrdPath    string
 }
@@ -29,6 +28,7 @@ type NetworkConfig struct {
 	NetworkCIDR  string
 	SubnetPrefix string
 	TapPrefix    string
+	Nameservers  []string
 }
 
 // MongoDB configuration
@@ -60,12 +60,15 @@ type Config struct {
 
 // Sandbox configuration
 type SandboxConfig struct {
-	DefaultVCPUs    int
-	DefaultMemoryMB int
-	DefaultDiskMB   int
-	DefaultImage    string
-	SyncTimeoutSec  int
-	DebugBootConsole bool
+	DefaultVCPUs        int
+	DefaultMemoryMB     int
+	DefaultDiskMB       int
+	DefaultImage        string
+	KernelCmdline       string
+	SyncTimeoutSec      int
+	DebugBootConsole    bool
+	DefaultOverlayImage string
+	DefaultHostname     string
 }
 
 // Health monitor configuration
@@ -97,27 +100,31 @@ type CORSConfig struct {
 
 // Default configuration values
 const (
-	DefaultServerPort            = "33944"
-	DefaultServerHost            = ""
-	DefaultBaseImagesDir         = "/var/lib/voidrun/base-images"
-	DefaultInstancesDir          = "/var/lib/voidrun/instances"
-	DefaultKernelPath            = "/var/lib/voidrun/base-images/vmlinux"
-	DefaultInitrdPath            = ""
-	DefaultBridgeName            = "vmbr0"
-	DefaultTapPrefix             = "ttap-"
-	DefaultGatewayIP             = "192.168.100.1/22"
-	DefaultNetworkCIDR           = "192.168.100.0/22"
-	DefaultSubnetPrefix          = "192.168.100."
-	DefaultMongoURI              = "mongodb://root:Qaz123wsx123@localhost:27017/vr-db?authSource=admin"
-	DefaultMongoDB               = "vr-db"
-	DefaultSystemUserName        = "System"
-	DefaultSystemUserEmail       = "system@local"
-	DefaultSandboxVCPUs          = 1
-	DefaultSandboxMemoryMB       = 1024
-	DefaultSandboxDiskMB         = 5120 // 5GB
-	DefaultSandboxImage          = "debian"
-	DefaultSandboxSyncTimeoutSec = 5
+	DefaultServerPort    = "33944"
+	DefaultServerHost    = ""
+	DefaultBaseImagesDir = "/var/lib/voidrun/base-images"
+	DefaultInstancesDir  = "/var/lib/voidrun/instances"
+	DefaultKernelPath    = "/var/lib/voidrun/base-images/vmlinux"
+	DefaultInitrdPath    = ""
+	DefaultBridgeName    = "vmbr0"
+	DefaultTapPrefix     = "ttap-"
+	DefaultGatewayIP     = "192.168.100.1/22"
+	DefaultNetworkCIDR   = "192.168.100.0/22"
+	// DefaultSubnetPrefix            = "192.168.100."
+	DefaultNameservers             = "8.8.8.8,1.1.1.1"
+	DefaultMongoURI                = "mongodb://root:Qaz123wsx123@localhost:27017/vr-db?authSource=admin"
+	DefaultMongoDB                 = "vr-db"
+	DefaultSystemUserName          = "System"
+	DefaultSystemUserEmail         = "system@local"
+	DefaultSandboxVCPUs            = 1
+	DefaultSandboxMemoryMB         = 1024
+	DefaultSandboxDiskMB           = 5120 // 5GB
+	DefaultSandboxImage            = "debian"
+	DefaultSandboxKernelCmdline    = "root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0"
+	DefaultSandboxSyncTimeoutSec   = 10
 	DefaultSandboxDebugBootConsole = false
+	DefaultOverlayImage            = "overlay.qcow2"
+	DefaultSandboxHostname         = "voidrun"
 	// Health monitor defaults
 	DefaultHealthEnabled          = true
 	DefaultHealthIntervalSec      = 60
@@ -164,11 +171,12 @@ func New() *Config {
 			InitrdPath:    getEnv("INITRD_PATH", DefaultInitrdPath),
 		},
 		Network: NetworkConfig{
-			BridgeName:   getEnv("BRIDGE_NAME", DefaultBridgeName),
-			GatewayIP:    getEnv("GATEWAY_IP", DefaultGatewayIP),
-			NetworkCIDR:  getEnv("NETWORK_CIDR", DefaultNetworkCIDR),
-			SubnetPrefix: getEnv("SUBNET_PREFIX", DefaultSubnetPrefix),
-			TapPrefix:    getEnv("TAP_PREFIX", DefaultTapPrefix),
+			BridgeName:  getEnv("BRIDGE_NAME", DefaultBridgeName),
+			GatewayIP:   getEnv("GATEWAY_IP", DefaultGatewayIP),
+			NetworkCIDR: getEnv("NETWORK_CIDR", DefaultNetworkCIDR),
+			// SubnetPrefix: getEnv("SUBNET_PREFIX", DefaultSubnetPrefix),
+			TapPrefix:   getEnv("TAP_PREFIX", DefaultTapPrefix),
+			Nameservers: getEnvCSV("DNS_NAMESERVERS", DefaultNameservers),
 		},
 		Mongo: MongoConfig{
 			URI:      getEnv("MONGO_URI", DefaultMongoURI),
@@ -179,12 +187,15 @@ func New() *Config {
 			Email: getEnv("SYSTEM_USER_EMAIL", DefaultSystemUserEmail),
 		},
 		Sandbox: SandboxConfig{
-			DefaultVCPUs:    getEnvInt("SANDBOX_DEFAULT_VCPUS", DefaultSandboxVCPUs),
-			DefaultMemoryMB: getEnvInt("SANDBOX_DEFAULT_MEMORY_MB", DefaultSandboxMemoryMB),
-			DefaultDiskMB:   getEnvInt("SANDBOX_DEFAULT_DISK_MB", DefaultSandboxDiskMB),
-			DefaultImage:    getEnv("SANDBOX_DEFAULT_IMAGE", DefaultSandboxImage),
-			SyncTimeoutSec:  getEnvInt("SANDBOX_SYNC_TIMEOUT_SEC", DefaultSandboxSyncTimeoutSec),
-			DebugBootConsole: getEnvBool("SANDBOX_DEBUG_BOOT_CONSOLE", DefaultSandboxDebugBootConsole),
+			DefaultVCPUs:        getEnvInt("SANDBOX_DEFAULT_VCPUS", DefaultSandboxVCPUs),
+			DefaultMemoryMB:     getEnvInt("SANDBOX_DEFAULT_MEMORY_MB", DefaultSandboxMemoryMB),
+			DefaultDiskMB:       getEnvInt("SANDBOX_DEFAULT_DISK_MB", DefaultSandboxDiskMB),
+			DefaultImage:        getEnv("SANDBOX_DEFAULT_IMAGE", DefaultSandboxImage),
+			KernelCmdline:       getEnv("SANDBOX_KERNEL_CMDLINE", DefaultSandboxKernelCmdline),
+			SyncTimeoutSec:      getEnvInt("SANDBOX_SYNC_TIMEOUT_SEC", DefaultSandboxSyncTimeoutSec),
+			DebugBootConsole:    getEnvBool("SANDBOX_DEBUG_BOOT_CONSOLE", DefaultSandboxDebugBootConsole),
+			DefaultOverlayImage: getEnv("SANDBOX_DEFAULT_OVERLAY_IMAGE", DefaultOverlayImage),
+			DefaultHostname:     getEnv("SANDBOX_DEFAULT_HOSTNAME", DefaultSandboxHostname),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),

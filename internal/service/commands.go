@@ -7,10 +7,33 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"voidrun/internal/config"
 	"voidrun/internal/model"
 )
+
+// bufPool is a pool of buffers for efficient streaming
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 32*1024) // 32KB buffer
+		return &buf
+	},
+}
+
+// flushWriter wraps an io.Writer and calls a flush function after each write
+type flushWriter struct {
+	w     io.Writer
+	flush func()
+}
+
+func (fw *flushWriter) Write(p []byte) (n int, err error) {
+	n, err = fw.w.Write(p)
+	if err == nil && fw.flush != nil {
+		fw.flush()
+	}
+	return n, err
+}
 
 // CommandsService handles process management operations
 type CommandsService struct {
@@ -131,25 +154,13 @@ func (s *CommandsService) Attach(sbxInstance string, pid int, writer io.Writer, 
 		return fmt.Errorf("agent error: %s", string(bodyText))
 	}
 
-	// Proxy response body to writer
-	buf := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			if _, werr := writer.Write(buf[:n]); werr != nil {
-				return werr
-			}
-			flush()
-		}
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
-	}
+	// Proxy response body to writer using pooled buffer
+	bufPtr := bufPool.Get().(*[]byte)
+	defer bufPool.Put(bufPtr)
 
-	return nil
+	fw := &flushWriter{w: writer, flush: flush}
+	_, err = io.CopyBuffer(fw, resp.Body, *bufPtr)
+	return err
 }
 
 // Wait waits for a process to complete

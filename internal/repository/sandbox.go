@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -217,71 +215,4 @@ func (r *SandboxRepository) Exists(ctx context.Context, id string) bool {
 		return false
 	}
 	return count > 0
-}
-
-// Add adds a new sandbox to the repository
-// func (r *SandboxRepository) Add(sb model.Sandbox) error {
-// 	r.mu.Lock()
-// 	defer r.mu.Unlock()
-
-// 	sb.CreatedAt = time.Now()
-// 	sb.Status = "Running"
-
-// 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-// 	defer cancel()
-// 	_, err := r.Collection.InsertOne(ctx, sb)
-// 	if err != nil {
-// 		if mongo.IsDuplicateKeyError(err) {
-// 			return fmt.Errorf("Sandbox ID %s already exists", sb.ID)
-// 		}
-// 		return err
-// 	}
-// 	return nil
-// }
-
-// Get retrieves a sandbox by ID
-// func (r *SandboxRepository) Get(id string) (model.Sandbox, bool) {
-// 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-// 	defer cancel()
-// 	var sb model.Sandbox
-// 	err := r.Collection.FindOne(ctx, bson.M{"id": id}).Decode(&sb)
-// 	if err != nil {
-// 		return model.Sandbox{}, false
-// 	}
-// 	return sb, true
-// }
-
-// GetAll retrieves all sandboxes
-// func (r *SandboxRepository) GetAll() ([]model.Sandbox, error) {
-// 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-// 	defer cancel()
-// 	cur, err := r.collection.Find(ctx, bson.M{})
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	defer cur.Close(ctx)
-// 	var list []model.Sandbox
-// 	for cur.Next(ctx) {
-// 		var sb model.Sandbox
-// 		if err := cur.Decode(&sb); err != nil {
-// 			return nil, err
-// 		}
-// 		if r.isRunning(sb.ID) {
-// 			sb.Status = "Running"
-// 		} else {
-// 			sb.Status = "Stopped"
-// 		}
-// 		list = append(list, sb)
-// 	}
-// 	return list, cur.Err()
-// }
-
-// Exists checks if a sandbox exists
-
-func (r *SandboxRepository) isRunning(id string) bool {
-	p := filepath.Join(r.instancesDir, id, "vsock.sock")
-	if _, err := os.Stat(p); err == nil {
-		return true
-	}
-	return false
 }

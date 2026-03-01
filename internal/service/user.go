@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"time"
 	"voidrun/internal/config"
 	"voidrun/internal/model"
 	"voidrun/internal/repository"
-	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
@@ -53,4 +53,9 @@ func (s *UserService) Me(ctx context.Context, userID string) (*model.User, error
 		return nil, err
 	}
 	return user, nil
+}
+
+// GetByOrg returns all users belonging to an organization
+func (s *UserService) GetByOrg(ctx context.Context, memberIDs []primitive.ObjectID) ([]*model.User, error) {
+	return s.repo.FindByIDs(ctx, memberIDs)
 }

@@ -20,21 +20,17 @@ type Sandbox struct {
 	CreatedBy primitive.ObjectID `bson:"createdBy" json:"createdBy"`
 	OrgID     primitive.ObjectID `bson:"orgId" json:"orgId"`
 	EnvVars   map[string]string  `bson:"envVars,omitempty" json:"envVars,omitempty"`
+	UserID    primitive.ObjectID `bson:"userId" json:"userId"`
 }
 
 type SandboxSpec struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	CPUs      int               `json:"cpus"`
-	MemoryMB  int               `json:"memory_mb"`
-	DiskMB    int               `json:"disk_mb"`
-	IPAddress string            `json:"ip_address"`
-	EnvVars   map[string]string `json:"env_vars"`
-}
-
-// Snapshot represents a sandbox snapshot summary
-type Snapshot struct {
-	ID        string `json:"id"`
-	CreatedAt string `json:"created_at"`
-	FullPath  string `json:"full_path"`
+	ID         string            `json:"id"`
+	Type       string            `json:"type"`
+	CPUs       int               `json:"cpus"`
+	MemoryMB   int               `json:"memory_mb"`
+	DiskMB     int               `json:"disk_mb"`
+	IPAddress  string            `json:"ip_address"`
+	EnvVars    map[string]string `json:"env_vars"`
+	TapName    string            `json:"tap_name"`
+	MacAddress string            `json:"mac_address"`
 }

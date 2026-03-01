@@ -8,6 +8,7 @@ import (
 	"voidrun/internal/model"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -40,6 +41,9 @@ func NewImageRepository(cfg *config.Config, db *mongo.Database) IImageRepository
 // Add creates a new image
 func (r *ImageRepository) Create(ctx context.Context, img *model.Image) (*model.Image, error) {
 	img.CreatedAt = time.Now()
+	if img.ID.IsZero() {
+		img.ID = primitive.NewObjectID()
+	}
 	_, err := r.collection.InsertOne(ctx, img)
 	if err != nil {
 		return nil, err

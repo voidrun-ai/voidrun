@@ -104,3 +104,20 @@ type CommandWaitResponse struct {
 	ExitCode int    `json:"exitCode"`
 	Error    string `json:"error,omitempty"`
 }
+
+// OrgResponse represents a single organization in API responses
+type OrgResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Plan      string    `json:"plan"`
+	Usage     int       `json:"usage"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// CurrentOrgResponse represents the response for GetCurrentOrg endpoint
+type CurrentOrgResponse struct {
+	OrgResponse
+	ActiveOrgID string        `json:"activeOrgId"`
+	Orgs        []OrgResponse `json:"orgs"`
+}

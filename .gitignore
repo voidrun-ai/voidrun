@@ -32,3 +32,4 @@ go.work.sum
 voidrun
 api-client/
 build-api-client.sh
+*.log
