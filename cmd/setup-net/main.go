@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"voidrun/internal/config"
+	"voidrun/config"
 )
 
 func main() {

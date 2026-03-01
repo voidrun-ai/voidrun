@@ -5,7 +5,7 @@ info:
     VoidRun API provides comprehensive management of virtual machines (sandboxes), 
     file system operations, execution environments, and organizational resources.
 
-    All endpoints except `/api/register` require the `X-API-Key` header for authentication.
+    All endpoints except `/api/register` and `/api/version` require the `X-API-Key` header for authentication.
   version: 1.0.0
   contact:
     name: VoidRun Support
@@ -19,6 +19,8 @@ servers:
     description: Production server
 
 tags:
+  - name: System
+    description: Service metadata endpoints
   - name: Authentication
     description: User registration and authentication
   - name: Organizations
@@ -416,6 +418,63 @@ components:
           default: false
           description: If true, starts process in background and returns PID immediately
 
+    SessionExecRequest:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          enum: [create, exec, input, resize, close]
+          example: create
+        sessionId:
+          type: string
+          description: Required for all actions except create
+          example: sess-1a2b3c4d5e6f7788
+        shell:
+          type: string
+          example: /bin/bash
+        command:
+          type: string
+          description: Required when action is `exec`
+          example: ls -la
+        input:
+          type: string
+          description: Input text when action is `input`
+          example: "y\n"
+        cols:
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: Required when action is `resize`
+          example: 120
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 200
+          description: Required when action is `resize`
+          example: 40
+
+    SessionExecResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        sessionId:
+          type: string
+          example: sess-1a2b3c4d5e6f7788
+        output:
+          type: string
+          example: command output
+        error:
+          type: string
+          nullable: true
+          example: ""
+        exitCode:
+          type: integer
+          example: 0
+
     ExecResponse:
       type: object
       properties:
@@ -728,6 +787,32 @@ components:
           example: /restore
 
 paths:
+  /version:
+    get:
+      tags:
+        - System
+      summary: Get server version
+      description: Get server version, commit, and build metadata.
+      operationId: getVersion
+      security: []
+      responses:
+        "200":
+          description: Version information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                    example: 0.1.0
+                  commit:
+                    type: string
+                    example: a1b2c3d
+                  buildTime:
+                    type: string
+                    example: "2026-02-28T12:00:00Z"
+
   /register:
     post:
       tags:
@@ -777,6 +862,65 @@ paths:
                 $ref: "#/components/schemas/Organization"
         "401":
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /orgs/{orgId}/users:
+    get:
+      tags:
+        - Organizations
+      summary: List organization users
+      description: Get users who are members of the organization.
+      operationId: getOrgUsers
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Organization users
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                              example: 65ae1234567890abcdef1234
+                            name:
+                              type: string
+                              example: Admin User
+                            email:
+                              type: string
+                              example: admin@example.com
+                            role:
+                              type: string
+                              example: owner
+                            createdAt:
+                              type: string
+                              format: date-time
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Organization not found
           content:
             application/json:
               schema:
@@ -897,6 +1041,100 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /orgs/{orgId}/apikeys/{keyId}/activate:
+    post:
+      tags:
+        - Organizations
+      summary: Activate or deactivate API key
+      description: Toggle an API key's active status.
+      operationId: activateAPIKey
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isActive:
+                  type: boolean
+                  example: true
+      responses:
+        "200":
+          description: API key status updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /orgs/{orgId}/apikeys/{keyId}/touch:
+    patch:
+      tags:
+        - Organizations
+      summary: Touch API key
+      description: Update the API key last-used timestamp.
+      operationId: touchAPIKey
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: API key touched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sandboxes:
     get:
       tags:
@@ -980,41 +1218,6 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Sandbox already exists
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sandboxes/restore:
-    post:
-      tags:
-        - Sandboxes
-      summary: Restore sandbox from snapshot
-      description: Create a new sandbox from an existing snapshot
-      operationId: restoreSandbox
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RestoreSandboxRequest"
-      responses:
-        "201":
-          description: Sandbox restored
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Sandbox"
-        "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Unauthorized
           content:
             application/json:
               schema:
@@ -1241,83 +1444,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sandboxes/{id}/snapshot:
-    post:
-      tags:
-        - Sandboxes
-      summary: Create snapshot
-      description: Create a snapshot of the sandbox
-      operationId: createSnapshot
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
-      responses:
-        "200":
-          description: Snapshot created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
-                properties:
-                  data:
-                    $ref: "#/components/schemas/Snapshot"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Sandbox not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sandboxes/{id}/snapshots:
-    get:
-      tags:
-        - Sandboxes
-      summary: List snapshots
-      description: Get all snapshots for a sandbox
-      operationId: listSnapshots
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
-      responses:
-        "200":
-          description: List of snapshots
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Snapshot"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Sandbox not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
   /sandboxes/{id}/exec:
     post:
       tags:
@@ -1406,6 +1532,116 @@ paths:
 
                 event: exit
                 data: {"exitCode":0}
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/session-exec:
+    post:
+      tags:
+        - Execution
+      summary: Execute PTY session action
+      description: Send a PTY session action (`create`, `exec`, `input`, `resize`, `close`) to the sandbox agent.
+      operationId: sessionExec
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionExecRequest"
+      responses:
+        "200":
+          description: Session action result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionExecResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/session-exec-stream:
+    post:
+      tags:
+        - Execution
+      summary: Stream PTY session command output
+      description: Execute a command in an existing PTY session and stream NDJSON output chunks.
+      operationId: sessionExecStream
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - sessionId
+                - command
+              properties:
+                sessionId:
+                  type: string
+                  example: sess-1a2b3c4d5e6f7788
+                command:
+                  type: string
+                  example: tail -f /var/log/syslog
+      responses:
+        "200":
+          description: NDJSON stream of command output
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+              example: |-
+                {"type":"stdout","data":"line 1"}
+                {"type":"stdout","data":"line 2"}
+                {"type":"exit","exitCode":0}
         "400":
           description: Invalid request
           content:
