@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 
-	"voidrun/internal/config"
-	"voidrun/internal/server"
+	"voidrun/config"
+	"voidrun/server"
 )
 
 func main() {

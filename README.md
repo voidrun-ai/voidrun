@@ -59,7 +59,10 @@ By default the server listens on `:33944`. Set `SERVER_PORT` to change it.
 ## Authentication Flow
 
 1. Register a user and get a default org + API key.
-2. Use the API key for all subsequent requests in the `X-API-Key` header.
+2. Authenticate with either:
+   - `X-API-Key` (org is derived from the key and cannot be overridden), or
+   - `Authorization: Bearer <jwt>` plus `X-Org-ID` for org context.
+3. All resource access is tenant-scoped by validated `orgId`.
 
 ```bash
 curl -X POST http://localhost:8080/api/register \
@@ -72,12 +75,32 @@ curl http://localhost:8080/api/sandboxes \
 	-H 'X-API-Key: hf_your_key_here'
 ```
 
+```bash
+curl http://localhost:8080/api/sandboxes \
+	-H 'Authorization: Bearer <jwt_token>' \
+	-H 'X-Org-ID: <org_object_id>'
+```
+
 ## API Base URL
 
 - Docker Compose: `http://localhost:8080/api`
 - Local default: `http://localhost:33944/api`
 
 The full OpenAPI spec is in [openapi.yml](openapi.yml).
+
+## Package Layout (Public)
+
+All previously `internal/*` and `pkg/*` packages are now top-level public packages for extension use-cases (for example from `voidrun-ee`):
+
+- `voidrun/config`
+- `voidrun/server`
+- `voidrun/service`
+- `voidrun/repository`
+- `voidrun/middleware`
+- `voidrun/model`
+- `voidrun/machine`
+- `voidrun/storage`
+- `voidrun/util`
 
 ## Environment Variables
 
@@ -105,6 +128,7 @@ HEALTH_ENABLED=true
 HEALTH_INTERVAL_SEC=60
 HEALTH_CONCURRENCY=16
 API_KEY_CACHE_TTL_SECONDS=3600
+JWT_SECRET=change-me-in-production
 ```
 
 ## Key Endpoints (Summary)

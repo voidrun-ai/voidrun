@@ -28,8 +28,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # Copy source code
 COPY cmd ./cmd
-COPY internal ./internal
-COPY pkg ./pkg
+COPY config ./config
+COPY handler ./handler
+COPY metrics ./metrics
+COPY middleware ./middleware
+COPY model ./model
+COPY monitoring ./monitoring
+COPY repository ./repository
+COPY runtime ./runtime
+COPY server ./server
+COPY service ./service
+COPY util ./util
 
 # Build the application with optimizations
 RUN --mount=type=cache,target=/go/pkg/mod \
