@@ -62,6 +62,11 @@ type Config struct {
 // Auth configuration
 type AuthConfig struct {
 	JWTSecret string
+	// Clerk configuration
+	ClerkSecretKey      string
+	ClerkPublishableKey string
+	ClerkJWKSURL        string
+	ClerkEnabled        bool
 }
 
 // Sandbox configuration
@@ -117,10 +122,15 @@ const (
 	DefaultGatewayIP     = "192.168.100.1/22"
 	DefaultNetworkCIDR   = "192.168.100.0/22"
 	// DefaultSubnetPrefix            = "192.168.100."
-	DefaultNameservers             = "8.8.8.8,1.1.1.1"
-	DefaultMongoURI                = "mongodb://root:Qaz123wsx123@localhost:27017/vr-db?authSource=admin"
-	DefaultMongoDB                 = "vr-db"
-	DefaultJWTSecret               = "change-me-in-production"
+	DefaultNameservers = "8.8.8.8,1.1.1.1"
+	DefaultMongoURI    = "mongodb://root:Qaz123wsx123@localhost:27017/vr-db?authSource=admin"
+	DefaultMongoDB     = "vr-db"
+	DefaultJWTSecret   = "change-me-in-production"
+	// Clerk defaults
+	DefaultClerkSecretKey          = ""
+	DefaultClerkPublishableKey     = ""
+	DefaultClerkJWKSURL            = ""
+	DefaultClerkEnabled            = false
 	DefaultSystemUserName          = "System"
 	DefaultSystemUserEmail         = "system@local"
 	DefaultSandboxVCPUs            = 1
@@ -190,7 +200,11 @@ func New() *Config {
 			Database: getEnv("MONGO_DB", DefaultMongoDB),
 		},
 		Auth: AuthConfig{
-			JWTSecret: getEnv("JWT_SECRET", DefaultJWTSecret),
+			JWTSecret:           getEnv("JWT_SECRET", DefaultJWTSecret),
+			ClerkSecretKey:      getEnv("CLERK_SECRET_KEY", DefaultClerkSecretKey),
+			ClerkPublishableKey: getEnv("CLERK_PUBLISHABLE_KEY", DefaultClerkPublishableKey),
+			ClerkJWKSURL:        getEnv("CLERK_JWKS_URL", DefaultClerkJWKSURL),
+			ClerkEnabled:        getEnvBool("CLERK_ENABLED", DefaultClerkEnabled),
 		},
 		SystemUser: SystemUserConfig{
 			Name:  getEnv("SYSTEM_USER_NAME", DefaultSystemUserName),

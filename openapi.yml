@@ -13,9 +13,7 @@ info:
     name: Proprietary
 
 servers:
-  - url: http://localhost:33944/api
-    description: Local development server
-  - url: https://api.void-run.com/api
+  - url: https://platform.void-run.com/api
     description: Production server
 
 tags:
@@ -223,7 +221,7 @@ components:
           pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
           description: DNS-1123 subdomain format
           example: vm-01
-        templateId:
+        image:
           type: string
           example: 65ae1234567890abcdef1234
         cpu:

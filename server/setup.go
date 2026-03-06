@@ -4,11 +4,13 @@ import (
 	"voidrun/config"
 	"voidrun/handler"
 	"voidrun/metrics"
+	"voidrun/middleware"
 	"voidrun/model"
 	"voidrun/repository"
 	"voidrun/service"
 	"voidrun/util"
 
+	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -46,22 +48,26 @@ type Services struct {
 	PTYSession *service.PTYSessionService
 	Commands   *service.CommandsService
 	Metrics    *metrics.Manager
+	Clerk      *service.ClerkService
 }
 
 func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metrics.Manager) *Services {
+	clerkSvc := service.NewClerkService(cfg)
+	orgSvc := service.NewOrgService(repos.Org)
 	return &Services{
-		User:       service.NewUserService(cfg, repos.User),
+		User:       service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
 		Sandbox:    service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager),
 		Image:      service.NewImageService(cfg, repos.Image),
 		Exec:       service.NewExecService(cfg),
 		Session:    service.NewSessionExecService(cfg),
 		FS:         service.NewFSService(),
 		APIKey:     service.NewAPIKeyService(repos.APIKey, cfg),
-		Org:        service.NewOrgService(repos.Org),
+		Org:        orgSvc,
 		PTY:        service.NewVsockWSDialer(),
 		PTYSession: service.NewPTYSessionService(),
 		Commands:   service.NewCommandsService(cfg),
 		Metrics:    metricsManager,
+		Clerk:      clerkSvc,
 	}
 }
 
@@ -73,7 +79,6 @@ type Handlers struct {
 	Exec     *handler.ExecHandler
 	FS       *handler.FSHandler
 	Org      *handler.OrgHandler
-	Auth     *handler.AuthHandler
 	PTY      *handler.PTYHandler
 	Commands *handler.CommandsHandler
 	Version  *handler.VersionHandler
@@ -81,16 +86,27 @@ type Handlers struct {
 
 func InitHandlers(services *Services) *Handlers {
 	return &Handlers{
-		User:     handler.NewUserHandler(services.User),
+		User:     handler.NewUserHandler(services.User, services.Org),
 		Sandbox:  handler.NewSandboxHandler(services.Sandbox),
 		Image:    handler.NewImageHandler(services.Image),
 		Exec:     handler.NewExecHandler(services.Exec, services.Session, services.Sandbox, services.Commands),
 		FS:       handler.NewFSHandler(services.FS, services.Sandbox),
 		Org:      handler.NewOrgHandler(services.Org, services.APIKey, services.User),
-		Auth:     handler.NewAuthHandler(services.User, services.Org, services.APIKey),
 		PTY:      handler.NewPTYHandler(services.PTY, services.PTYSession, services.Sandbox),
 		Commands: handler.NewCommandsHandler(services.Commands, services.Sandbox),
 		Version:  handler.NewVersionHandler(),
+	}
+}
+
+// Middlewares stores reusable middleware handlers.
+type Middlewares struct {
+	Auth gin.HandlerFunc
+}
+
+// InitMiddlewares builds middleware handler references for reuse.
+func InitMiddlewares(cfg *config.Config, s *Services) *Middlewares {
+	return &Middlewares{
+		Auth: middleware.AuthMiddleware(cfg, s.APIKey, s.User, s.Clerk),
 	}
 }
 

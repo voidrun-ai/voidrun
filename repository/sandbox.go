@@ -20,7 +20,7 @@ import (
 )
 
 type ISandboxRepository interface {
-	Create(ctx context.Context, orgID primitive.ObjectID, sandbox *model.Sandbox) error
+	Create(ctx context.Context, sandbox *model.Sandbox) error
 	FindByID(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error)
 	Find(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error)
 	DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
@@ -142,11 +142,9 @@ func (r *SandboxRepository) NextAvailableIP() (string, error) {
 	return "", fmt.Errorf("no free IPs available in subnet %s", r.networkCIDR)
 }
 
-func (r *SandboxRepository) Create(ctx context.Context, orgID primitive.ObjectID, sandbox *model.Sandbox) error {
+func (r *SandboxRepository) Create(ctx context.Context, sandbox *model.Sandbox) error {
 	defer util.Track("SandboxRepository.Create Mongo (Total)")()
 
-	sandbox.OrgID = orgID
-	sandbox.CreatedAt = time.Now()
 	result, err := r.collection.InsertOne(ctx, sandbox)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {

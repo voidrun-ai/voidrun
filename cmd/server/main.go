@@ -5,9 +5,14 @@ import (
 
 	"voidrun/config"
 	"voidrun/server"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	// Load .env file if it exists (ignore error if file doesn't exist)
+	_ = godotenv.Load()
+
 	// Load configuration
 	cfg := config.New()
 

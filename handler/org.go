@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ type OrgHandler struct {
 	userService   *service.UserService
 }
 
-func orgToResponse(org *model.Organization) model.OrgResponse {
+func orgToResponse(org *model.Org) model.OrgResponse {
 	return model.OrgResponse{
 		ID:        org.ID.Hex(),
 		Name:      org.Name,
@@ -38,40 +39,25 @@ func NewOrgHandler(orgSvc *service.OrgService, apiSvc *service.APIKeyService, us
 	return &OrgHandler{apiKeyService: apiSvc, orgService: orgSvc, userService: userSvc}
 }
 
-// ensureOrgAccess checks that the path orgId matches the org in auth context
-func ensureOrgAccess(c *gin.Context) bool {
-	pathOrg := c.Param("orgId")
-	if val, ok := c.Get("orgID"); ok {
-		if ctxOrg, ok2 := val.(string); ok2 {
-			if ctxOrg == pathOrg {
-				return true
-			}
-		}
-	}
-	c.JSON(http.StatusForbidden, model.NewErrorResponse("org mismatch or missing auth", ""))
-	return false
-}
-
 // GetCurrentOrg returns org info for the authenticated API key (GET /api/orgs/me)
 func (h *OrgHandler) GetCurrentOrg(c *gin.Context) {
-	orgHex, ok := c.Get("orgID")
-	if !ok {
+	orgHex := c.GetString("orgID")
+	log.Printf("[OrgHandler] GetCurrentOrg called with orgID: %s\n", orgHex)
+	if orgHex == "" {
 		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("missing org context", ""))
 		return
 	}
 
-	orgID, err := primitive.ObjectIDFromHex(orgHex.(string))
+	orgID, err := primitive.ObjectIDFromHex(orgHex)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("invalid org id", err.Error()))
 		return
 	}
 
-	var userID *primitive.ObjectID
-	if userHex, ok := c.Get("userID"); ok {
-		if userIDStr, ok := userHex.(string); ok && strings.TrimSpace(userIDStr) != "" {
-			if parsedUserID, err := primitive.ObjectIDFromHex(userIDStr); err == nil {
-				userID = &parsedUserID
-			}
+	var userID primitive.ObjectID
+	if userIDHex := c.GetString("userID"); userIDHex != "" {
+		if parsedUserID, err := primitive.ObjectIDFromHex(userIDHex); err == nil {
+			userID = parsedUserID
 		}
 	}
 
@@ -93,18 +79,10 @@ func (h *OrgHandler) GetCurrentOrg(c *gin.Context) {
 	c.JSON(http.StatusOK, model.NewSuccessResponse("org", resp))
 }
 
-// GetOrgUsers returns users for an organization (GET /api/orgs/:orgId/users)
+// GetOrgUsers returns users for an organization (GET /api/orgs/users)
 func (h *OrgHandler) GetOrgUsers(c *gin.Context) {
-	// Check org access using path param
-	if !ensureOrgAccess(c) {
-		return
-	}
 
-	orgID := c.Param("orgId")
-	if err := validateObjectID(orgID); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid org ID format", err.Error()))
-		return
-	}
+	orgID := c.GetString("orgID")
 
 	objID, err := primitive.ObjectIDFromHex(orgID)
 	if err != nil {
@@ -136,7 +114,7 @@ func (h *OrgHandler) GetOrgUsers(c *gin.Context) {
 			"id":        u.ID.Hex(),
 			"name":      u.Name,
 			"email":     u.Email,
-			"role":      u.Role,
+			"imageUrl":  u.ImageURL,
 			"createdAt": u.CreatedAt,
 		}
 	}
@@ -144,12 +122,9 @@ func (h *OrgHandler) GetOrgUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, model.NewSuccessResponse("users", publicUsers))
 }
 
-// GenerateAPIKey creates a new API key for an org (POST /api/orgs/:orgId/apikeys)
+// GenerateAPIKey creates a new API key for an org (POST /api/orgs/apikeys)
 func (h *OrgHandler) GenerateAPIKey(c *gin.Context) {
-	if !ensureOrgAccess(c) {
-		return
-	}
-	orgID := c.Param("orgId")
+	orgID := c.GetString("orgID")
 
 	if err := validateObjectID(orgID); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid org ID format", err.Error()))
@@ -191,19 +166,16 @@ func (h *OrgHandler) GenerateAPIKey(c *gin.Context) {
 	c.JSON(http.StatusCreated, resp)
 }
 
-// ListAPIKeys returns all API keys for an org (GET /api/orgs/:orgId/apikeys)
+// ListAPIKeys returns all API keys for an org (GET /api/orgs/apikeys)
 func (h *OrgHandler) ListAPIKeys(c *gin.Context) {
-	if !ensureOrgAccess(c) {
-		return
-	}
-	orgID := c.Param("orgId")
+	orgID := c.GetString("orgID")
 
 	if err := validateObjectID(orgID); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid org ID format", err.Error()))
 		return
 	}
 
-	keys, err := h.apiKeyService.ListByOrgID(c.Request.Context(), orgID)
+	keys, err := h.apiKeyService.ListByOrg(c.Request.Context(), orgID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
@@ -214,11 +186,8 @@ func (h *OrgHandler) ListAPIKeys(c *gin.Context) {
 
 // DeleteAPIKey revokes an API key (DELETE /api/orgs/:orgId/apikeys/:keyId)
 func (h *OrgHandler) DeleteAPIKey(c *gin.Context) {
-	if !ensureOrgAccess(c) {
-		return
-	}
 	keyID := c.Param("keyId")
-	orgID := c.Param("orgId")
+	orgID := c.Param("orgID")
 
 	if err := validateObjectID(keyID); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid key ID format", err.Error()))
@@ -239,11 +208,8 @@ func (h *OrgHandler) DeleteAPIKey(c *gin.Context) {
 
 // ActivateAPIKey toggles activation status (POST /api/orgs/:orgId/apikeys/:keyId/activate)
 func (h *OrgHandler) ActivateAPIKey(c *gin.Context) {
-	if !ensureOrgAccess(c) {
-		return
-	}
 	keyID := c.Param("keyId")
-	orgID := c.Param("orgId")
+	orgID := c.GetString("orgID")
 
 	if err := validateObjectID(keyID); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid key ID format", err.Error()))
@@ -283,11 +249,8 @@ func (h *OrgHandler) ActivateAPIKey(c *gin.Context) {
 
 // TouchAPIKey marks a key as used (PATCH /api/orgs/:orgId/apikeys/:keyId/touch)
 func (h *OrgHandler) TouchAPIKey(c *gin.Context) {
-	if !ensureOrgAccess(c) {
-		return
-	}
 	keyID := c.Param("keyId")
-	orgID := c.Param("orgId")
+	orgID := c.GetString("orgID")
 
 	if err := validateObjectID(keyID); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid key ID format", err.Error()))

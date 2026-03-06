@@ -197,13 +197,13 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		mem = s.cfg.Sandbox.DefaultMemoryMB
 	}
 	diskMB := s.cfg.Sandbox.DefaultDiskMB
-	if req.TemplateID == "" {
-		req.TemplateID = s.cfg.Sandbox.DefaultImage
+	if req.Image == "" {
+		req.Image = s.cfg.Sandbox.DefaultImage
 	}
 
 	spec := model.SandboxSpec{
 		ID:        instanceID,
-		Type:      req.TemplateID,
+		Type:      req.Image,
 		CPUs:      cpu,
 		MemoryMB:  mem,
 		DiskMB:    diskMB,
@@ -270,27 +270,34 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	}()
 
 	// Save to DB with validated org from context and user from auth context.
-	orID, err := s.orgIDFromContext(ctx)
+	orgID, err := util.ParseObjectID(req.OrgID)
 	if err != nil {
+		machine.Stop(spec.ID)
+		cleanup()
 		return nil, err
 	}
-	userId, _ := util.ParseObjectID(req.UserID)
+	userId, err := util.ParseObjectID(req.UserID)
+	if err != nil {
+		machine.Stop(spec.ID)
+		cleanup()
+		return nil, err
+	}
 
 	sandbox := &model.Sandbox{
 		ID:        objID,
 		Name:      req.Name,
-		ImageId:   req.TemplateID,
+		ImageId:   req.Image,
 		IP:        ip,
 		CPU:       cpu,
 		Mem:       mem,
 		DiskMB:    diskMB,
-		OrgID:     orID,
+		OrgID:     orgID,
 		EnvVars:   req.EnvVars, // Store env vars in the sandbox record
 		Status:    "running",
 		CreatedAt: time.Now(),
 		UserID:    userId,
 	}
-	err = s.repo.Create(ctx, orID, sandbox)
+	err = s.repo.Create(ctx, sandbox)
 	if err != nil {
 		machine.Stop(spec.ID)
 		cleanup()

@@ -14,12 +14,14 @@ import (
 )
 
 type IUserRepository interface {
-	Create(ctx context.Context, user *model.User) error
+	Create(ctx context.Context, user *model.User) (*model.User, error)
 	FindByID(ctx context.Context, id primitive.ObjectID) (*model.User, error)
-	Find(ctx context.Context, filter interface{}, opts options.FindOptions) ([]*model.User, error)
+	FindOne(ctx context.Context, filter interface{}, opts *options.FindOneOptions) (*model.User, error)
+	Find(ctx context.Context, filter interface{}, opts *options.FindOptions) ([]*model.User, error)
 	Delete(ctx context.Context, id primitive.ObjectID) error
 	Count(ctx context.Context, filter interface{}) (int64, error)
 	Exists(ctx context.Context, id string) bool
+	Update(ctx context.Context, user *model.User) error
 
 	// Add only specific methods here
 	FindByEmail(ctx context.Context, email string) (*model.User, error)
@@ -39,14 +41,14 @@ func NewUserRepository(cfg *config.Config, db *mongo.Database) IUserRepository {
 	}
 }
 
-func (r *UserRepository) Create(ctx context.Context, user *model.User) error {
+func (r *UserRepository) Create(ctx context.Context, user *model.User) (*model.User, error) {
 	user.CreatedAt = time.Now()
 	result, err := r.collection.InsertOne(ctx, user)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	user.ID = result.InsertedID.(primitive.ObjectID)
-	return nil
+	return user, nil
 }
 
 func (r *UserRepository) FindByID(ctx context.Context, id primitive.ObjectID) (*model.User, error) {
@@ -61,8 +63,8 @@ func (r *UserRepository) FindByID(ctx context.Context, id primitive.ObjectID) (*
 	return user, nil
 }
 
-func (r *UserRepository) Find(ctx context.Context, filter interface{}, opts options.FindOptions) ([]*model.User, error) {
-	cursor, err := r.collection.Find(ctx, filter, &opts)
+func (r *UserRepository) Find(ctx context.Context, filter interface{}, opts *options.FindOptions) ([]*model.User, error) {
+	cursor, err := r.collection.Find(ctx, filter, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,12 +94,23 @@ func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*model.
 	return user, nil
 }
 
+// Update updates an existing user
+func (r *UserRepository) Update(ctx context.Context, user *model.User) error {
+	filter := bson.M{"_id": user.ID}
+	update := bson.M{"$set": bson.M{
+		"name":     user.Name,
+		"email":    user.Email,
+		"imageUrl": user.ImageURL,
+	}}
+	_, err := r.collection.UpdateOne(ctx, filter, update)
+	return err
+}
+
 func (r *UserRepository) EnsureSystemUser(u model.User) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	u.System = true
-	u.Role = "system"
 	u.CreatedAt = time.Now()
 
 	filter := bson.M{"email": u.Email, "system": true}
@@ -136,4 +149,16 @@ func (r *UserRepository) FindByIDs(ctx context.Context, ids []primitive.ObjectID
 		return nil, err
 	}
 	return users, nil
+}
+
+func (r *UserRepository) FindOne(ctx context.Context, filter interface{}, opts *options.FindOneOptions) (*model.User, error) {
+	var user *model.User
+	err := r.collection.FindOne(ctx, filter, opts).Decode(&user)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return user, nil
 }
