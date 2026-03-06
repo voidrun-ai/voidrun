@@ -141,7 +141,7 @@ func (s *APIKeyService) GetByID(ctx context.Context, id string) (*model.APIKeyRe
 }
 
 // ListByOrgID retrieves all API keys for an organization
-func (s *APIKeyService) ListByOrgID(ctx context.Context, orgID string) ([]*model.APIKeyResponse, error) {
+func (s *APIKeyService) ListByOrg(ctx context.Context, orgID string) ([]*model.APIKeyResponse, error) {
 	objID, err := primitive.ObjectIDFromHex(orgID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid org ID: %w", err)
