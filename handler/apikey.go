@@ -22,7 +22,7 @@ func NewAPIKeyHandler(svc *service.APIKeyService) *APIKeyHandler {
 
 // Generate creates a new API key for an org (POST /api/orgs/:orgId/apikeys)
 func (h *APIKeyHandler) Generate(c *gin.Context) {
-	orgID := c.Param("orgId")
+	orgID := c.GetString("orgID")
 
 	var req struct {
 		KeyName string `json:"keyName" binding:"required"`
@@ -51,9 +51,9 @@ func (h *APIKeyHandler) Generate(c *gin.Context) {
 
 // List returns all API keys for an org (GET /api/orgs/:orgId/apikeys)
 func (h *APIKeyHandler) List(c *gin.Context) {
-	orgID := c.Param("orgId")
+	orgID := c.GetString("orgID")
 
-	keys, err := h.service.ListByOrgID(c.Request.Context(), orgID)
+	keys, err := h.service.ListByOrg(c.Request.Context(), orgID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
@@ -65,8 +65,9 @@ func (h *APIKeyHandler) List(c *gin.Context) {
 // Delete revokes an API key (DELETE /api/orgs/:orgId/apikeys/:keyId)
 func (h *APIKeyHandler) Delete(c *gin.Context) {
 	keyID := c.Param("keyId")
+	orgID := c.GetString("orgID")
 
-	if err := h.service.RevokeKey(c.Request.Context(), keyID); err != nil {
+	if err := h.service.RevokeKeyByOrg(c.Request.Context(), orgID, keyID); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
@@ -77,6 +78,7 @@ func (h *APIKeyHandler) Delete(c *gin.Context) {
 // Activate toggles activation status (POST /api/orgs/:orgId/apikeys/:keyId/activate)
 func (h *APIKeyHandler) Activate(c *gin.Context) {
 	keyID := c.Param("keyId")
+	orgID := c.GetString("orgID")
 
 	var req struct {
 		IsActive bool `json:"isActive"`
@@ -88,9 +90,9 @@ func (h *APIKeyHandler) Activate(c *gin.Context) {
 
 	var err error
 	if req.IsActive {
-		err = h.service.ActivateKey(c.Request.Context(), keyID)
+		err = h.service.ActivateKeyByOrg(c.Request.Context(), orgID, keyID)
 	} else {
-		err = h.service.DeactivateKey(c.Request.Context(), keyID)
+		err = h.service.DeactivateKeyByOrg(c.Request.Context(), orgID, keyID)
 	}
 
 	if err != nil {
@@ -108,7 +110,8 @@ func (h *APIKeyHandler) Activate(c *gin.Context) {
 // Touch marks a key as used (optional endpoint) PATCH /api/orgs/:orgId/apikeys/:keyId/touch
 func (h *APIKeyHandler) Touch(c *gin.Context) {
 	keyID := c.Param("keyId")
-	if err := h.service.TouchKey(c.Request.Context(), keyID, time.Now()); err != nil {
+	orgID := c.GetString("orgID")
+	if err := h.service.TouchKeyByOrg(c.Request.Context(), orgID, keyID, time.Now()); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}

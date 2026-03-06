@@ -10,7 +10,7 @@ import (
 
 const (
 	// APIKeyPrefix is the prefix for organization API keys
-	APIKeyPrefix = "org"
+	APIKeyPrefix = "vr"
 	// APIKeyLength is the length of the random part in bytes
 	APIKeyLength = 32
 	// BCryptCost is the cost factor for bcrypt hashing

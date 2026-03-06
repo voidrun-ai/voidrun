@@ -7,7 +7,6 @@ import (
 
 	"voidrun/config"
 	"voidrun/metrics"
-	"voidrun/middleware"
 	machine "voidrun/runtime"
 	"voidrun/util"
 
@@ -19,12 +18,16 @@ import (
 
 // Server represents the HTTP server
 type Server struct {
-	cfg      *config.Config
-	router   *gin.Engine
-	mongo    *mongo.Client
-	services *Services
-	metrics  *metrics.Manager
-	stopFn   context.CancelFunc
+	cfg         *config.Config
+	router      *gin.Engine
+	mongo       *mongo.Client
+	services    *Services
+	metrics     *metrics.Manager
+	handlers    *Handlers
+	stopFn      context.CancelFunc
+	db          *mongo.Database
+	repos       *Repositories
+	middlewares *Middlewares
 }
 
 // New creates a new server instance
@@ -49,20 +52,25 @@ func New(cfg *config.Config) (*Server, error) {
 	repos := InitRepositories(cfg, db)
 	services := InitServices(cfg, repos, metricsManager)
 	handlers := InitHandlers(services)
+	middlewares := InitMiddlewares(cfg, services)
 
 	if err := PopulateInitialData(cfg, repos); err != nil {
 		return nil, fmt.Errorf("failed to populate initial data: %w", err)
 	}
 
-	router := setupRouter(cfg, handlers, services)
+	router := setupRouter(cfg, handlers, services, middlewares)
 
 	return &Server{
-		cfg:      cfg,
-		router:   router,
-		mongo:    mongoClient,
-		services: services,
-		metrics:  metricsManager,
-		stopFn:   stopFn,
+		cfg:         cfg,
+		router:      router,
+		mongo:       mongoClient,
+		services:    services,
+		metrics:     metricsManager,
+		stopFn:      stopFn,
+		handlers:    handlers,
+		db:          db,
+		repos:       repos,
+		middlewares: middlewares,
 	}, nil
 }
 
@@ -127,9 +135,10 @@ func (s *Server) startHealthMonitor() {
 	}()
 }
 
-func setupRouter(cfg *config.Config, h *Handlers, s *Services) *gin.Engine {
+func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares) *gin.Engine {
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
+
 	if cfg.CORS.Enabled {
 		corsCfg := cors.Config{
 			AllowOrigins:     cfg.CORS.AllowOrigins,
@@ -158,94 +167,127 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services) *gin.Engine {
 	// Public metadata routes
 	api.GET("/version", h.Version.Get)
 
-	// Registration route (no auth)
-	api.POST("/register", h.Auth.Register)
-
 	// Protected routes require API key or JWT auth
 	protected := api.Group("")
-	protected.Use(middleware.AuthMiddleware(cfg, s.APIKey, s.Org, s.User))
+	protected.Use(mw.Auth)
 
 	// Sandbox routes
 	sandboxes := protected.Group("/sandboxes")
 	{
-		sandboxes.GET("", middleware.RequirePermission("sandbox:read"), h.Sandbox.List)
-		sandboxes.POST("", middleware.RequirePermission("sandbox:create"), h.Sandbox.Create)
+		sandboxes.GET("", h.Sandbox.List)
+		sandboxes.POST("", h.Sandbox.Create)
 
 		sandboxByID := sandboxes.Group("/:id")
-		sandboxByID.Use(middleware.SandboxAccessMiddleware(s.Sandbox))
-		sandboxByID.GET("", middleware.RequirePermission("sandbox:read"), h.Sandbox.Get)
-		sandboxByID.DELETE("", middleware.RequirePermission("sandbox:delete"), h.Sandbox.Delete)
-		sandboxByID.POST("/start", middleware.RequirePermission("sandbox:update"), h.Sandbox.Start)
-		sandboxByID.POST("/stop", middleware.RequirePermission("sandbox:update"), h.Sandbox.Stop)
-		sandboxByID.POST("/pause", middleware.RequirePermission("sandbox:update"), h.Sandbox.Pause)
-		sandboxByID.POST("/resume", middleware.RequirePermission("sandbox:update"), h.Sandbox.Resume)
-		sandboxByID.POST("/exec", middleware.RequirePermission("sandbox:exec"), h.Exec.Exec)
-		sandboxByID.POST("/exec-stream", middleware.RequirePermission("sandbox:exec"), h.Exec.ExecStream)
-		sandboxByID.POST("/session-exec", middleware.RequirePermission("sandbox:exec"), h.Exec.SessionExec)
-		sandboxByID.POST("/session-exec-stream", middleware.RequirePermission("sandbox:exec"), h.Exec.SessionExecStream)
+		sandboxByID.GET("", h.Sandbox.Get)
+		sandboxByID.DELETE("", h.Sandbox.Delete)
+		sandboxByID.POST("/start", h.Sandbox.Start)
+		sandboxByID.POST("/stop", h.Sandbox.Stop)
+		sandboxByID.POST("/pause", h.Sandbox.Pause)
+		sandboxByID.POST("/resume", h.Sandbox.Resume)
+		sandboxByID.POST("/exec", h.Exec.Exec)
+		sandboxByID.POST("/exec-stream", h.Exec.ExecStream)
+		sandboxByID.POST("/session-exec", h.Exec.SessionExec)
+		sandboxByID.POST("/session-exec-stream", h.Exec.SessionExecStream)
 
 		// Commands (Process Management)
-		sandboxByID.POST("/commands/run", middleware.RequirePermission("sandbox:exec"), h.Commands.Run)
-		sandboxByID.GET("/commands/list", middleware.RequirePermission("sandbox:exec"), h.Commands.List)
-		sandboxByID.POST("/commands/kill", middleware.RequirePermission("sandbox:exec"), h.Commands.Kill)
-		sandboxByID.POST("/commands/attach", middleware.RequirePermission("sandbox:exec"), h.Commands.Attach)
-		sandboxByID.POST("/commands/wait", middleware.RequirePermission("sandbox:exec"), h.Commands.Wait)
+		sandboxByID.POST("/commands/run", h.Commands.Run)
+		sandboxByID.GET("/commands/list", h.Commands.List)
+		sandboxByID.POST("/commands/kill", h.Commands.Kill)
+		sandboxByID.POST("/commands/attach", h.Commands.Attach)
+		sandboxByID.POST("/commands/wait", h.Commands.Wait)
 
 		// PTY Session Management
-		sandboxByID.GET("/pty", middleware.RequirePermission("sandbox:pty"), h.PTY.Proxy)
-		sandboxByID.POST("/pty/sessions", middleware.RequirePermission("sandbox:pty"), h.PTY.CreateSession)
-		sandboxByID.GET("/pty/sessions", middleware.RequirePermission("sandbox:pty"), h.PTY.ListSessions)
-		sandboxByID.GET("/pty/sessions/:sessionId", middleware.RequirePermission("sandbox:pty"), h.PTY.ConnectSession)
-		sandboxByID.DELETE("/pty/sessions/:sessionId", middleware.RequirePermission("sandbox:pty"), h.PTY.DeleteSession)
-		sandboxByID.POST("/pty/sessions/:sessionId/execute", middleware.RequirePermission("sandbox:pty"), h.PTY.ExecuteCommand)
-		sandboxByID.GET("/pty/sessions/:sessionId/buffer", middleware.RequirePermission("sandbox:pty"), h.PTY.GetBuffer)
-		sandboxByID.POST("/pty/sessions/:sessionId/resize", middleware.RequirePermission("sandbox:pty"), h.PTY.ResizeTerminal)
+		sandboxByID.GET("/pty", h.PTY.Proxy)
+		sandboxByID.POST("/pty/sessions", h.PTY.CreateSession)
+		sandboxByID.GET("/pty/sessions", h.PTY.ListSessions)
+		sandboxByID.GET("/pty/sessions/:sessionId", h.PTY.ConnectSession)
+		sandboxByID.DELETE("/pty/sessions/:sessionId", h.PTY.DeleteSession)
+		sandboxByID.POST("/pty/sessions/:sessionId/execute", h.PTY.ExecuteCommand)
+		sandboxByID.GET("/pty/sessions/:sessionId/buffer", h.PTY.GetBuffer)
+		sandboxByID.POST("/pty/sessions/:sessionId/resize", h.PTY.ResizeTerminal)
 
-		sandboxByID.GET("/files", middleware.RequirePermission("sandbox:fs"), h.FS.ListFiles)
-		sandboxByID.GET("/files/download", middleware.RequirePermission("sandbox:fs"), h.FS.DownloadFile)
-		sandboxByID.POST("/files/upload", middleware.RequirePermission("sandbox:fs"), h.FS.UploadFile)
-		sandboxByID.POST("/files/mkdir", middleware.RequirePermission("sandbox:fs"), h.FS.CreateDirectory)
-		sandboxByID.POST("/files/create", middleware.RequirePermission("sandbox:fs"), h.FS.CreateFile)
-		sandboxByID.POST("/files/copy", middleware.RequirePermission("sandbox:fs"), h.FS.CopyFile)
-		sandboxByID.GET("/files/head-tail", middleware.RequirePermission("sandbox:fs"), h.FS.HeadTail)
-		sandboxByID.POST("/files/chmod", middleware.RequirePermission("sandbox:fs"), h.FS.ChangePermissions)
-		sandboxByID.GET("/files/du", middleware.RequirePermission("sandbox:fs"), h.FS.DiskUsage)
-		sandboxByID.GET("/files/search", middleware.RequirePermission("sandbox:fs"), h.FS.SearchFiles)
-		sandboxByID.POST("/files/compress", middleware.RequirePermission("sandbox:fs"), h.FS.CompressFile)
-		sandboxByID.POST("/files/extract", middleware.RequirePermission("sandbox:fs"), h.FS.ExtractArchive)
-		sandboxByID.DELETE("/files", middleware.RequirePermission("sandbox:fs"), h.FS.DeleteFile)
-		sandboxByID.POST("/files/move", middleware.RequirePermission("sandbox:fs"), h.FS.MoveFile)
-		sandboxByID.GET("/files/stat", middleware.RequirePermission("sandbox:fs"), h.FS.StatFile)
+		sandboxByID.GET("/files", h.FS.ListFiles)
+		sandboxByID.GET("/files/download", h.FS.DownloadFile)
+		sandboxByID.POST("/files/upload", h.FS.UploadFile)
+		sandboxByID.POST("/files/mkdir", h.FS.CreateDirectory)
+		sandboxByID.POST("/files/create", h.FS.CreateFile)
+		sandboxByID.POST("/files/copy", h.FS.CopyFile)
+		sandboxByID.GET("/files/head-tail", h.FS.HeadTail)
+		sandboxByID.POST("/files/chmod", h.FS.ChangePermissions)
+		sandboxByID.GET("/files/du", h.FS.DiskUsage)
+		sandboxByID.GET("/files/search", h.FS.SearchFiles)
+		sandboxByID.POST("/files/compress", h.FS.CompressFile)
+		sandboxByID.POST("/files/extract", h.FS.ExtractArchive)
+		sandboxByID.DELETE("/files", h.FS.DeleteFile)
+		sandboxByID.POST("/files/move", h.FS.MoveFile)
+		sandboxByID.GET("/files/stat", h.FS.StatFile)
 
 		// File watch routes
-		sandboxByID.POST("/files/watch", middleware.RequirePermission("sandbox:fs"), h.FS.StartWatch)
-		sandboxByID.GET("/files/watch/:sessionId/stream", middleware.RequirePermission("sandbox:fs"), h.FS.StreamWatchEvents)
+		sandboxByID.POST("/files/watch", h.FS.StartWatch)
+		sandboxByID.GET("/files/watch/:sessionId/stream", h.FS.StreamWatchEvents)
 	}
 
 	// Image routes
 	images := protected.Group("/images")
 	{
-		images.GET("", middleware.RequirePermission("image:read"), h.Image.List)
-		images.POST("", middleware.RequirePermission("image:create"), h.Image.Create)
-		images.GET("/:id", middleware.RequirePermission("image:read"), h.Image.Get)
-		images.DELETE("/:id", middleware.RequirePermission("image:delete"), h.Image.Delete)
-		images.GET("/name/:name", middleware.RequirePermission("image:read"), h.Image.GetByName)
+		images.GET("", h.Image.List)
+		images.POST("", h.Image.Create)
+		images.GET("/:id", h.Image.Get)
+		images.DELETE("/:id", h.Image.Delete)
+		images.GET("/name/:name", h.Image.GetByName)
 	}
 
 	// Org routes with auth middleware (API Key required)
 	org := protected.Group("/orgs")
 	{
-		org.GET("/me", middleware.RequirePermission("org:read"), h.Org.GetCurrentOrg)
-		org.GET("/:orgId/users", middleware.RequirePermission("org:read"), h.Org.GetOrgUsers)
+		org.GET("/users", h.Org.GetOrgUsers)
 
 		// API key routes under org
-		apiKeys := org.Group("/:orgId/apikeys")
-		apiKeys.GET("", middleware.RequirePermission("apikey:read"), h.Org.ListAPIKeys)
-		apiKeys.POST("", middleware.RequirePermission("apikey:create"), h.Org.GenerateAPIKey)
-		apiKeys.DELETE("/:keyId", middleware.RequirePermission("apikey:delete"), h.Org.DeleteAPIKey)
-		apiKeys.POST("/:keyId/activate", middleware.RequirePermission("apikey:update"), h.Org.ActivateAPIKey)
-		apiKeys.PATCH("/:keyId/touch", middleware.RequirePermission("apikey:update"), h.Org.TouchAPIKey)
+		apiKeys := org.Group("/apikeys")
+		apiKeys.GET("", h.Org.ListAPIKeys)
+		apiKeys.POST("", h.Org.GenerateAPIKey)
+		apiKeys.DELETE("/:keyId", h.Org.DeleteAPIKey)
+		apiKeys.POST("/:keyId/activate", h.Org.ActivateAPIKey)
+		apiKeys.PATCH("/:keyId/touch", h.Org.TouchAPIKey)
+	}
+
+	// User routes
+	user := protected.Group("/users")
+	{
+		user.GET("/me", h.User.GetMe)
 	}
 
 	return r
+}
+
+func (s *Server) Router() *gin.Engine {
+	return s.router
+}
+
+func (s *Server) MongoClient() *mongo.Client {
+	return s.mongo
+}
+
+func (s *Server) Services() *Services {
+	return s.services
+}
+
+func (s *Server) Handlers() *Handlers {
+	return s.handlers
+}
+
+func (s *Server) Repositories() *Repositories {
+	return s.repos
+}
+
+func (s *Server) Middlewares() *Middlewares {
+	return s.middlewares
+}
+
+func (s *Server) DB() *mongo.Database {
+	return s.db
+}
+
+func (s *Server) Config() *config.Config {
+	return s.cfg
 }

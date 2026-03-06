@@ -19,7 +19,7 @@ func NewOrgService(repo repository.IOrgRepository) *OrgService {
 }
 
 // EnsureDefaultOrg checks for an owner org and creates one if missing
-func (s *OrgService) EnsureDefaultOrg(ctx context.Context, ownerID primitive.ObjectID, name string) (*model.Organization, error) {
+func (s *OrgService) EnsureDefaultOrg(ctx context.Context, ownerID primitive.ObjectID, name string) (*model.Org, error) {
 	existing, err := s.repo.FindByOwner(ctx, ownerID)
 	if err != nil {
 		return nil, err
@@ -27,22 +27,23 @@ func (s *OrgService) EnsureDefaultOrg(ctx context.Context, ownerID primitive.Obj
 	if existing != nil {
 		return existing, nil
 	}
-	org := &model.Organization{
-		Name:    name,
-		OwnerID: ownerID,
-		Members: []primitive.ObjectID{ownerID},
-		Plan:    "free",
+	org := &model.Org{
+		Name:      name,
+		OwnerID:   ownerID,
+		Members:   []primitive.ObjectID{ownerID},
+		Plan:      "default",
+		CreatedBy: ownerID,
 	}
 	return s.repo.Create(ctx, org)
 }
 
 // GetByID returns org by ObjectID
-func (s *OrgService) GetByID(ctx context.Context, id primitive.ObjectID) (*model.Organization, error) {
+func (s *OrgService) GetByID(ctx context.Context, id primitive.ObjectID) (*model.Org, error) {
 	return s.repo.FindByID(ctx, id)
 }
 
 // ListByMemberID returns organizations where user is a member.
-func (s *OrgService) ListByMemberID(ctx context.Context, memberID primitive.ObjectID) ([]*model.Organization, error) {
+func (s *OrgService) ListByMemberID(ctx context.Context, memberID primitive.ObjectID) ([]*model.Org, error) {
 	return s.repo.FindByMember(ctx, memberID)
 }
 
@@ -67,7 +68,7 @@ func (s *OrgService) UserHasAccess(ctx context.Context, orgID, userID primitive.
 }
 
 // GetCurrentOrg returns the current org and all orgs the user has access to
-func (s *OrgService) GetCurrentOrg(ctx context.Context, orgID primitive.ObjectID, userID *primitive.ObjectID) ([]*model.Organization, error) {
+func (s *OrgService) GetCurrentOrg(ctx context.Context, orgID primitive.ObjectID, userID primitive.ObjectID) ([]*model.Org, error) {
 	org, err := s.repo.FindByID(ctx, orgID)
 	if err != nil {
 		return nil, err
@@ -77,12 +78,12 @@ func (s *OrgService) GetCurrentOrg(ctx context.Context, orgID primitive.ObjectID
 	}
 
 	// If no user ID provided, return just the current org
-	if userID == nil {
-		return []*model.Organization{org}, nil
+	if userID.IsZero() {
+		return []*model.Org{org}, nil
 	}
 
 	// Get all orgs the user is a member of
-	memberOrgs, err := s.repo.FindByMember(ctx, *userID)
+	memberOrgs, err := s.repo.FindByMember(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
