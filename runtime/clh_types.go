@@ -1,4 +1,4 @@
-package machine
+package runtime
 
 // CLH API Request/Response Types
 // Based on Cloud Hypervisor API v0.49+

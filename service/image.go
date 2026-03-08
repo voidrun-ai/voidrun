@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"voidrun/config"
 	"voidrun/model"
@@ -30,11 +29,7 @@ func NewImageService(cfg *config.Config, repo repository.IImageRepository) *Imag
 }
 
 // ListByOrg returns system images and images owned by the org.
-func (s *ImageService) ListByOrg(ctx context.Context, orgIDHex string) ([]*model.Image, error) {
-	orgID, err := util.ParseObjectID(orgIDHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid org id: %w", err)
-	}
+func (s *ImageService) ListByOrg(ctx context.Context, orgID primitive.ObjectID) ([]*model.Image, error) {
 	filter := bson.M{
 		"$or": []bson.M{
 			{"orgId": orgID},
@@ -48,14 +43,10 @@ func (s *ImageService) ListByOrg(ctx context.Context, orgIDHex string) ([]*model
 }
 
 // GetByOrg returns an image by ID when it is visible to the org.
-func (s *ImageService) GetByOrg(ctx context.Context, id, orgIDHex string) (*model.Image, error) {
+func (s *ImageService) GetByOrg(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Image, error) {
 	imageID, err := util.ParseObjectID(id)
 	if err != nil {
 		return nil, fmt.Errorf("invalid image id: %w", err)
-	}
-	orgID, err := util.ParseObjectID(orgIDHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid org id: %w", err)
 	}
 	img, err := s.repo.FindByIDAndOrgOrSystem(ctx, imageID, orgID)
 	if err != nil {
@@ -69,23 +60,16 @@ func (s *ImageService) GetByOrg(ctx context.Context, id, orgIDHex string) (*mode
 
 // Create creates a new image
 func (s *ImageService) Create(ctx context.Context, img *model.Image) (*model.Image, error) {
-	orgID, err := imageOrgIDFromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s.repo.Create(ctx, orgID, img)
+	return s.repo.Create(ctx, img)
 }
 
 // DeleteByOrg removes an org image by ID.
-func (s *ImageService) DeleteByOrg(ctx context.Context, id, orgIDHex string) error {
+func (s *ImageService) DeleteByOrg(ctx context.Context, orgID primitive.ObjectID, id string) error {
 	imageID, err := util.ParseObjectID(id)
 	if err != nil {
 		return fmt.Errorf("invalid image id: %w", err)
 	}
-	orgID, err := util.ParseObjectID(orgIDHex)
-	if err != nil {
-		return fmt.Errorf("invalid org id: %w", err)
-	}
+
 	ok, err := s.repo.DeleteByIDAndOrg(ctx, imageID, orgID)
 	if err != nil {
 		return err
@@ -97,11 +81,7 @@ func (s *ImageService) DeleteByOrg(ctx context.Context, id, orgIDHex string) err
 }
 
 // Exists checks if an image exists
-func (s *ImageService) Exists(ctx context.Context, id string) bool {
-	orgID, err := imageOrgIDFromContext(ctx)
-	if err != nil {
-		return false
-	}
+func (s *ImageService) Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool {
 	objID, err := util.ParseObjectID(id)
 	if err != nil {
 		return false
@@ -110,20 +90,12 @@ func (s *ImageService) Exists(ctx context.Context, id string) bool {
 }
 
 // Count returns the number of images matching a filter
-func (s *ImageService) Count(ctx context.Context, filter interface{}) (int64, error) {
-	orgID, err := imageOrgIDFromContext(ctx)
-	if err != nil {
-		return 0, err
-	}
+func (s *ImageService) Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error) {
 	return s.repo.Count(ctx, orgID, filter)
 }
 
 // GetLatestByNameForOrg returns the latest image for a name visible to org.
-func (s *ImageService) GetLatestByNameForOrg(name, orgIDHex string) (*model.Image, error) {
-	orgID, err := util.ParseObjectID(orgIDHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid org id: %w", err)
-	}
+func (s *ImageService) GetLatestByNameForOrg(name string, orgID primitive.ObjectID) (*model.Image, error) {
 	img, err := s.repo.GetLatestByNameForOrg(name, orgID)
 	if err != nil {
 		return nil, err
@@ -132,13 +104,4 @@ func (s *ImageService) GetLatestByNameForOrg(name, orgIDHex string) (*model.Imag
 		return nil, ErrImageNotFound
 	}
 	return img, nil
-}
-
-func imageOrgIDFromContext(ctx context.Context) (primitive.ObjectID, error) {
-	raw := ctx.Value("orgID")
-	orgIDHex, ok := raw.(string)
-	if !ok || strings.TrimSpace(orgIDHex) == "" {
-		return primitive.NilObjectID, fmt.Errorf("missing org context")
-	}
-	return util.ParseObjectID(orgIDHex)
 }

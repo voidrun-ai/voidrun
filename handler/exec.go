@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"voidrun/model"
 	"voidrun/service"
+	"voidrun/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -37,14 +39,10 @@ func NewExecHandler(execService *service.ExecService, sessionService *service.Se
 func (h *ExecHandler) Exec(c *gin.Context) {
 	id := c.Param("id")
 
-	// Get sandbox from database to retrieve instance name
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
 
 	var req model.ExecRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -65,7 +63,7 @@ func (h *ExecHandler) Exec(c *gin.Context) {
 
 	// If background flag is set, delegate to commands service
 	if req.Background {
-		runResp, err := h.commandsService.Run(sbxInstance, model.CommandRunRequest{
+		runResp, err := h.commandsService.Run(id, model.CommandRunRequest{
 			Command: req.Command,
 			Env:     req.Env,
 			Cwd:     req.Cwd,
@@ -93,7 +91,7 @@ func (h *ExecHandler) Exec(c *gin.Context) {
 	}
 
 	// Execute command synchronously via agent /exec endpoint
-	resp, err := h.execService.ExecSync(c.Request.Context(), sbxInstance, req.Command, timeout, req.Env, req.Cwd)
+	resp, err := h.execService.ExecSync(c.Request.Context(), id, req.Command, timeout, req.Env, req.Cwd)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Command execution failed", err.Error()))
 		return
@@ -106,13 +104,10 @@ func (h *ExecHandler) Exec(c *gin.Context) {
 func (h *ExecHandler) SessionExec(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
 
 	var req model.SessionExecRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -120,7 +115,7 @@ func (h *ExecHandler) SessionExec(c *gin.Context) {
 		return
 	}
 
-	agentResp, err := h.sessionService.Send(sbxInstance, req)
+	agentResp, err := h.sessionService.Send(id, req)
 	if err != nil {
 		status := http.StatusBadRequest
 		if agentResp == nil {
@@ -137,12 +132,10 @@ func (h *ExecHandler) SessionExec(c *gin.Context) {
 func (h *ExecHandler) SessionExecStream(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-	sbxInstance := sandbox.ID.Hex()
 
 	var payload struct {
 		SessionID string `json:"sessionId"`
@@ -179,35 +172,20 @@ func (h *ExecHandler) SessionExecStream(c *gin.Context) {
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Cache-Control", "no-cache")
 
-	if err := h.sessionService.StreamExec(sbxInstance, payload.SessionID, payload.Command, c.Writer, func() { c.Writer.Flush() }); err != nil {
+	if err := h.sessionService.StreamExec(id, payload.SessionID, payload.Command, c.Writer, func() { c.Writer.Flush() }); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 }
 
 // ExecStream handles POST /sandboxes/:id/exec-stream for streaming command output as SSE
-// @Summary Stream command execution (SSE)
-// @Description Stream command execution output as Server-Sent Events
-// @Tags exec
-// @Accept json
-// @Produce text/event-stream
-// @Security ApiKeyAuth
-// @Param id path string true "Sandbox ID"
-// @Param request body model.ExecRequest true "Execution Request"
-// @Success 200 {string} string "Stream output"
-// @Failure 400 {object} model.ErrorResponse
-// @Failure 404 {object} model.ErrorResponse
-// @Failure 500 {object} model.ErrorResponse
-// @Router /sandboxes/{id}/exec-stream [post]
 func (h *ExecHandler) ExecStream(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-	sbxInstance := sandbox.ID.Hex()
 
 	var req model.ExecRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -239,8 +217,25 @@ func (h *ExecHandler) ExecStream(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	if err := h.execService.ExecStreamSSE(c.Request.Context(), sbxInstance, req.Command, timeout, req.Env, req.Cwd, c.Writer, func() { c.Writer.Flush() }); err != nil {
+	if err := h.execService.ExecStreamSSE(c.Request.Context(), id, req.Command, timeout, req.Env, req.Cwd, c.Writer, func() { c.Writer.Flush() }); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
+}
+
+func (h *ExecHandler) isSandboxRunning(c *gin.Context, sandboxId string) error {
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		return err
+	}
+
+	isRunning, err := h.sandboxService.IsRunning(c.Request.Context(), orgID, sandboxId)
+	if err != nil {
+		return err
+	}
+
+	if !isRunning {
+		return errors.New("Sandbox not running")
+	}
+	return nil
 }

@@ -231,9 +231,9 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares) 
 	images := protected.Group("/images")
 	{
 		images.GET("", h.Image.List)
-		images.POST("", h.Image.Create)
+		// images.POST("", h.Image.Create)
 		images.GET("/:id", h.Image.Get)
-		images.DELETE("/:id", h.Image.Delete)
+		// images.DELETE("/:id", h.Image.Delete)
 		images.GET("/name/:name", h.Image.GetByName)
 	}
 
