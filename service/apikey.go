@@ -95,23 +95,6 @@ func (s *APIKeyService) GenerateKey(ctx context.Context, orgID, userID primitive
 	}, nil
 }
 
-// GenerateKeyFromStrings helper that parses string IDs (for handlers)
-func (s *APIKeyService) GenerateKeyFromStrings(ctx context.Context, orgIDHex, userIDHex, keyName string) (*model.GeneratedAPIKeyResponse, error) {
-	orgID, err := primitive.ObjectIDFromHex(orgIDHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid org ID: %w", err)
-	}
-
-	userID := primitive.NilObjectID
-	if userIDHex != "" {
-		if uid, err := primitive.ObjectIDFromHex(userIDHex); err == nil {
-			userID = uid
-		}
-	}
-
-	return s.GenerateKey(ctx, orgID, userID, keyName)
-}
-
 // GetByID retrieves an API key by ID
 func (s *APIKeyService) GetByID(ctx context.Context, id string) (*model.APIKeyResponse, error) {
 	orgIDHex, err := orgIDFromContext(ctx)
@@ -141,13 +124,9 @@ func (s *APIKeyService) GetByID(ctx context.Context, id string) (*model.APIKeyRe
 }
 
 // ListByOrgID retrieves all API keys for an organization
-func (s *APIKeyService) ListByOrg(ctx context.Context, orgID string) ([]*model.APIKeyResponse, error) {
-	objID, err := primitive.ObjectIDFromHex(orgID)
-	if err != nil {
-		return nil, fmt.Errorf("invalid org ID: %w", err)
-	}
+func (s *APIKeyService) ListByOrg(ctx context.Context, orgID primitive.ObjectID) ([]*model.APIKeyResponse, error) {
 
-	apiKeys, err := s.repo.FindByOrgID(ctx, objID)
+	apiKeys, err := s.repo.FindByOrgID(ctx, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list keys: %w", err)
 	}
@@ -161,27 +140,14 @@ func (s *APIKeyService) ListByOrg(ctx context.Context, orgID string) ([]*model.A
 	return responses, nil
 }
 
-// RevokeKey deletes an API key
-func (s *APIKeyService) RevokeKey(ctx context.Context, keyID string) error {
-	orgID, err := orgIDFromContext(ctx)
-	if err != nil {
-		return err
-	}
-	return s.RevokeKeyByOrg(ctx, orgID, keyID)
-}
-
 // RevokeKeyByOrg deletes an API key only when it belongs to the provided org.
-func (s *APIKeyService) RevokeKeyByOrg(ctx context.Context, orgID, keyID string) error {
-	orgOID, err := primitive.ObjectIDFromHex(orgID)
-	if err != nil {
-		return fmt.Errorf("invalid org ID: %w", err)
-	}
+func (s *APIKeyService) RevokeKeyByOrg(ctx context.Context, orgID primitive.ObjectID, keyID string) error {
 	keyOID, err := primitive.ObjectIDFromHex(keyID)
 	if err != nil {
 		return fmt.Errorf("invalid key ID: %w", err)
 	}
 
-	ok, err := s.repo.DeleteByIDAndOrg(ctx, keyOID, orgOID)
+	ok, err := s.repo.DeleteByIDAndOrg(ctx, keyOID, orgID)
 	if err != nil {
 		return fmt.Errorf("failed to revoke key: %w", err)
 	}
@@ -191,31 +157,13 @@ func (s *APIKeyService) RevokeKeyByOrg(ctx context.Context, orgID, keyID string)
 	return nil
 }
 
-// DeactivateKey deactivates an API key (soft delete)
-func (s *APIKeyService) DeactivateKey(ctx context.Context, keyID string) error {
-	orgID, err := orgIDFromContext(ctx)
-	if err != nil {
-		return err
-	}
-	return s.DeactivateKeyByOrg(ctx, orgID, keyID)
-}
-
 // DeactivateKeyByOrg deactivates a key only when it belongs to the provided org.
-func (s *APIKeyService) DeactivateKeyByOrg(ctx context.Context, orgID, keyID string) error {
+func (s *APIKeyService) DeactivateKeyByOrg(ctx context.Context, orgID primitive.ObjectID, keyID string) error {
 	return s.setKeyActiveByOrg(ctx, orgID, keyID, false)
 }
 
-// ActivateKey reactivates a deactivated API key
-func (s *APIKeyService) ActivateKey(ctx context.Context, keyID string) error {
-	orgID, err := orgIDFromContext(ctx)
-	if err != nil {
-		return err
-	}
-	return s.ActivateKeyByOrg(ctx, orgID, keyID)
-}
-
 // ActivateKeyByOrg activates a key only when it belongs to the provided org.
-func (s *APIKeyService) ActivateKeyByOrg(ctx context.Context, orgID, keyID string) error {
+func (s *APIKeyService) ActivateKeyByOrg(ctx context.Context, orgID primitive.ObjectID, keyID string) error {
 	return s.setKeyActiveByOrg(ctx, orgID, keyID, true)
 }
 
@@ -322,17 +270,13 @@ func (s *APIKeyService) TouchKeyByOrg(ctx context.Context, orgID, keyID string, 
 	return nil
 }
 
-func (s *APIKeyService) setKeyActiveByOrg(ctx context.Context, orgID, keyID string, isActive bool) error {
-	orgOID, err := primitive.ObjectIDFromHex(orgID)
-	if err != nil {
-		return fmt.Errorf("invalid org ID: %w", err)
-	}
+func (s *APIKeyService) setKeyActiveByOrg(ctx context.Context, orgID primitive.ObjectID, keyID string, isActive bool) error {
 	keyOID, err := primitive.ObjectIDFromHex(keyID)
 	if err != nil {
 		return fmt.Errorf("invalid key ID: %w", err)
 	}
 
-	ok, err := s.repo.UpdateByIDAndOrg(ctx, keyOID, orgOID, map[string]interface{}{"isActive": isActive})
+	ok, err := s.repo.UpdateByIDAndOrg(ctx, keyOID, orgID, map[string]interface{}{"isActive": isActive})
 	if err != nil {
 		if isActive {
 			return fmt.Errorf("failed to activate key: %w", err)

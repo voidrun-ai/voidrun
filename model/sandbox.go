@@ -14,13 +14,12 @@ type Sandbox struct {
 	IP        string             `bson:"ip" json:"ip"`
 	CPU       int                `bson:"cpu" json:"cpu"`
 	Mem       int                `bson:"mem" json:"mem"`
-	DiskMB    int                `bson:"diskMb" json:"diskMb"`
+	DiskMB    int                `bson:"diskMB" json:"diskMB"`
 	Status    string             `bson:"status" json:"status"`
 	CreatedAt time.Time          `bson:"createdAt" json:"createdAt"`
 	CreatedBy primitive.ObjectID `bson:"createdBy" json:"createdBy"`
 	OrgID     primitive.ObjectID `bson:"orgId" json:"orgId"`
 	EnvVars   map[string]string  `bson:"envVars,omitempty" json:"envVars,omitempty"`
-	UserID    primitive.ObjectID `bson:"userId" json:"userId"`
 }
 
 type SandboxSpec struct {

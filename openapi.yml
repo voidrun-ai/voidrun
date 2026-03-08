@@ -5,7 +5,7 @@ info:
     VoidRun API provides comprehensive management of virtual machines (sandboxes), 
     file system operations, execution environments, and organizational resources.
 
-    All endpoints except `/api/register` and `/api/version` require the `X-API-Key` header for authentication.
+    All endpoints except `/api/version` require the `X-API-Key` header for authentication.
   version: 1.0.0
   contact:
     name: VoidRun Support
@@ -19,10 +19,10 @@ servers:
 tags:
   - name: System
     description: Service metadata endpoints
-  - name: Authentication
-    description: User registration and authentication
   - name: Organizations
     description: Organization and API key management
+  - name: Users
+    description: User profile and management
   - name: Sandboxes
     description: Virtual machine (sandbox) lifecycle management
   - name: Execution
@@ -38,7 +38,7 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: "API key for authentication (format: hf_...)"
+      description: "API key for authentication (format: vr_...)"
 
   schemas:
     # Generic API Response for single resource
@@ -77,40 +77,6 @@ components:
         details:
           type: string
           example: Additional error details
-
-    # Registration
-    RegisterRequest:
-      type: object
-      required:
-        - name
-        - email
-      properties:
-        name:
-          type: string
-          minLength: 2
-          maxLength: 100
-          example: Admin User
-        email:
-          type: string
-          format: email
-          maxLength: 254
-          example: admin@example.com
-
-    RegisterResponse:
-      type: object
-      properties:
-        message:
-          type: string
-          example: User registered successfully
-        data:
-          type: object
-          properties:
-            orgId:
-              type: string
-              example: 65ae1234567890abcdef1234
-            apiKey:
-              type: string
-              example: hf_1234567890abcdef
 
     # Organization
     Organization:
@@ -193,6 +159,11 @@ components:
         name:
           type: string
           example: CI/CD Key
+        scopes:
+          type: array
+          items:
+            type: string
+          example: ["*"]
         createdBy:
           type: string
           example: 65ae1234567890abcdef1234
@@ -304,7 +275,7 @@ components:
           example: vm-01
         imageId:
           type: string
-          example: 65ae1234567890abcdef1234
+          example: debian
         ip:
           type: string
           example: 192.168.1.100
@@ -313,7 +284,12 @@ components:
           example: 2
         mem:
           type: integer
+          description: Memory in MiB
           example: 2048
+        diskMb:
+          type: integer
+          description: Disk size in MiB
+          example: 5120
         status:
           type: string
           enum: [running, stopped, paused, error]
@@ -325,6 +301,9 @@ components:
           type: string
           example: 65ae1234567890abcdef1234
         orgId:
+          type: string
+          example: 65ae1234567890abcdef1234
+        userId:
           type: string
           example: 65ae1234567890abcdef1234
         envVars:
@@ -811,76 +790,15 @@ paths:
                     type: string
                     example: "2026-02-28T12:00:00Z"
 
-  /register:
-    post:
-      tags:
-        - Authentication
-      summary: Register a new user
-      description: |
-        Create a new user account and default organization.
-        This is the only public endpoint - no authentication required.
-        **Important:** Save the returned API key immediately as it's only shown once.
-      operationId: register
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RegisterRequest"
-      responses:
-        "200":
-          description: User registered successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/RegisterResponse"
-        "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /orgs/me:
-    get:
-      tags:
-        - Organizations
-      summary: Get current organization
-      description: Get the organization associated with the API key
-      operationId: getCurrentOrg
-      security:
-        - ApiKeyAuth: []
-      responses:
-        "200":
-          description: Organization details
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Organization"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /orgs/{orgId}/users:
+  /orgs/users:
     get:
       tags:
         - Organizations
       summary: List organization users
-      description: Get users who are members of the organization.
+      description: Get users who are members of the authenticated user's organization. The organization is derived from the API key context.
       operationId: getOrgUsers
       security:
         - ApiKeyAuth: []
-      parameters:
-        - name: orgId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
       responses:
         "200":
           description: Organization users
@@ -905,9 +823,9 @@ paths:
                             email:
                               type: string
                               example: admin@example.com
-                            role:
+                            imageUrl:
                               type: string
-                              example: owner
+                              example: https://example.com/avatar.png
                             createdAt:
                               type: string
                               format: date-time
@@ -924,22 +842,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /orgs/{orgId}/apikeys:
+  /orgs/apikeys:
     get:
       tags:
         - Organizations
       summary: List API keys
-      description: Get all API keys for an organization
+      description: Get all API keys for the authenticated user's organization. The organization is derived from the API key context.
       operationId: listAPIKeys
       security:
         - ApiKeyAuth: []
-      parameters:
-        - name: orgId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
       responses:
         "200":
           description: List of API keys
@@ -960,23 +871,23 @@ paths:
       tags:
         - Organizations
       summary: Generate new API key
-      description: Create a new API key for the organization. The plain key is only returned once.
+      description: Create a new API key for the organization. The plain key is only returned once. The organization is derived from the API key context.
       operationId: generateAPIKey
       security:
         - ApiKeyAuth: []
-      parameters:
-        - name: orgId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/GenerateAPIKeyRequest"
+              type: object
+              required:
+                - keyName
+              properties:
+                keyName:
+                  type: string
+                  example: CI/CD Key
+                  description: A descriptive name for the API key
       responses:
         "200":
           description: API key generated
@@ -997,22 +908,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /orgs/{orgId}/apikeys/{keyId}:
+  /orgs/apikeys/{keyId}:
     delete:
       tags:
         - Organizations
       summary: Revoke API key
-      description: Delete/revoke an API key
+      description: Delete/revoke an API key. The organization is derived from the API key context.
       operationId: revokeAPIKey
       security:
         - ApiKeyAuth: []
       parameters:
-        - name: orgId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
         - name: keyId
           in: path
           required: true
@@ -1039,22 +944,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /orgs/{orgId}/apikeys/{keyId}/activate:
+  /orgs/apikeys/{keyId}/activate:
     post:
       tags:
         - Organizations
       summary: Activate or deactivate API key
-      description: Toggle an API key's active status.
+      description: Toggle an API key's active status. The organization is derived from the API key context.
       operationId: activateAPIKey
       security:
         - ApiKeyAuth: []
       parameters:
-        - name: orgId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
         - name: keyId
           in: path
           required: true
@@ -1091,22 +990,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /orgs/{orgId}/apikeys/{keyId}/touch:
+  /orgs/apikeys/{keyId}/touch:
     patch:
       tags:
         - Organizations
       summary: Touch API key
-      description: Update the API key last-used timestamp.
+      description: Update the API key last-used timestamp. The organization is derived from the API key context.
       operationId: touchAPIKey
       security:
         - ApiKeyAuth: []
       parameters:
-        - name: orgId
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
         - name: keyId
           in: path
           required: true
@@ -1128,6 +1021,56 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: API key not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /users/me:
+    get:
+      tags:
+        - Users
+      summary: Get current user
+      description: Get the authenticated user's profile information
+      operationId: getCurrentUser
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    example: 65ae1234567890abcdef1234
+                  name:
+                    type: string
+                    example: Admin User
+                  email:
+                    type: string
+                    example: admin@example.com
+                  imageUrl:
+                    type: string
+                    example: https://example.com/avatar.png
+                  createdAt:
+                    type: string
+                    format: date-time
+                  orgs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          example: 65ae1234567890abcdef1234
+                        name:
+                          type: string
+                          example: My Organization
+        "401":
+          description: Unauthorized
           content:
             application/json:
               schema:

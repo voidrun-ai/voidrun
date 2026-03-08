@@ -28,13 +28,12 @@ func NewSandboxHandler(sandboxService *service.SandboxService) *SandboxHandler {
 
 // List handles GET /sandboxes with pagination
 func (h *SandboxHandler) List(c *gin.Context) {
-	// Get orgID from auth context
-	orgIDHex, ok := c.Get("orgID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("missing org context", ""))
+	// Extract orgID from context (injected by auth middleware)
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
 	// Parse pagination params - will be validated by service
 	page := 1
 	pageSize := 0 // Let service use default from config
@@ -50,9 +49,9 @@ func (h *SandboxHandler) List(c *gin.Context) {
 		}
 	}
 
-	sbxList, total, actualPageSize, err := h.sandboxService.ListByOrgPaginated(c.Request.Context(), orgIDHex.(string), page, pageSize)
+	sbxList, total, actualPageSize, err := h.sandboxService.ListByOrgPaginated(c.Request.Context(), orgID, page, pageSize)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to list sandboxes", err.Error()))
 		return
 	}
 	if sbxList == nil {
@@ -102,20 +101,20 @@ func (h *SandboxHandler) Create(c *gin.Context) {
 	}
 
 	// Extract orgID and userID from context (injected by auth middleware)
-	orgIDVal, ok := c.Get("orgID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("missing org context", ""))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-	req.OrgID = orgIDVal.(string)
 
-	userIdVal, ok := c.Get("userID")
+	req.OrgID = orgID
 
-	if !ok {
-		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("missing user context", ""))
+	userID, err := util.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-	req.UserID = userIdVal.(string)
+	req.UserID = userID
 
 	spec, err := h.sandboxService.Create(c.Request.Context(), req)
 	if err != nil {
@@ -123,7 +122,7 @@ func (h *SandboxHandler) Create(c *gin.Context) {
 		if err.Error() == "Sandbox ID already exists in DB" {
 			status = http.StatusConflict
 		}
-		c.JSON(status, model.NewErrorResponse(err.Error(), ""))
+		c.JSON(status, model.NewErrorResponse("Failed to create sandbox", err.Error()))
 		return
 	}
 
@@ -133,9 +132,15 @@ func (h *SandboxHandler) Create(c *gin.Context) {
 func (h *SandboxHandler) Get(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, ok := h.sandboxService.Get(c.Request.Context(), id)
-	if !ok || sandbox == nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	sandbox, err := h.sandboxService.Get(c.Request.Context(), orgID, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to fetch", err.Error()))
 		return
 	}
 
@@ -144,8 +149,13 @@ func (h *SandboxHandler) Get(c *gin.Context) {
 
 func (h *SandboxHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
 
-	if err := h.sandboxService.Delete(c.Request.Context(), id); err != nil {
+	if err := h.sandboxService.Delete(c.Request.Context(), orgID, id); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Delete failed", err.Error()))
 		return
 	}
@@ -155,8 +165,14 @@ func (h *SandboxHandler) Delete(c *gin.Context) {
 
 func (h *SandboxHandler) Start(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.sandboxService.Start(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("start failed", err.Error()))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	if err := h.sandboxService.Start(c.Request.Context(), orgID, id); err != nil {
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Start failed", err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox started", nil))
@@ -164,8 +180,14 @@ func (h *SandboxHandler) Start(c *gin.Context) {
 
 func (h *SandboxHandler) Stop(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.sandboxService.Stop(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("stop failed", err.Error()))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	if err := h.sandboxService.Stop(c.Request.Context(), orgID, id); err != nil {
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Stop failed", err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox stopped", nil))
@@ -173,8 +195,14 @@ func (h *SandboxHandler) Stop(c *gin.Context) {
 
 func (h *SandboxHandler) Pause(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.sandboxService.Pause(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("pause failed", err.Error()))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	if err := h.sandboxService.Pause(c.Request.Context(), orgID, id); err != nil {
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Pause failed", err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox paused", nil))
@@ -182,67 +210,15 @@ func (h *SandboxHandler) Pause(c *gin.Context) {
 
 func (h *SandboxHandler) Resume(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.sandboxService.Resume(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("resume failed", err.Error()))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	if err := h.sandboxService.Resume(c.Request.Context(), orgID, id); err != nil {
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Resume failed", err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox resumed", nil))
-}
-
-func (h *SandboxHandler) Upload(c *gin.Context) {
-	id := c.Param("id")
-
-	// Get target path from form data
-	targetPath := c.PostForm("targetPath")
-	if targetPath == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("targetPath is required", ""))
-		return
-	}
-
-	// Get the uploaded file(s)
-	form, err := c.MultipartForm()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Failed to parse multipart form", err.Error()))
-		return
-	}
-
-	files := form.File["files"]
-	if len(files) == 0 {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("No files provided", ""))
-		return
-	}
-
-	// Process upload
-	uploadedFiles := []string{}
-	for _, fileHeader := range files {
-		file, err := fileHeader.Open()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to open file", err.Error()))
-			return
-		}
-		defer file.Close()
-
-		err = h.sandboxService.UploadFile(c.Request.Context(), id, fileHeader.Filename, targetPath, fileHeader.Size, file)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Upload failed", err.Error()))
-			return
-		}
-		uploadedFiles = append(uploadedFiles, fileHeader.Filename)
-	}
-
-	c.JSON(http.StatusOK, model.NewSuccessResponse("Files uploaded successfully", gin.H{
-		"uploaded_files": uploadedFiles,
-		"target_path":    targetPath,
-	}))
-}
-
-func (h *SandboxHandler) sandboxAction(c *gin.Context, action string, fn func(string) error) {
-	id := c.Param("id")
-
-	if err := fn(id); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(action+" failed", err.Error()))
-		return
-	}
-
-	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox "+action+"d", nil))
 }

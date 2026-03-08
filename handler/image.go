@@ -7,6 +7,7 @@ import (
 
 	"voidrun/model"
 	"voidrun/service"
+	"voidrun/util"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -35,24 +36,11 @@ func NewImageHandler(imageService *service.ImageService) *ImageHandler {
 	return &ImageHandler{imageService: imageService}
 }
 
-func getOrgIDFromContext(c *gin.Context) (string, bool) {
-	orgVal, ok := c.Get("orgID")
-	if !ok {
-		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("missing org context", ""))
-		return "", false
-	}
-	orgID, ok := orgVal.(string)
-	if !ok || strings.TrimSpace(orgID) == "" {
-		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("invalid org context", ""))
-		return "", false
-	}
-	return orgID, true
-}
-
 // List handles GET /images
 func (h *ImageHandler) List(c *gin.Context) {
-	orgID, ok := getOrgIDFromContext(c)
-	if !ok {
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
@@ -67,17 +55,13 @@ func (h *ImageHandler) List(c *gin.Context) {
 // Get handles GET /images/:id
 func (h *ImageHandler) Get(c *gin.Context) {
 	id := c.Param("id")
-	orgID, ok := getOrgIDFromContext(c)
-	if !ok {
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
-	if err := validateObjectID(id); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid image ID format", err.Error()))
-		return
-	}
-
-	image, err := h.imageService.GetByOrg(c.Request.Context(), id, orgID)
+	image, err := h.imageService.GetByOrg(c.Request.Context(), orgID, id)
 	if err != nil {
 		if errors.Is(err, service.ErrImageNotFound) {
 			c.JSON(http.StatusNotFound, model.NewErrorResponse("Image not found", ""))
@@ -116,28 +100,19 @@ func (h *ImageHandler) Create(c *gin.Context) {
 	if img.Tag != "" {
 		img.Tag = strings.TrimSpace(img.Tag)
 	}
-
-	// Set CreatedBy from context if available (would come from auth middleware)
-	if userID, exists := c.Get("userID"); exists {
-		if uidHex, ok := userID.(string); ok && strings.TrimSpace(uidHex) != "" {
-			uid, err := primitive.ObjectIDFromHex(uidHex)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid user ID format", err.Error()))
-				return
-			}
-			img.CreatedBy = uid
-		}
-	}
-
-	orgIDHex, ok := getOrgIDFromContext(c)
-	if !ok {
-		return
-	}
-	orgID, err := primitive.ObjectIDFromHex(orgIDHex)
+	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid org ID format", err.Error()))
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
+
+	userID, err := util.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	img.CreatedBy = userID
 	img.System = false
 	img.OrgID = orgID
 
@@ -153,17 +128,13 @@ func (h *ImageHandler) Create(c *gin.Context) {
 // Delete handles DELETE /images/:id
 func (h *ImageHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
-	orgID, ok := getOrgIDFromContext(c)
-	if !ok {
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
-	if err := validateObjectID(id); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid image ID format", err.Error()))
-		return
-	}
-
-	if err := h.imageService.DeleteByOrg(c.Request.Context(), id, orgID); err != nil {
+	if err := h.imageService.DeleteByOrg(c.Request.Context(), orgID, id); err != nil {
 		if errors.Is(err, service.ErrImageNotFound) {
 			c.JSON(http.StatusNotFound, model.NewErrorResponse("Image not found", ""))
 			return
@@ -178,10 +149,6 @@ func (h *ImageHandler) Delete(c *gin.Context) {
 // GetByName handles GET /images/name/:name
 func (h *ImageHandler) GetByName(c *gin.Context) {
 	name := c.Param("name")
-	orgID, ok := getOrgIDFromContext(c)
-	if !ok {
-		return
-	}
 
 	if name == "" {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Image name is required", ""))
@@ -189,6 +156,12 @@ func (h *ImageHandler) GetByName(c *gin.Context) {
 	}
 	if len(name) > maxImageNameLength {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Image name exceeds maximum length", ""))
+		return
+	}
+
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 

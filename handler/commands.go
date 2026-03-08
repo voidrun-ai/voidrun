@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"voidrun/model"
 	"voidrun/service"
+	"voidrun/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -29,13 +31,10 @@ func NewCommandsHandler(commandsService *service.CommandsService, sandboxService
 func (h *CommandsHandler) Run(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
 
 	var req model.CommandRunRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -50,7 +49,7 @@ func (h *CommandsHandler) Run(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.commandsService.Run(sbxInstance, req)
+	resp, err := h.commandsService.Run(id, req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to run command", err.Error()))
 		return
@@ -64,15 +63,12 @@ func (h *CommandsHandler) Run(c *gin.Context) {
 func (h *CommandsHandler) List(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
-	sbxInstance := sandbox.ID.Hex()
-
-	resp, err := h.commandsService.List(sbxInstance)
+	resp, err := h.commandsService.List(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to list processes", err.Error()))
 		return
@@ -86,13 +82,10 @@ func (h *CommandsHandler) List(c *gin.Context) {
 func (h *CommandsHandler) Kill(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
 
 	var req model.CommandKillRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -105,7 +98,7 @@ func (h *CommandsHandler) Kill(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.commandsService.Kill(sbxInstance, req.PID)
+	resp, err := h.commandsService.Kill(id, req.PID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
@@ -119,13 +112,10 @@ func (h *CommandsHandler) Kill(c *gin.Context) {
 func (h *CommandsHandler) Attach(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
 
 	var req model.CommandAttachRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -144,7 +134,7 @@ func (h *CommandsHandler) Attach(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
-	if err := h.commandsService.Attach(sbxInstance, req.PID, c.Writer, func() { c.Writer.Flush() }); err != nil {
+	if err := h.commandsService.Attach(id, req.PID, c.Writer, func() { c.Writer.Flush() }); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
@@ -155,13 +145,10 @@ func (h *CommandsHandler) Attach(c *gin.Context) {
 func (h *CommandsHandler) Wait(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
 
 	var req model.CommandWaitRequest
 	if err := c.BindJSON(&req); err != nil {
@@ -174,11 +161,28 @@ func (h *CommandsHandler) Wait(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.commandsService.Wait(sbxInstance, req.PID)
+	resp, err := h.commandsService.Wait(id, req.PID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+func (h *CommandsHandler) isSandboxRunning(c *gin.Context, sandboxId string) error {
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		return err
+	}
+
+	isRunning, err := h.sandboxService.IsRunning(c.Request.Context(), orgID, sandboxId)
+	if err != nil {
+		return err
+	}
+
+	if !isRunning {
+		return errors.New("Sandbox not running")
+	}
+	return nil
 }

@@ -8,10 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +18,7 @@ import (
 	"voidrun/metrics"
 	"voidrun/model"
 	"voidrun/repository"
-	machine "voidrun/runtime"
+	"voidrun/runtime"
 	"voidrun/util"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -48,15 +46,7 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 	}
 }
 
-func (s *SandboxService) List(ctx context.Context) ([]*model.Sandbox, error) {
-	orgID, err := s.orgIDFromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s.repo.Find(ctx, orgID, nil, options.FindOptions{})
-}
-
-func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgIDHex string, page, pageSize int) ([]*model.Sandbox, int64, int, error) {
+func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive.ObjectID, page, pageSize int) ([]*model.Sandbox, int64, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -64,11 +54,6 @@ func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgIDHex string
 		pageSize = config.DefaultPageSize
 	} else if pageSize > config.MaxPageSize {
 		pageSize = config.MaxPageSize
-	}
-
-	orgID, err := util.ParseObjectID(orgIDHex)
-	if err != nil {
-		return nil, 0, 0, fmt.Errorf("invalid org id: %w", err)
 	}
 
 	filter := bson.M{"orgId": orgID}
@@ -106,74 +91,23 @@ func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgIDHex string
 	return sbxList, total, pageSize, nil
 }
 
-func (s *SandboxService) ListByOrg(ctx context.Context, orgIDHex string) ([]*model.Sandbox, error) {
-	orgID, err := util.ParseObjectID(orgIDHex)
-	if err != nil {
-		return nil, fmt.Errorf("invalid org id: %w", err)
-	}
-
-	filter := bson.M{"orgId": orgID}
-	// Use projection to fetch only essential fields for list view
-	opts := options.FindOptions{}
-	opts.SetSort(bson.D{{Key: "_id", Value: -1}}) // Sort by _id descending (latest first, uses default index)
-	opts.SetProjection(bson.M{
-		"_id":       1,
-		"name":      1,
-		"imageId":   1,
-		"ip":        1,
-		"cpu":       1,
-		"mem":       1,
-		"status":    1,
-		"createdAt": 1,
-	})
-	sbxList, err := s.repo.Find(ctx, orgID, filter, opts)
-	if err != nil {
-		return nil, err
-	}
-
-	if sbxList == nil {
-		sbxList = []*model.Sandbox{}
-	}
-	return sbxList, nil
+func (s *SandboxService) Get(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error) {
+	return s.getOrgScopedSandbox(ctx, orgID, id)
 }
 
-func (s *SandboxService) Get(ctx context.Context, id string) (*model.Sandbox, bool) {
-	sandbox, err := s.getByOrgFromContext(ctx, id)
-	if err != nil || sandbox == nil {
-		return nil, false
+func (s *SandboxService) IsRunning(ctx context.Context, orgID primitive.ObjectID, id string) (bool, error) {
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
+	if err != nil {
+		return false, err
 	}
-	return sandbox, true
+
+	if sandbox.Status == "running" {
+		return true, nil
+	}
+	return false, nil
 }
 
-func (s *SandboxService) orgIDFromContext(ctx context.Context) (primitive.ObjectID, error) {
-	raw := ctx.Value("orgID")
-	orgIDHex, ok := raw.(string)
-	if !ok || strings.TrimSpace(orgIDHex) == "" {
-		return primitive.NilObjectID, fmt.Errorf("missing org context")
-	}
-	return util.ParseObjectID(orgIDHex)
-}
-
-func (s *SandboxService) getByOrgFromContext(ctx context.Context, id string) (*model.Sandbox, error) {
-	orgID, err := s.orgIDFromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
-	if err != nil {
-		return nil, err
-	}
-	if sandbox == nil {
-		return nil, ErrSandboxNotFound
-	}
-	return sandbox, nil
-}
-
-func (s *SandboxService) Exists(ctx context.Context, id string) bool {
-	orgID, err := s.orgIDFromContext(ctx)
-	if err != nil {
-		return false
-	}
+func (s *SandboxService) Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool {
 	return s.repo.Exists(ctx, orgID, id)
 }
 
@@ -213,22 +147,22 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	// Rollback function for cleanup on failure
 	cleanup := func() {
 		fmt.Printf("   [!] Rollback: Deleting failed instance %s\n", spec.ID)
-		os.RemoveAll(machine.GetInstanceDir(spec.ID))
+		os.RemoveAll(runtime.GetInstanceDir(spec.ID))
 	}
 
-	if err := machine.ConfigureNetwork(*s.cfg, &spec); err != nil {
+	if err := runtime.ConfigureNetwork(*s.cfg, &spec); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR ConfigureNetwork: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
 
 	// Prepare storage (pass config by value, not pointer)
-	overlay, err := machine.PrepareInstance(ctx, *s.cfg, spec)
+	overlay, err := runtime.PrepareInstance(ctx, *s.cfg, spec)
 	if err != nil {
 		return nil, fmt.Errorf("storage init failed: %w", err)
 	}
 
-	if err := machine.Create(*s.cfg, spec, overlay); err != nil {
+	if err := runtime.Create(*s.cfg, spec, overlay); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
@@ -241,8 +175,8 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		syncEnabled = *req.Sync
 	}
 	if syncEnabled {
-		if err := waitForAgent(spec.ID, timeout, &netCfg); err != nil {
-			machine.Stop(spec.ID)
+		if err := waitForAgent(spec.ID, timeout); err != nil {
+			runtime.Stop(spec.ID)
 			cleanup()
 			return nil, fmt.Errorf("agent not ready: %w", err)
 		}
@@ -269,20 +203,6 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		}
 	}()
 
-	// Save to DB with validated org from context and user from auth context.
-	orgID, err := util.ParseObjectID(req.OrgID)
-	if err != nil {
-		machine.Stop(spec.ID)
-		cleanup()
-		return nil, err
-	}
-	userId, err := util.ParseObjectID(req.UserID)
-	if err != nil {
-		machine.Stop(spec.ID)
-		cleanup()
-		return nil, err
-	}
-
 	sandbox := &model.Sandbox{
 		ID:        objID,
 		Name:      req.Name,
@@ -291,44 +211,37 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		CPU:       cpu,
 		Mem:       mem,
 		DiskMB:    diskMB,
-		OrgID:     orgID,
+		OrgID:     req.OrgID,
 		EnvVars:   req.EnvVars, // Store env vars in the sandbox record
 		Status:    "running",
 		CreatedAt: time.Now(),
-		UserID:    userId,
+		CreatedBy: req.UserID,
 	}
 	err = s.repo.Create(ctx, sandbox)
 	if err != nil {
-		machine.Stop(spec.ID)
+		runtime.Stop(spec.ID)
 		cleanup()
 		return nil, fmt.Errorf("DB save failed: %w", err)
 	}
 
 	if s.metrics != nil {
-		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, machine.GetSocketPath(spec.ID), cpu, mem, diskMB)
+		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, runtime.GetSocketPath(spec.ID), cpu, mem, diskMB)
 	}
 
 	return sandbox, nil
 }
 
-func (s *SandboxService) Delete(ctx context.Context, id string) error {
-	orgID, err := s.orgIDFromContext(ctx)
+func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
-	}
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
-	if err != nil {
-		return err
-	}
-	if sandbox == nil {
-		return ErrSandboxNotFound
 	}
 
-	if err := machine.Delete(sandbox.ID.Hex()); err != nil {
+	if err := runtime.Delete(id); err != nil {
 		return fmt.Errorf("delete failed: %w", err)
 	}
 	if s.metrics != nil {
-		s.metrics.UnregisterSandbox(sandbox.ID.Hex())
+		s.metrics.UnregisterSandbox(id)
 	}
 
 	ok, err := s.repo.DeleteByIDAndOrg(ctx, sandbox.ID, orgID)
@@ -341,15 +254,10 @@ func (s *SandboxService) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *SandboxService) Start(ctx context.Context, id string) error {
-	orgID, err := s.orgIDFromContext(ctx)
+func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
-	}
-	// Get sandbox from DB with org scope
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
-	if err != nil || sandbox == nil {
-		return fmt.Errorf("sandbox not found: %s", id)
 	}
 
 	// Verify it's stopped
@@ -357,30 +265,29 @@ func (s *SandboxService) Start(ctx context.Context, id string) error {
 		return fmt.Errorf("sandbox is not stopped (current status: %s)", sandbox.Status)
 	}
 
-	sbxID := sandbox.ID.Hex()
-	socketPath := machine.GetSocketPath(sbxID)
+	socketPath := runtime.GetSocketPath(id)
 
 	// Check if hypervisor is running (socket exists)
-	client := machine.NewCLHClient(socketPath)
+	client := runtime.NewCLHClient(socketPath)
 	if client.IsSocketAvailable() {
 		// Warm start - hypervisor running, just boot the VM
-		log.Printf("[Start] Warm start for sandbox %s\n", sbxID)
-		if err := machine.Start(sbxID); err != nil {
+		log.Printf("[Start] Warm start for sandbox %s\n", id)
+		if err := runtime.Start(id); err != nil {
 			return fmt.Errorf("failed to start VM: %w", err)
 		}
 
 		timeout := 30 * time.Second
-		if err := waitForAgent(sbxID, timeout, nil); err != nil {
+		if err := waitForAgent(id, timeout); err != nil {
 
 			return fmt.Errorf("agent not ready: %w", err)
 		}
 	} else {
 		// Cold start - hypervisor not running, need to recreate
-		log.Printf("[Start] Cold start for sandbox %s - recreating VM\n", sbxID)
+		log.Printf("[Start] Cold start for sandbox %s - recreating VM\n", id)
 
 		// Build spec from DB data
 		spec := model.SandboxSpec{
-			ID:        sbxID,
+			ID:        id,
 			CPUs:      sandbox.CPU,
 			MemoryMB:  sandbox.Mem,
 			DiskMB:    sandbox.DiskMB,
@@ -388,16 +295,15 @@ func (s *SandboxService) Start(ctx context.Context, id string) error {
 		}
 
 		// Get existing overlay path
-		overlayPath := machine.GetOverlayPath(sbxID)
+		overlayPath := runtime.GetOverlayPath(id)
 
 		// Recreate the VM (boots it automatically)
-		if err := machine.Create(*s.cfg, spec, overlayPath); err != nil {
+		if err := runtime.Create(*s.cfg, spec, overlayPath); err != nil {
 			return fmt.Errorf("failed to recreate VM: %w", err)
 		}
 
 		// Wait for agent
-		netCfg := buildAgentNetConfig(s.cfg, sandbox.IP, sandbox.Name)
-		if err := waitForAgent(sbxID, 30*time.Second, &netCfg); err != nil {
+		if err := waitForAgent(id, 30*time.Second); err != nil {
 			return fmt.Errorf("agent not ready after restart: %w", err)
 		}
 	}
@@ -411,28 +317,24 @@ func (s *SandboxService) Start(ctx context.Context, id string) error {
 	// Register with metrics
 	if s.metrics != nil {
 		spec := model.SandboxSpec{
-			ID:       sbxID,
+			ID:       id,
 			CPUs:     sandbox.CPU,
 			MemoryMB: sandbox.Mem,
 			DiskMB:   sandbox.DiskMB,
 		}
-		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, machine.GetSocketPath(spec.ID), spec.CPUs, spec.MemoryMB, spec.DiskMB)
+		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, runtime.GetSocketPath(spec.ID), spec.CPUs, spec.MemoryMB, spec.DiskMB)
 	}
 
 	return nil
 }
 
-func (s *SandboxService) Stop(ctx context.Context, id string) error {
-	orgID, err := s.orgIDFromContext(ctx)
+func (s *SandboxService) Stop(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
 	}
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
-	if err != nil || sandbox == nil {
-		return fmt.Errorf("sandbox not found: %s", id)
-	}
 
-	if err := machine.Stop(id); err != nil {
+	if err := runtime.Stop(id); err != nil {
 		return err
 	}
 	if s.metrics != nil {
@@ -448,15 +350,11 @@ func (s *SandboxService) Stop(ctx context.Context, id string) error {
 }
 
 // EnsureRunning checks if sandbox is running and starts it if stopped (auto-start feature)
-func (s *SandboxService) EnsureRunning(ctx context.Context, id string) error {
-	orgID, err := s.orgIDFromContext(ctx)
+func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	// Get sandbox from DB to check status
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
-	}
-	// Get sandbox from DB to check status
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
-	if err != nil || sandbox == nil {
-		return fmt.Errorf("sandbox not found: %s", id)
 	}
 
 	// If already running, return immediately
@@ -467,13 +365,12 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, id string) error {
 	// If stopped, start it
 	if sandbox.Status == "stopped" {
 		log.Printf("[Auto-Start] Sandbox %s is stopped, starting...\n", id)
-		if err := s.Resume(ctx, id); err != nil {
+		if err := s.Resume(ctx, orgID, id); err != nil {
 			return fmt.Errorf("failed to auto-start sandbox: %w", err)
 		}
 
 		// Wait for agent to be ready
-		netCfg := buildAgentNetConfig(s.cfg, sandbox.IP, sandbox.Name)
-		if err := waitForAgent(sandbox.ID.Hex(), 30*time.Second, &netCfg); err != nil {
+		if err := waitForAgent(sandbox.ID.Hex(), 30*time.Second); err != nil {
 			return fmt.Errorf("agent not ready after start: %w", err)
 		}
 
@@ -485,17 +382,13 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, id string) error {
 	return fmt.Errorf("sandbox in unexpected state for auto-start: %s", sandbox.Status)
 }
 
-func (s *SandboxService) Pause(ctx context.Context, id string) error {
-	orgID, err := s.orgIDFromContext(ctx)
+func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
 	}
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
-	if err != nil || sandbox == nil {
-		return fmt.Errorf("sandbox not found: %s", id)
-	}
 
-	if err := machine.Pause(id); err != nil {
+	if err := runtime.Pause(id); err != nil {
 		return err
 	}
 
@@ -507,17 +400,13 @@ func (s *SandboxService) Pause(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *SandboxService) Resume(ctx context.Context, id string) error {
-	orgID, err := s.orgIDFromContext(ctx)
+func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
 	}
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
-	if err != nil || sandbox == nil {
-		return fmt.Errorf("sandbox not found: %s", id)
-	}
 
-	if err := machine.Resume(id); err != nil {
+	if err := runtime.Resume(id); err != nil {
 		log.Printf("[ERROR] Failed to resume sandbox %s: %v\n", id, err)
 		return err
 	}
@@ -531,7 +420,7 @@ func (s *SandboxService) Resume(ctx context.Context, id string) error {
 }
 
 func (s *SandboxService) Info(id string) (string, error) {
-	return machine.Info(id)
+	return runtime.Info(id)
 }
 
 // RefreshStatuses checks each sandbox health and updates status field in DB.
@@ -556,7 +445,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		id := sb.ID.Hex()
 
 		// --- FAST PATH CHECKS ---
-		client := machine.NewAPIClientForSandbox(id)
+		client := runtime.NewAPIClientForSandbox(id)
 		socketExists := client.IsSocketAvailable() // Fast os.Stat check
 
 		// Case 1: DB says Stopped + Socket is GONE.
@@ -628,7 +517,7 @@ type agentNetConfig struct {
 	Hostname    string   `json:"hostname"`
 }
 
-func waitForAgent(sbxID string, timeout time.Duration, netCfg *agentNetConfig) error {
+func waitForAgent(sbxID string, timeout time.Duration) error {
 	defer util.Track("Agent Readiness Wait")()
 	deadline := time.Now().Add(timeout)
 	sleep := 50 * time.Millisecond
@@ -700,144 +589,144 @@ func buildAgentNetConfig(cfg *config.Config, ip, name string) agentNetConfig {
 }
 
 // Large files are streamed in binary mode to avoid base64 overhead
-func (s *SandboxService) UploadFile(ctx context.Context, sandboxID, filename, targetPath string, fileSize int64, fileContent io.Reader) error {
-	// Get sandbox to verify it exists
-	sandbox, exists := s.Get(ctx, sandboxID)
-	if !exists {
-		return fmt.Errorf("sandbox not found: %s", sandboxID)
-	}
+// func (s *SandboxService) UploadFile(ctx context.Context, sandboxID, filename, targetPath string, fileSize int64, fileContent io.Reader) error {
+// 	// Get sandbox to verify it exists
+// 	sandbox, exists := s.Get(ctx, sandboxID)
+// 	if !exists {
+// 		return fmt.Errorf("sandbox not found: %s", sandboxID)
+// 	}
 
-	// Normalize target path
-	if !strings.HasPrefix(targetPath, "/") {
-		targetPath = "/" + targetPath
-	}
+// 	// Normalize target path
+// 	if !strings.HasPrefix(targetPath, "/") {
+// 		targetPath = "/" + targetPath
+// 	}
 
-	fullPath := filepath.Join(targetPath, filename)
+// 	fullPath := filepath.Join(targetPath, filename)
 
-	// Use the file service to write the file via agent
-	socketPath := filepath.Join(s.cfg.Paths.InstancesDir, sandbox.ID.Hex(), "vsock.sock")
-	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
-	if err != nil {
-		return fmt.Errorf("Sandbox not reachable: %w", err)
-	}
-	defer conn.Close()
+// 	// Use the file service to write the file via agent
+// 	socketPath := filepath.Join(s.cfg.Paths.InstancesDir, sandbox.ID.Hex(), "vsock.sock")
+// 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+// 	if err != nil {
+// 		return fmt.Errorf("Sandbox not reachable: %w", err)
+// 	}
+// 	defer conn.Close()
 
-	// Handshake
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
-	if _, err := conn.Write([]byte("CONNECT 1024\n")); err != nil {
-		return fmt.Errorf("connection failed: %w", err)
-	}
+// 	// Handshake
+// 	conn.SetDeadline(time.Now().Add(2 * time.Second))
+// 	if _, err := conn.Write([]byte("CONNECT 1024\n")); err != nil {
+// 		return fmt.Errorf("connection failed: %w", err)
+// 	}
 
-	buf := make([]byte, 32)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return fmt.Errorf("handshake failed: %w", err)
-	}
+// 	buf := make([]byte, 32)
+// 	n, err := conn.Read(buf)
+// 	if err != nil {
+// 		return fmt.Errorf("handshake failed: %w", err)
+// 	}
 
-	if !strings.HasPrefix(string(buf[:n]), "OK") {
-		return fmt.Errorf("Sandbox agent not ready: %s", string(buf[:n]))
-	}
+// 	if !strings.HasPrefix(string(buf[:n]), "OK") {
+// 		return fmt.Errorf("Sandbox agent not ready: %s", string(buf[:n]))
+// 	}
 
-	// Send file_write request using binary streaming (no base64)
-	conn.SetDeadline(time.Now().Add(5 * time.Minute))
-	req := map[string]interface{}{
-		"action":     "file_write",
-		"path":       fullPath,
-		"binaryMode": true,
-		"size":       fileSize,
-	}
-	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
+// 	// Send file_write request using binary streaming (no base64)
+// 	conn.SetDeadline(time.Now().Add(5 * time.Minute))
+// 	req := map[string]interface{}{
+// 		"action":     "file_write",
+// 		"path":       fullPath,
+// 		"binaryMode": true,
+// 		"size":       fileSize,
+// 	}
+// 	if err := json.NewEncoder(conn).Encode(req); err != nil {
+// 		return fmt.Errorf("failed to send request: %w", err)
+// 	}
 
-	// Stream the file bytes directly to the agent
-	if fileSize > 0 {
-		written, err := io.CopyN(conn, fileContent, fileSize)
-		if err != nil {
-			return fmt.Errorf("failed to stream file: %w", err)
-		}
-		if written != fileSize {
-			return fmt.Errorf("short write: wrote %d of %d", written, fileSize)
-		}
-	} else {
-		// Unknown size: fallback to full copy (still binary)
-		if _, err := io.Copy(conn, fileContent); err != nil {
-			return fmt.Errorf("failed to stream file: %w", err)
-		}
-	}
+// 	// Stream the file bytes directly to the agent
+// 	if fileSize > 0 {
+// 		written, err := io.CopyN(conn, fileContent, fileSize)
+// 		if err != nil {
+// 			return fmt.Errorf("failed to stream file: %w", err)
+// 		}
+// 		if written != fileSize {
+// 			return fmt.Errorf("short write: wrote %d of %d", written, fileSize)
+// 		}
+// 	} else {
+// 		// Unknown size: fallback to full copy (still binary)
+// 		if _, err := io.Copy(conn, fileContent); err != nil {
+// 			return fmt.Errorf("failed to stream file: %w", err)
+// 		}
+// 	}
 
-	// Read response
-	type FileResponse struct {
-		Success bool   `json:"success"`
-		Error   string `json:"error,omitempty"`
-	}
-	var resp FileResponse
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
+// 	// Read response
+// 	type FileResponse struct {
+// 		Success bool   `json:"success"`
+// 		Error   string `json:"error,omitempty"`
+// 	}
+// 	var resp FileResponse
+// 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+// 		return fmt.Errorf("failed to read response: %w", err)
+// 	}
 
-	if !resp.Success {
-		return fmt.Errorf("%s", resp.Error)
-	}
+// 	if !resp.Success {
+// 		return fmt.Errorf("%s", resp.Error)
+// 	}
 
-	fmt.Printf("✓ File uploaded to Sandbox: %s -> %s (%d bytes)\n", filename, fullPath, fileSize)
-	return nil
-}
+// 	fmt.Printf("✓ File uploaded to Sandbox: %s -> %s (%d bytes)\n", filename, fullPath, fileSize)
+// 	return nil
+// }
 
-func (s *SandboxService) executeCommandInSandbox(sbxID, cmd string) error {
-	socketPath := filepath.Join(s.cfg.Paths.InstancesDir, sbxID, "vsock.sock")
+// func (s *SandboxService) executeCommandInSandbox(sbxID, cmd string) error {
+// 	socketPath := filepath.Join(s.cfg.Paths.InstancesDir, sbxID, "vsock.sock")
 
-	// Connect to Sandbox socket with timeout
-	conn, err := net.DialTimeout("unix", socketPath, 3*time.Second)
-	if err != nil {
-		return fmt.Errorf("Sandbox not reachable: %w", err)
-	}
-	defer conn.Close()
+// 	// Connect to Sandbox socket with timeout
+// 	conn, err := net.DialTimeout("unix", socketPath, 3*time.Second)
+// 	if err != nil {
+// 		return fmt.Errorf("Sandbox not reachable: %w", err)
+// 	}
+// 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
-	if _, err := conn.Write([]byte("CONNECT 1024\n")); err != nil {
-		return fmt.Errorf("handshake failed: %w", err)
-	}
+// 	conn.SetDeadline(time.Now().Add(2 * time.Second))
+// 	if _, err := conn.Write([]byte("CONNECT 1024\n")); err != nil {
+// 		return fmt.Errorf("handshake failed: %w", err)
+// 	}
 
-	// Read handshake response
-	buf := make([]byte, 32)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return fmt.Errorf("failed to read handshake: %w", err)
-	}
+// 	// Read handshake response
+// 	buf := make([]byte, 32)
+// 	n, err := conn.Read(buf)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to read handshake: %w", err)
+// 	}
 
-	resp := string(buf[:n])
-	if !strings.HasPrefix(resp, "OK") {
-		return fmt.Errorf("Sandbox agent not ready: %s", resp)
-	}
+// 	resp := string(buf[:n])
+// 	if !strings.HasPrefix(resp, "OK") {
+// 		return fmt.Errorf("Sandbox agent not ready: %s", resp)
+// 	}
 
-	// Send command to Sandbox agent
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
+// 	// Send command to Sandbox agent
+// 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	agentReq := map[string]interface{}{
-		"cmd":     cmd,
-		"args":    []string{},
-		"timeout": 30,
-	}
+// 	agentReq := map[string]interface{}{
+// 		"cmd":     cmd,
+// 		"args":    []string{},
+// 		"timeout": 30,
+// 	}
 
-	if err := json.NewEncoder(conn).Encode(agentReq); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
+// 	if err := json.NewEncoder(conn).Encode(agentReq); err != nil {
+// 		return fmt.Errorf("failed to send command: %w", err)
+// 	}
 
-	// Read response to verify success
-	respBuf := make([]byte, 1024)
-	n, err = conn.Read(respBuf)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
+// 	// Read response to verify success
+// 	respBuf := make([]byte, 1024)
+// 	n, err = conn.Read(respBuf)
+// 	if err != nil && err != io.EOF {
+// 		return fmt.Errorf("failed to read response: %w", err)
+// 	}
 
-	respStr := string(respBuf[:n])
-	if strings.Contains(respStr, "error") || strings.Contains(respStr, "failed") {
-		return fmt.Errorf("Sandbox command failed: %s", respStr)
-	}
+// 	respStr := string(respBuf[:n])
+// 	if strings.Contains(respStr, "error") || strings.Contains(respStr, "failed") {
+// 		return fmt.Errorf("Sandbox command failed: %s", respStr)
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 // setAgentEnvVars sends environment variables to the agent for the sandbox
 func setAgentEnvVars(sbxID string, envVars map[string]string) error {
@@ -866,4 +755,15 @@ func setAgentEnvVars(sbxID string, envVars map[string]string) error {
 
 	fmt.Printf("[INFO] Environment variables set on sandbox %s: %v\n", sbxID, envVars)
 	return nil
+}
+
+func (s *SandboxService) getOrgScopedSandbox(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error) {
+	sandbox, err := s.repo.FindByID(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	if sandbox == nil {
+		return nil, ErrSandboxNotFound
+	}
+	return sandbox, nil
 }

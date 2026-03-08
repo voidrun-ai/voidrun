@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"voidrun/model"
 	"voidrun/service"
+	"voidrun/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -131,16 +133,13 @@ func (h *PTYHandler) Proxy(c *gin.Context) {
 func (h *PTYHandler) CreateSession(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
-	sbxInstance := sandbox.ID.Hex()
-
 	// Call agent to create session
-	session, err := h.sessionService.CreateSession(c.Request.Context(), sbxInstance)
+	session, err := h.sessionService.CreateSession(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to create session", err.Error()))
 		return
@@ -153,16 +152,13 @@ func (h *PTYHandler) CreateSession(c *gin.Context) {
 func (h *PTYHandler) ListSessions(c *gin.Context) {
 	id := c.Param("id")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
-	sbxInstance := sandbox.ID.Hex()
-
 	// Call agent to list sessions
-	sessions, err := h.sessionService.ListSessions(c.Request.Context(), sbxInstance)
+	sessions, err := h.sessionService.ListSessions(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to list sessions", err.Error()))
 		return
@@ -176,14 +172,10 @@ func (h *PTYHandler) ConnectSession(c *gin.Context) {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
-
 	// Upgrade client connection to WebSocket
 	clientConn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -195,7 +187,7 @@ func (h *PTYHandler) ConnectSession(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
-	agentURL := fmt.Sprintf("ws://%s/pty/sessions/%s", sbxInstance, sessionID)
+	agentURL := fmt.Sprintf("ws://%s/pty/sessions/%s", id, sessionID)
 	agentConn, _, err := h.dialer.DialContext(ctx, agentURL, nil)
 	if err != nil {
 		return
@@ -278,16 +270,12 @@ func (h *PTYHandler) DeleteSession(c *gin.Context) {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
-
 	// Call agent to delete session
-	if err := h.sessionService.DeleteSession(c.Request.Context(), sbxInstance, sessionID); err != nil {
+	if err := h.sessionService.DeleteSession(c.Request.Context(), id, sessionID); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to delete session", err.Error()))
 		return
 	}
@@ -300,14 +288,10 @@ func (h *PTYHandler) ExecuteCommand(c *gin.Context) {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
-
 	// Parse request body
 	var req struct {
 		Command string `json:"command" binding:"required"`
@@ -318,7 +302,7 @@ func (h *PTYHandler) ExecuteCommand(c *gin.Context) {
 	}
 
 	// Call agent to execute command
-	if err := h.sessionService.ExecuteCommand(c.Request.Context(), sbxInstance, sessionID, req.Command); err != nil {
+	if err := h.sessionService.ExecuteCommand(c.Request.Context(), id, sessionID, req.Command); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to execute command", err.Error()))
 		return
 	}
@@ -331,16 +315,12 @@ func (h *PTYHandler) GetBuffer(c *gin.Context) {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
-
 	// Call agent to get buffer
-	buffer, err := h.sessionService.GetBuffer(c.Request.Context(), sbxInstance, sessionID)
+	buffer, err := h.sessionService.GetBuffer(c.Request.Context(), id, sessionID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to get buffer", err.Error()))
 		return
@@ -354,14 +334,10 @@ func (h *PTYHandler) ResizeTerminal(c *gin.Context) {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	sandbox, found := h.sandboxService.Get(c.Request.Context(), id)
-	if !found {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("Sandbox not found", ""))
+	if err := h.isSandboxRunning(c, id); err != nil {
+		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-
-	sbxInstance := sandbox.ID.Hex()
-
 	// Parse request body
 	var req struct {
 		Rows uint16 `json:"rows" binding:"required"`
@@ -373,10 +349,27 @@ func (h *PTYHandler) ResizeTerminal(c *gin.Context) {
 	}
 
 	// Call agent to resize terminal
-	if err := h.sessionService.ResizeTerminal(c.Request.Context(), sbxInstance, sessionID, req.Rows, req.Cols); err != nil {
+	if err := h.sessionService.ResizeTerminal(c.Request.Context(), id, sessionID, req.Rows, req.Cols); err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to resize terminal", err.Error()))
 		return
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Terminal resized", nil))
+}
+
+func (h *PTYHandler) isSandboxRunning(c *gin.Context, sandboxId string) error {
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		return err
+	}
+
+	isRunning, err := h.sandboxService.IsRunning(c.Request.Context(), orgID, sandboxId)
+	if err != nil {
+		return err
+	}
+
+	if !isRunning {
+		return errors.New("Sandbox not running")
+	}
+	return nil
 }

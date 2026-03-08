@@ -9,6 +9,7 @@ import (
 
 	"voidrun/model"
 	"voidrun/service"
+	"voidrun/util"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -124,13 +125,6 @@ func (h *OrgHandler) GetOrgUsers(c *gin.Context) {
 
 // GenerateAPIKey creates a new API key for an org (POST /api/orgs/apikeys)
 func (h *OrgHandler) GenerateAPIKey(c *gin.Context) {
-	orgID := c.GetString("orgID")
-
-	if err := validateObjectID(orgID); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid org ID format", err.Error()))
-		return
-	}
-
 	var req struct {
 		KeyName string `json:"keyName" binding:"required"`
 	}
@@ -150,14 +144,19 @@ func (h *OrgHandler) GenerateAPIKey(c *gin.Context) {
 		return
 	}
 
-	var userIDHex string
-	if v, ok := c.Get("userID"); ok {
-		if s, ok2 := v.(string); ok2 {
-			userIDHex = s
-		}
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
 	}
 
-	resp, err := h.apiKeyService.GenerateKeyFromStrings(c.Request.Context(), orgID, userIDHex, req.KeyName)
+	userID, err := util.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
+		return
+	}
+
+	resp, err := h.apiKeyService.GenerateKey(c.Request.Context(), orgID, userID, req.KeyName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
@@ -168,10 +167,9 @@ func (h *OrgHandler) GenerateAPIKey(c *gin.Context) {
 
 // ListAPIKeys returns all API keys for an org (GET /api/orgs/apikeys)
 func (h *OrgHandler) ListAPIKeys(c *gin.Context) {
-	orgID := c.GetString("orgID")
-
-	if err := validateObjectID(orgID); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid org ID format", err.Error()))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
@@ -187,10 +185,10 @@ func (h *OrgHandler) ListAPIKeys(c *gin.Context) {
 // DeleteAPIKey revokes an API key (DELETE /api/orgs/:orgId/apikeys/:keyId)
 func (h *OrgHandler) DeleteAPIKey(c *gin.Context) {
 	keyID := c.Param("keyId")
-	orgID := c.Param("orgID")
 
-	if err := validateObjectID(keyID); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid key ID format", err.Error()))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
@@ -209,22 +207,21 @@ func (h *OrgHandler) DeleteAPIKey(c *gin.Context) {
 // ActivateAPIKey toggles activation status (POST /api/orgs/:orgId/apikeys/:keyId/activate)
 func (h *OrgHandler) ActivateAPIKey(c *gin.Context) {
 	keyID := c.Param("keyId")
-	orgID := c.GetString("orgID")
 
-	if err := validateObjectID(keyID); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid key ID format", err.Error()))
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
 	var req struct {
 		IsActive bool `json:"isActive"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err = c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
-	var err error
 	if req.IsActive {
 		err = h.apiKeyService.ActivateKeyByOrg(c.Request.Context(), orgID, keyID)
 	} else {
