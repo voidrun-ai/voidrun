@@ -30,10 +30,11 @@ var ErrSandboxNotFound = errors.New("sandbox not found")
 
 // SandboxService handles sandbox business logic
 type SandboxService struct {
-	repo      repository.ISandboxRepository
-	imageRepo repository.IImageRepository
-	cfg       *config.Config
-	metrics   *metrics.Manager
+	repo       repository.ISandboxRepository
+	imageRepo  repository.IImageRepository
+	cfg        *config.Config
+	metrics    *metrics.Manager
+	projection primitive.M
 }
 
 // NewSandboxService creates a new sandbox service
@@ -43,6 +44,18 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 		imageRepo: imageRepo,
 		cfg:       cfg,
 		metrics:   metricsManager,
+		projection: bson.M{
+			"_id":       1,
+			"name":      1,
+			"image":     1,
+			"cpu":       1,
+			"mem":       1,
+			"diskMB":    1,
+			"status":    1,
+			"createdAt": 1,
+			"orgId":     1,
+			"createdBy": 1,
+		},
 	}
 }
 
@@ -70,16 +83,7 @@ func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive
 	opts.SetSkip(skip)
 	opts.SetLimit(int64(pageSize))
 	opts.SetSort(bson.D{{Key: "_id", Value: -1}}) // Sort by _id descending (latest first, uses default index)
-	opts.SetProjection(bson.M{
-		"_id":       1,
-		"name":      1,
-		"imageId":   1,
-		"ip":        1,
-		"cpu":       1,
-		"mem":       1,
-		"status":    1,
-		"createdAt": 1,
-	})
+	opts.SetProjection(s.projection)
 	sbxList, err := s.repo.Find(ctx, orgID, filter, opts)
 	if err != nil {
 		return nil, 0, 0, err
@@ -206,7 +210,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	sandbox := &model.Sandbox{
 		ID:        objID,
 		Name:      req.Name,
-		ImageId:   req.Image,
+		Image:     req.Image,
 		IP:        ip,
 		CPU:       cpu,
 		Mem:       mem,
@@ -217,6 +221,8 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		CreatedAt: time.Now(),
 		CreatedBy: req.UserID,
 	}
+
+	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), sandbox.OrgID.Hex())
 	err = s.repo.Create(ctx, sandbox)
 	if err != nil {
 		runtime.Stop(spec.ID)
@@ -758,7 +764,7 @@ func setAgentEnvVars(sbxID string, envVars map[string]string) error {
 }
 
 func (s *SandboxService) getOrgScopedSandbox(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error) {
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
+	sandbox, err := s.repo.FindByID(ctx, orgID, id, options.FindOneOptions{Projection: s.projection})
 	if err != nil {
 		return nil, err
 	}

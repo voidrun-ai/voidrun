@@ -7,7 +7,7 @@ import (
 
 	"voidrun/config"
 	"voidrun/metrics"
-	machine "voidrun/runtime"
+	"voidrun/runtime"
 	"voidrun/util"
 
 	"github.com/gin-contrib/cors"
@@ -33,7 +33,7 @@ type Server struct {
 // New creates a new server instance
 func New(cfg *config.Config) (*Server, error) {
 	// Initialize machine package with config paths
-	machine.SetInstancesRoot(cfg.Paths.InstancesDir)
+	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
 	var metricsManager *metrics.Manager
 	var stopFn context.CancelFunc
 	if cfg.Metrics.Enabled {
