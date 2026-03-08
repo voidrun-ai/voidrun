@@ -14,7 +14,7 @@ import (
 )
 
 type IImageRepository interface {
-	Create(ctx context.Context, orgID primitive.ObjectID, image *model.Image) (*model.Image, error)
+	Create(ctx context.Context, image *model.Image) (*model.Image, error)
 	FindByIDAndOrgOrSystem(ctx context.Context, id, orgID primitive.ObjectID) (*model.Image, error)
 	Find(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Image, error)
 	DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
@@ -39,8 +39,7 @@ func NewImageRepository(cfg *config.Config, db *mongo.Database) IImageRepository
 }
 
 // Add creates a new image
-func (r *ImageRepository) Create(ctx context.Context, orgID primitive.ObjectID, img *model.Image) (*model.Image, error) {
-	img.OrgID = orgID
+func (r *ImageRepository) Create(ctx context.Context, img *model.Image) (*model.Image, error) {
 	img.CreatedAt = time.Now()
 	if img.ID.IsZero() {
 		img.ID = primitive.NewObjectID()

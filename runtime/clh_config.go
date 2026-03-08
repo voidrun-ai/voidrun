@@ -1,4 +1,4 @@
-package machine
+package runtime
 
 // CLHConfig matches the Cloud Hypervisor v0.49+ API Schema
 // Alias for VmConfig for backward compatibility
