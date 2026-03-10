@@ -340,6 +340,10 @@ func (s *SandboxService) Stop(ctx context.Context, orgID primitive.ObjectID, id 
 		return err
 	}
 
+	if sandbox.Status != "running" {
+		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
+	}
+
 	if err := runtime.Stop(id); err != nil {
 		return err
 	}
@@ -394,6 +398,10 @@ func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id
 		return err
 	}
 
+	if sandbox.Status != "running" {
+		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
+	}
+
 	if err := runtime.Pause(id); err != nil {
 		return err
 	}
@@ -410,6 +418,10 @@ func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, i
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
+	}
+
+	if sandbox.Status != "paused" {
+		return fmt.Errorf("sandbox is not paused (current status: %s)", sandbox.Status)
 	}
 
 	if err := runtime.Resume(id); err != nil {
@@ -435,6 +447,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 	// Optimization 1: Fetch only necessary fields
 	projection := bson.M{"_id": 1, "status": 1}
 	sandboxes, err := s.repo.FindForHealth(ctx, options.FindOptions{Projection: projection})
+
 	if err != nil {
 		return fmt.Errorf("failed to list sandboxes: %w", err)
 	}
@@ -498,7 +511,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 					// Socket exists, but API refused connection or timed out.
 					// Process is likely zombie or unresponsive. Treat as stopped.
 					fmt.Printf("[health] Sandbox %s unresponsive (socket exists): %v\n", id, err)
-					newState = "stopped"
+					newState = "killed"
 				}
 			}
 

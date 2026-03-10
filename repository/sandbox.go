@@ -198,7 +198,7 @@ func (r *SandboxRepository) Find(ctx context.Context, orgID primitive.ObjectID, 
 }
 
 func (r *SandboxRepository) FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error) {
-	cursor, err := r.collection.Find(ctx, bson.M{}, &opts)
+	cursor, err := r.collection.Find(ctx, bson.M{"status": bson.M{"$ne": "killed"}}, &opts)
 	if err != nil {
 		return nil, err
 	}

@@ -11,9 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Clerk token type header prefix
-const clerkTokenTypePrefix = "Bearer "
-
 // ctxKey is a private type for context keys
 type ctxKey string
 
@@ -34,6 +31,11 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 	return func(c *gin.Context) {
 
 		apiKey := c.GetHeader("X-API-Key")
+
+		// ws will send api key to query param
+		if apiKey == "" {
+			apiKey = c.Query("apiKey")
+		}
 
 		bearerToken := extractBearerToken(c.GetHeader("Authorization"))
 		if apiKey != "" && bearerToken != "" {

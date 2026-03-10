@@ -117,6 +117,7 @@ func (c *CLHClient) do(ctx context.Context, method, endpoint string, body interf
 	var hasBody bool
 	if body != nil {
 		data, err := json.Marshal(body)
+		// log.Printf("Request to %s with body: %s", endpoint, data)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal request: %w", err)
 		}
