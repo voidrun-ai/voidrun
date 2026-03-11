@@ -10,8 +10,8 @@ import (
 type Sandbox struct {
 	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	Name      string             `bson:"name" json:"name"`
-	ImageId   string             `bson:"imageId" json:"imageId"`
-	IP        string             `bson:"ip" json:"ip"`
+	Image     string             `bson:"image" json:"image"`
+	IP        string             `bson:"ip" json:"ip,omitempty"`
 	CPU       int                `bson:"cpu" json:"cpu"`
 	Mem       int                `bson:"mem" json:"mem"`
 	DiskMB    int                `bson:"diskMB" json:"diskMB"`

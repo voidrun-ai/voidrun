@@ -39,7 +39,7 @@ type APIClient struct {
 func NewAPIClient(socketPath string) *APIClient {
 	return &APIClient{
 		socketPath: socketPath,
-		timeout:    5 * time.Second,
+		timeout:    2 * time.Second,
 	}
 }
 

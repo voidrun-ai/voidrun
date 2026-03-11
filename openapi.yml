@@ -194,7 +194,7 @@ components:
           example: vm-01
         image:
           type: string
-          example: 65ae1234567890abcdef1234
+          example: debian
         cpu:
           type: integer
           minimum: 1
@@ -227,43 +227,6 @@ components:
             DEBUG: "true"
             LOG_LEVEL: "info"
 
-    RestoreSandboxRequest:
-      type: object
-      required:
-        - new_id
-        - snapshot_path
-        - orgId
-      properties:
-        new_id:
-          type: string
-          example: vm-restored
-        snapshot_path:
-          type: string
-          example: /var/lib/snapshots/snapshot-123.tar.gz
-        new_ip:
-          type: string
-          example: 192.168.1.100
-        cold:
-          type: boolean
-          default: false
-          description: Start in stopped state
-        cpu:
-          type: integer
-          minimum: 1
-          maximum: 8
-          example: 2
-        mem:
-          type: integer
-          minimum: 1024
-          maximum: 16384
-          example: 2048
-        orgId:
-          type: string
-          example: 65ae1234567890abcdef1234
-        userId:
-          type: string
-          example: 65ae1234567890abcdef1234
-
     Sandbox:
       type: object
       properties:
@@ -273,20 +236,19 @@ components:
         name:
           type: string
           example: vm-01
-        imageId:
+        image:
           type: string
+          description: Image name or ID used to create the sandbox
           example: debian
-        ip:
-          type: string
-          example: 192.168.1.100
         cpu:
           type: integer
+          description: Number of vCPUs allocated
           example: 2
         mem:
           type: integer
           description: Memory in MiB
           example: 2048
-        diskMb:
+        diskMB:
           type: integer
           description: Disk size in MiB
           example: 5120
@@ -299,18 +261,17 @@ components:
           format: date-time
         createdBy:
           type: string
+          description: User ID who created the sandbox
           example: 65ae1234567890abcdef1234
         orgId:
           type: string
-          example: 65ae1234567890abcdef1234
-        userId:
-          type: string
+          description: Organization ID the sandbox belongs to
           example: 65ae1234567890abcdef1234
         envVars:
           type: object
           additionalProperties:
             type: string
-          description: Environment variables set on the sandbox
+          description: Environment variables set on the sandbox (optional, only present if configured)
           example:
             DEBUG: "true"
             LOG_LEVEL: "info"
@@ -348,19 +309,6 @@ components:
               type: integer
               example: 9
               description: Total number of pages
-
-    Snapshot:
-      type: object
-      properties:
-        id:
-          type: string
-          example: snapshot-123
-        created_at:
-          type: string
-          format: date-time
-        full_path:
-          type: string
-          example: /var/lib/snapshots/snapshot-123.tar.gz
 
     # Execution
     ExecRequest:
@@ -3127,40 +3075,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-    post:
-      tags:
-        - Images
-      summary: Create image
-      description: Create or register a new base image
-      operationId: createImage
-      security:
-        - ApiKeyAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateImageRequest"
-      responses:
-        "201":
-          description: Image created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Image"
-        "400":
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
   /images/{id}:
     get:
       tags:
@@ -3184,41 +3098,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Image"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Image not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    delete:
-      tags:
-        - Images
-      summary: Delete image
-      description: Delete a base image
-      operationId: deleteImage
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
-      responses:
-        "200":
-          description: Image deleted
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
         "401":
           description: Unauthorized
           content:
