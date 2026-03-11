@@ -21,7 +21,7 @@ import (
 
 type ISandboxRepository interface {
 	Create(ctx context.Context, sandbox *model.Sandbox) error
-	FindByID(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error)
+	FindByID(ctx context.Context, orgID primitive.ObjectID, id string, opts options.FindOneOptions) (*model.Sandbox, error)
 	Find(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error)
 	DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	UpdateStatusByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, status string) (bool, error)
@@ -156,14 +156,14 @@ func (r *SandboxRepository) Create(ctx context.Context, sandbox *model.Sandbox) 
 	return nil
 }
 
-func (r *SandboxRepository) FindByID(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error) {
+func (r *SandboxRepository) FindByID(ctx context.Context, orgID primitive.ObjectID, id string, opts options.FindOneOptions) (*model.Sandbox, error) {
 	oid, err := util.ParseObjectID(id)
 	if err != nil {
 		return nil, err
 	}
 
 	var sandbox *model.Sandbox
-	err = r.collection.FindOne(ctx, bson.M{"_id": oid, "orgId": orgID}).Decode(&sandbox)
+	err = r.collection.FindOne(ctx, bson.M{"_id": oid, "orgId": orgID}, &opts).Decode(&sandbox)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -198,7 +198,7 @@ func (r *SandboxRepository) Find(ctx context.Context, orgID primitive.ObjectID, 
 }
 
 func (r *SandboxRepository) FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error) {
-	cursor, err := r.collection.Find(ctx, bson.M{}, &opts)
+	cursor, err := r.collection.Find(ctx, bson.M{"status": bson.M{"$ne": "killed"}}, &opts)
 	if err != nil {
 		return nil, err
 	}

@@ -105,7 +105,6 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	log.Printf("   [Create] spec.TapName=%q, spec.MacAddress=%q\n", tapName, macAddr)
 
 	// 5. Inject Configuration via API
-	// === FRESH BOOT MODE ===
 	fmt.Println("   [+] Injecting Configuration via API...")
 
 	debugConsole := cfg.Sandbox.DebugBootConsole

@@ -37,6 +37,17 @@ type MongoConfig struct {
 	Database string
 }
 
+// Redis configuration
+type RedisConfig struct {
+	Mode           string // "single", "cluster", or "sentinel"
+	URL            string // for single-node mode
+	ClusterAddrs   string // comma-separated list for cluster mode
+	SentinelAddrs  string // comma-separated list for sentinel mode
+	SentinelMaster string // master name for sentinel mode
+	Password       string // optional auth password
+	DB             int    // database number (single-node only)
+}
+
 // System user configuration
 type SystemUserConfig struct {
 	ID    string
@@ -50,6 +61,7 @@ type Config struct {
 	Paths                 PathsConfig
 	Network               NetworkConfig
 	Mongo                 MongoConfig
+	Redis                 RedisConfig
 	Auth                  AuthConfig
 	SystemUser            SystemUserConfig
 	Sandbox               SandboxConfig
@@ -57,6 +69,7 @@ type Config struct {
 	Metrics               MetricsConfig
 	CORS                  CORSConfig
 	APIKeyCacheTTLSeconds int
+	ClerkCacheTTLSeconds  int
 }
 
 // Auth configuration
@@ -160,6 +173,15 @@ const (
 	DefaultCORSAllowCredentials  = false
 	DefaultCORSMaxAgeSec         = 600
 	DefaultAPIKeyCacheTTLSeconds = 3600 // 1 hour
+	DefaultClerkCacheTTLSeconds  = 300  // 5 minutes
+	// Redis defaults
+	DefaultRedisMode           = "single"
+	DefaultRedisURL            = ""
+	DefaultRedisClusterAddrs   = ""
+	DefaultRedisSentinelAddrs  = ""
+	DefaultRedisSentinelMaster = ""
+	DefaultRedisPassword       = ""
+	DefaultRedisDB             = 0
 	// Pagination defaults
 	DefaultPageSize = 20
 	MaxPageSize     = 100
@@ -198,6 +220,15 @@ func New() *Config {
 		Mongo: MongoConfig{
 			URI:      getEnv("MONGO_URI", DefaultMongoURI),
 			Database: getEnv("MONGO_DB", DefaultMongoDB),
+		},
+		Redis: RedisConfig{
+			Mode:           getEnv("REDIS_MODE", DefaultRedisMode),
+			URL:            getEnv("REDIS_URL", DefaultRedisURL),
+			ClusterAddrs:   getEnv("REDIS_CLUSTER_ADDRS", DefaultRedisClusterAddrs),
+			SentinelAddrs:  getEnv("REDIS_SENTINEL_ADDRS", DefaultRedisSentinelAddrs),
+			SentinelMaster: getEnv("REDIS_SENTINEL_MASTER", DefaultRedisSentinelMaster),
+			Password:       getEnv("REDIS_PASSWORD", DefaultRedisPassword),
+			DB:             getEnvInt("REDIS_DB", DefaultRedisDB),
 		},
 		Auth: AuthConfig{
 			JWTSecret:           getEnv("JWT_SECRET", DefaultJWTSecret),
@@ -243,6 +274,7 @@ func New() *Config {
 			MaxAgeSec:        getEnvInt("CORS_MAX_AGE_SEC", DefaultCORSMaxAgeSec),
 		},
 		APIKeyCacheTTLSeconds: getEnvInt("API_KEY_CACHE_TTL_SECONDS", DefaultAPIKeyCacheTTLSeconds),
+		ClerkCacheTTLSeconds:  getEnvInt("CLERK_CACHE_TTL_SECONDS", DefaultClerkCacheTTLSeconds),
 	}
 }
 

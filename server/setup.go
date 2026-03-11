@@ -1,6 +1,8 @@
 package server
 
 import (
+	"fmt"
+
 	"voidrun/config"
 	"voidrun/handler"
 	"voidrun/metrics"
@@ -49,11 +51,21 @@ type Services struct {
 	Commands   *service.CommandsService
 	Metrics    *metrics.Manager
 	Clerk      *service.ClerkService
+	AuthCache  *service.AuthCache
 }
 
 func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metrics.Manager) *Services {
 	clerkSvc := service.NewClerkService(cfg)
 	orgSvc := service.NewOrgService(repos.Org)
+
+	// Initialize AuthCache (Redis-backed)
+	var authCache *service.AuthCache
+	authCache, err := service.NewAuthCache(&cfg.Redis, cfg.APIKeyCacheTTLSeconds, cfg.ClerkCacheTTLSeconds)
+	if err != nil {
+		fmt.Printf("[WARN] Failed to initialize Redis auth cache: %v. Auth will fall back to database lookups.\n", err)
+		// authCache remains nil, which triggers graceful degradation
+	}
+
 	return &Services{
 		User:       service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
 		Sandbox:    service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager),
@@ -61,13 +73,14 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		Exec:       service.NewExecService(cfg),
 		Session:    service.NewSessionExecService(cfg),
 		FS:         service.NewFSService(),
-		APIKey:     service.NewAPIKeyService(repos.APIKey, cfg),
+		APIKey:     service.NewAPIKeyService(repos.APIKey, cfg, authCache),
 		Org:        orgSvc,
 		PTY:        service.NewVsockWSDialer(),
 		PTYSession: service.NewPTYSessionService(),
 		Commands:   service.NewCommandsService(cfg),
 		Metrics:    metricsManager,
 		Clerk:      clerkSvc,
+		AuthCache:  authCache,
 	}
 }
 
@@ -106,7 +119,7 @@ type Middlewares struct {
 // InitMiddlewares builds middleware handler references for reuse.
 func InitMiddlewares(cfg *config.Config, s *Services) *Middlewares {
 	return &Middlewares{
-		Auth: middleware.AuthMiddleware(cfg, s.APIKey, s.User, s.Clerk),
+		Auth: middleware.AuthMiddleware(cfg, s.APIKey, s.User, s.Clerk, s.AuthCache),
 	}
 }
 

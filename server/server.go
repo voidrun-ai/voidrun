@@ -7,7 +7,7 @@ import (
 
 	"voidrun/config"
 	"voidrun/metrics"
-	machine "voidrun/runtime"
+	"voidrun/runtime"
 	"voidrun/util"
 
 	"github.com/gin-contrib/cors"
@@ -33,7 +33,7 @@ type Server struct {
 // New creates a new server instance
 func New(cfg *config.Config) (*Server, error) {
 	// Initialize machine package with config paths
-	machine.SetInstancesRoot(cfg.Paths.InstancesDir)
+	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
 	var metricsManager *metrics.Manager
 	var stopFn context.CancelFunc
 	if cfg.Metrics.Enabled {
@@ -88,10 +88,15 @@ func Connect(cfg *config.Config) (*mongo.Client, error) {
 	return client, nil
 }
 
-// Close disconnects MongoDB client
+// Close disconnects MongoDB client and Redis client
 func (s *Server) Close() error {
 	if s.stopFn != nil {
 		s.stopFn()
+	}
+	if s.services != nil && s.services.AuthCache != nil {
+		if err := s.services.AuthCache.Close(); err != nil {
+			fmt.Printf("[server] Failed to close Redis connection: %v\n", err)
+		}
 	}
 	if s.mongo != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

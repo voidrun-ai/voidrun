@@ -83,15 +83,13 @@ func (h *OrgHandler) GetCurrentOrg(c *gin.Context) {
 // GetOrgUsers returns users for an organization (GET /api/orgs/users)
 func (h *OrgHandler) GetOrgUsers(c *gin.Context) {
 
-	orgID := c.GetString("orgID")
-
-	objID, err := primitive.ObjectIDFromHex(orgID)
+	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("invalid org id", err.Error()))
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
 
-	org, err := h.orgService.GetByID(c.Request.Context(), objID)
+	org, err := h.orgService.GetByID(c.Request.Context(), orgID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return

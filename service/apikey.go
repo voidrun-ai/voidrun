@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"voidrun/config"
@@ -18,33 +17,19 @@ import (
 
 var ErrAPIKeyNotFound = errors.New("api key not found")
 
-// APIKeyCache entry with expiration
-type apiKeyCacheEntry struct {
-	key       *model.APIKey
-	expiresAt time.Time
-}
-
 // APIKeyService handles API key business logic
 type APIKeyService struct {
-	repo          repository.IAPIKeyRepository
-	cfg           *config.Config
-	keyCache      map[string]*apiKeyCacheEntry // plainKey -> cached result
-	keyCacheMutex sync.RWMutex
-	cacheTTL      time.Duration
+	repo      repository.IAPIKeyRepository
+	cfg       *config.Config
+	authCache *AuthCache
 }
 
 // NewAPIKeyService creates a new API key service
-func NewAPIKeyService(repo repository.IAPIKeyRepository, cfg *config.Config) *APIKeyService {
-	cacheSeconds := cfg.APIKeyCacheTTLSeconds
-	if cacheSeconds <= 0 {
-		cacheSeconds = 300 // fallback to 5 minutes if misconfigured
-	}
-
+func NewAPIKeyService(repo repository.IAPIKeyRepository, cfg *config.Config, authCache *AuthCache) *APIKeyService {
 	return &APIKeyService{
-		repo:     repo,
-		cfg:      cfg,
-		keyCache: make(map[string]*apiKeyCacheEntry),
-		cacheTTL: time.Duration(cacheSeconds) * time.Second,
+		repo:      repo,
+		cfg:       cfg,
+		authCache: authCache,
 	}
 }
 
@@ -154,6 +139,9 @@ func (s *APIKeyService) RevokeKeyByOrg(ctx context.Context, orgID primitive.Obje
 	if !ok {
 		return ErrAPIKeyNotFound
 	}
+
+	// Note: Cache invalidation for the revoked key is handled at the middleware level
+	// since we don't have access to the plain key here (only the hash is stored)
 	return nil
 }
 
@@ -168,28 +156,11 @@ func (s *APIKeyService) ActivateKeyByOrg(ctx context.Context, orgID primitive.Ob
 }
 
 // ValidateKey verifies a plain key against stored hash and updates last used
+// Note: Caching is now handled at the middleware level via AuthCache
 func (s *APIKeyService) ValidateKey(ctx context.Context, plainKey string) (*model.APIKey, error) {
 	defer util.Track("Validate Auth Key (Total)")()
-	// Check cache first
-	s.keyCacheMutex.RLock()
-	if entry, exists := s.keyCache[plainKey]; exists && time.Now().Before(entry.expiresAt) {
-		s.keyCacheMutex.RUnlock()
 
-		// Revalidate cached key state so revocations are effective immediately.
-		fresh, err := s.repo.FindByIDAndOrg(ctx, entry.key.ID, entry.key.OrgID)
-		if err != nil || fresh == nil || !fresh.IsActive {
-			s.keyCacheMutex.Lock()
-			delete(s.keyCache, plainKey)
-			s.keyCacheMutex.Unlock()
-			return nil, fmt.Errorf("invalid api key")
-		}
-
-		_ = s.repo.UpdateLastUsed(ctx, fresh.ID, fresh.OrgID)
-		return fresh, nil
-	}
-	s.keyCacheMutex.RUnlock()
-
-	// Cache miss or expired: query database
+	// Query database for all active keys
 	keys, err := s.repo.FindActive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate key: %w", err)
@@ -198,15 +169,6 @@ func (s *APIKeyService) ValidateKey(ctx context.Context, plainKey string) (*mode
 	for _, key := range keys {
 		if util.VerifyAPIKey(plainKey, key.Hash) {
 			_ = s.repo.UpdateLastUsed(ctx, key.ID, key.OrgID)
-
-			// Cache the valid key
-			s.keyCacheMutex.Lock()
-			s.keyCache[plainKey] = &apiKeyCacheEntry{
-				key:       key,
-				expiresAt: time.Now().Add(s.cacheTTL),
-			}
-			s.keyCacheMutex.Unlock()
-
 			return key, nil
 		}
 	}
@@ -307,4 +269,14 @@ func (s *APIKeyService) GetKeyCount(ctx context.Context, orgID string) (int64, e
 
 	count, err := s.repo.Count(ctx, objID, map[string]interface{}{})
 	return count, err
+}
+
+// InvalidateAPIKeyCache invalidates the cache for a specific API key
+// This is called when a key is revoked or deactivated
+func (s *APIKeyService) InvalidateAPIKeyCache(ctx context.Context, plainKey string) {
+	if s.authCache != nil {
+		if err := s.authCache.DeleteAPIKey(ctx, plainKey); err != nil {
+			fmt.Printf("[APIKey] Failed to invalidate cache: %v\n", err)
+		}
+	}
 }

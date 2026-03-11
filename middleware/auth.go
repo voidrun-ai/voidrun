@@ -11,9 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Clerk token type header prefix
-const clerkTokenTypePrefix = "Bearer "
-
 // ctxKey is a private type for context keys
 type ctxKey string
 
@@ -30,10 +27,15 @@ const (
 )
 
 // AuthMiddleware validates API Key or JWT and injects zero-trust org context.
-func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSvc *service.UserService, clerkSvc *service.ClerkService) gin.HandlerFunc {
+func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSvc *service.UserService, clerkSvc *service.ClerkService, authCache *service.AuthCache) gin.HandlerFunc {
 	return func(c *gin.Context) {
 
 		apiKey := c.GetHeader("X-API-Key")
+
+		// ws will send api key to query param
+		if apiKey == "" {
+			apiKey = c.Query("apiKey")
+		}
 
 		bearerToken := extractBearerToken(c.GetHeader("Authorization"))
 		if apiKey != "" && bearerToken != "" {
@@ -45,12 +47,11 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 
 		switch {
 		case apiKey != "":
-			orgID, userID = handleAPIKeyAuth(c, apiKeySvc, apiKey)
+			orgID, userID = handleAPIKeyAuth(c, apiKeySvc, authCache, apiKey)
 		case bearerToken != "":
-			orgID = c.GetHeader("X-Org-ID")
 			claims, err := clerkSvc.ValidateToken(c.Request.Context(), bearerToken)
 			if err == nil && claims != nil {
-				userID = handleClerkAuth(c, cfg, userSvc, claims)
+				orgID, userID = handleClerkAuth(c, userSvc, authCache, bearerToken, claims)
 			} else {
 				fmt.Printf("[Auth] Clerk token validation failed: %v\n", err)
 				// Clerk was enabled but token validation failed
@@ -68,29 +69,92 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 }
 
 // handleClerkAuth handles authentication with Clerk JWT tokens
-func handleClerkAuth(c *gin.Context, cfg *config.Config, userSvc *service.UserService, claims *service.ClerkClaims) string {
-	// Get or create user based on Clerk ID
-	clerkID := claims.Sub
+func handleClerkAuth(c *gin.Context, userSvc *service.UserService, authCache *service.AuthCache, token string, claims *service.ClerkClaims) (string, string) {
 	ctx := c.Request.Context()
+	orgID := c.GetHeader("X-Org-ID")
+
+	// Try cache first
+	if authCache != nil {
+		cachedEntry, err := authCache.GetClerkToken(ctx, token)
+		if err != nil {
+			fmt.Printf("[Auth] Clerk cache get error: %v\n", err)
+		} else if cachedEntry != nil {
+			// Cache hit - use cached userID and orgID
+			fmt.Printf("[Auth] Clerk cache HIT - userID: %s, orgID: %s\n", cachedEntry.UserID, cachedEntry.OrgID)
+			c.Set("orgID", cachedEntry.OrgID)
+			return cachedEntry.OrgID, cachedEntry.UserID
+		}
+		fmt.Printf("[Auth] Clerk cache MISS - validating token\n")
+	} else {
+		fmt.Printf("[Auth] Clerk cache DISABLED - validating token directly\n")
+	}
+
+	// Cache miss - validate and provision user
+	clerkID := claims.Sub
 	user, err := userSvc.CreateNewUserAndDefaultOrg(ctx, clerkID, claims)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to provision user"})
-		return ""
+		return "", ""
 	}
-	return user.ID.Hex()
+
+	userID := user.ID.Hex()
+
+	// Cache the result
+	if authCache != nil {
+		if err := authCache.SetClerkToken(ctx, token, &service.AuthCacheEntry{
+			UserID: userID,
+			OrgID:  orgID,
+		}); err != nil {
+			fmt.Printf("[Auth] Clerk cache set error: %v\n", err)
+		} else {
+			fmt.Printf("[Auth] Clerk cache SET - userID: %s, orgID: %s\n", userID, orgID)
+		}
+	}
+
+	return orgID, userID
 }
 
-func handleAPIKeyAuth(c *gin.Context, apiKeySvc *service.APIKeyService, plainKey string) (string, string) {
-	keyDoc, err := apiKeySvc.ValidateKey(c.Request.Context(), plainKey)
+func handleAPIKeyAuth(c *gin.Context, apiKeySvc *service.APIKeyService, authCache *service.AuthCache, plainKey string) (string, string) {
+	ctx := c.Request.Context()
+
+	// Try cache first
+	if authCache != nil {
+		cachedEntry, err := authCache.GetAPIKey(ctx, plainKey)
+		if err != nil {
+			fmt.Printf("[Auth] API key cache get error: %v\n", err)
+		} else if cachedEntry != nil {
+			// Cache hit - use cached userID and orgID
+			fmt.Printf("[Auth] API key cache HIT - userID: %s, orgID: %s\n", cachedEntry.UserID, cachedEntry.OrgID)
+			return cachedEntry.OrgID, cachedEntry.UserID
+		}
+		fmt.Printf("[Auth] API key cache MISS - validating key\n")
+	} else {
+		fmt.Printf("[Auth] API key cache DISABLED - validating key directly\n")
+	}
+
+	// Cache miss - validate via database
+	keyDoc, err := apiKeySvc.ValidateKey(ctx, plainKey)
 	if err != nil || keyDoc == nil || !keyDoc.IsActive {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or inactive API key"})
 		return "", ""
 	}
 
 	resolvedOrgID := keyDoc.OrgID.Hex()
+	userID := keyDoc.CreatedBy.Hex()
 
-	return resolvedOrgID, keyDoc.CreatedBy.Hex()
+	// Cache the result
+	if authCache != nil {
+		if err := authCache.SetAPIKey(ctx, plainKey, &service.AuthCacheEntry{
+			UserID: userID,
+			OrgID:  resolvedOrgID,
+		}); err != nil {
+			fmt.Printf("[Auth] API key cache set error: %v\n", err)
+		} else {
+			fmt.Printf("[Auth] API key cache SET - userID: %s, orgID: %s\n", userID, resolvedOrgID)
+		}
+	}
 
+	return resolvedOrgID, userID
 }
 
 func extractBearerToken(authHeader string) string {

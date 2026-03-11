@@ -94,6 +94,37 @@ func DialVsock(sbxID string, port uint32, timeout time.Duration) (net.Conn, erro
 	return result, nil
 }
 
+// ProbeVsock is a lightweight readiness check: dial + CONNECT handshake + close.
+// Returns nil if the guest agent on the given port is reachable.
+func Probe(sbxID string, port uint32, timeout time.Duration) error {
+	socketPath := GetVsockPath(sbxID)
+
+	conn, err := net.DialTimeout("unix", socketPath, timeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	conn.SetDeadline(time.Now().Add(timeout))
+
+	// Send CONNECT handshake
+	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", port); err != nil {
+		return err
+	}
+
+	// Read just enough to see "OK"
+	var buf [16]byte
+	n, err := conn.Read(buf[:])
+	if err != nil {
+		return err
+	}
+	if n < 2 || buf[0] != 'O' || buf[1] != 'K' {
+		return fmt.Errorf("agent not ready: %q", string(buf[:n]))
+	}
+
+	return nil
+}
+
 func ExecuteCommand(sbxID string, cmd string, args []string) (*AgentResponse, error) {
 	// Use the common DialVsock helper
 	conn, err := DialVsock(sbxID, GuestAgentPort, 2*time.Second)

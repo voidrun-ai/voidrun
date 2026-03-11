@@ -30,10 +30,11 @@ var ErrSandboxNotFound = errors.New("sandbox not found")
 
 // SandboxService handles sandbox business logic
 type SandboxService struct {
-	repo      repository.ISandboxRepository
-	imageRepo repository.IImageRepository
-	cfg       *config.Config
-	metrics   *metrics.Manager
+	repo       repository.ISandboxRepository
+	imageRepo  repository.IImageRepository
+	cfg        *config.Config
+	metrics    *metrics.Manager
+	projection primitive.M
 }
 
 // NewSandboxService creates a new sandbox service
@@ -43,6 +44,18 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 		imageRepo: imageRepo,
 		cfg:       cfg,
 		metrics:   metricsManager,
+		projection: bson.M{
+			"_id":       1,
+			"name":      1,
+			"image":     1,
+			"cpu":       1,
+			"mem":       1,
+			"diskMB":    1,
+			"status":    1,
+			"createdAt": 1,
+			"orgId":     1,
+			"createdBy": 1,
+		},
 	}
 }
 
@@ -70,16 +83,7 @@ func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive
 	opts.SetSkip(skip)
 	opts.SetLimit(int64(pageSize))
 	opts.SetSort(bson.D{{Key: "_id", Value: -1}}) // Sort by _id descending (latest first, uses default index)
-	opts.SetProjection(bson.M{
-		"_id":       1,
-		"name":      1,
-		"imageId":   1,
-		"ip":        1,
-		"cpu":       1,
-		"mem":       1,
-		"status":    1,
-		"createdAt": 1,
-	})
+	opts.SetProjection(s.projection)
 	sbxList, err := s.repo.Find(ctx, orgID, filter, opts)
 	if err != nil {
 		return nil, 0, 0, err
@@ -175,7 +179,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		syncEnabled = *req.Sync
 	}
 	if syncEnabled {
-		if err := waitForAgent(spec.ID, timeout); err != nil {
+		if err := waitForAgent(ctx, spec.ID, timeout); err != nil {
 			runtime.Stop(spec.ID)
 			cleanup()
 			return nil, fmt.Errorf("agent not ready: %w", err)
@@ -206,7 +210,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	sandbox := &model.Sandbox{
 		ID:        objID,
 		Name:      req.Name,
-		ImageId:   req.Image,
+		Image:     req.Image,
 		IP:        ip,
 		CPU:       cpu,
 		Mem:       mem,
@@ -217,6 +221,8 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		CreatedAt: time.Now(),
 		CreatedBy: req.UserID,
 	}
+
+	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), sandbox.OrgID.Hex())
 	err = s.repo.Create(ctx, sandbox)
 	if err != nil {
 		runtime.Stop(spec.ID)
@@ -277,7 +283,7 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		}
 
 		timeout := 30 * time.Second
-		if err := waitForAgent(id, timeout); err != nil {
+		if err := waitForAgent(ctx, id, timeout); err != nil {
 
 			return fmt.Errorf("agent not ready: %w", err)
 		}
@@ -303,7 +309,7 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		}
 
 		// Wait for agent
-		if err := waitForAgent(id, 30*time.Second); err != nil {
+		if err := waitForAgent(ctx, id, 30*time.Second); err != nil {
 			return fmt.Errorf("agent not ready after restart: %w", err)
 		}
 	}
@@ -332,6 +338,10 @@ func (s *SandboxService) Stop(ctx context.Context, orgID primitive.ObjectID, id 
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
+	}
+
+	if sandbox.Status != "running" {
+		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
 	}
 
 	if err := runtime.Stop(id); err != nil {
@@ -365,13 +375,8 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.Obje
 	// If stopped, start it
 	if sandbox.Status == "stopped" {
 		log.Printf("[Auto-Start] Sandbox %s is stopped, starting...\n", id)
-		if err := s.Resume(ctx, orgID, id); err != nil {
+		if err := s.Start(ctx, orgID, id); err != nil {
 			return fmt.Errorf("failed to auto-start sandbox: %w", err)
-		}
-
-		// Wait for agent to be ready
-		if err := waitForAgent(sandbox.ID.Hex(), 30*time.Second); err != nil {
-			return fmt.Errorf("agent not ready after start: %w", err)
 		}
 
 		log.Printf("[Auto-Start] Sandbox %s started and ready\n", id)
@@ -386,6 +391,10 @@ func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
+	}
+
+	if sandbox.Status != "running" {
+		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
 	}
 
 	if err := runtime.Pause(id); err != nil {
@@ -404,6 +413,10 @@ func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, i
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
+	}
+
+	if sandbox.Status != "paused" {
+		return fmt.Errorf("sandbox is not paused (current status: %s)", sandbox.Status)
 	}
 
 	if err := runtime.Resume(id); err != nil {
@@ -429,6 +442,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 	// Optimization 1: Fetch only necessary fields
 	projection := bson.M{"_id": 1, "status": 1}
 	sandboxes, err := s.repo.FindForHealth(ctx, options.FindOptions{Projection: projection})
+
 	if err != nil {
 		return fmt.Errorf("failed to list sandboxes: %w", err)
 	}
@@ -492,7 +506,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 					// Socket exists, but API refused connection or timed out.
 					// Process is likely zombie or unresponsive. Treat as stopped.
 					fmt.Printf("[health] Sandbox %s unresponsive (socket exists): %v\n", id, err)
-					newState = "stopped"
+					newState = "killed"
 				}
 			}
 
@@ -517,33 +531,35 @@ type agentNetConfig struct {
 	Hostname    string   `json:"hostname"`
 }
 
-func waitForAgent(sbxID string, timeout time.Duration) error {
+func waitForAgent(ctx context.Context, sbxID string, timeout time.Duration) error {
 	defer util.Track("Agent Readiness Wait")()
-	deadline := time.Now().Add(timeout)
-	sleep := 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
 	start := time.Now()
 	attempts := 0
 	var lastErr error
 
 	for {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("agent readiness timeout after %v (%d attempts): last error: %v", timeout, attempts, lastErr)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		resp, err := AgentCommand(ctx, nil, sbxID, nil, "", http.MethodGet)
-		cancel()
+		err := runtime.Probe(sbxID, 1024, 50*time.Millisecond)
 		attempts++
-
 		if err == nil {
-			resp.Body.Close()
 			log.Printf("   [Agent] Ready on %s after %s (%d attempts)\n", sbxID, time.Since(start), attempts)
 			return nil
 		}
 		lastErr = err
 
-		// log.Printf("   [Agent] VSOCK dial %s: err=%v\n", sbxID, err)
-		time.Sleep(sleep)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("agent readiness timeout after %s (%d attempts): last error: %v",
+				time.Since(start), attempts, lastErr)
+		case <-ticker.C:
+			// next attempt
+		}
 	}
 }
 
@@ -758,7 +774,7 @@ func setAgentEnvVars(sbxID string, envVars map[string]string) error {
 }
 
 func (s *SandboxService) getOrgScopedSandbox(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error) {
-	sandbox, err := s.repo.FindByID(ctx, orgID, id)
+	sandbox, err := s.repo.FindByID(ctx, orgID, id, options.FindOneOptions{Projection: s.projection})
 	if err != nil {
 		return nil, err
 	}
