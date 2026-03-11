@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -208,119 +206,22 @@ func ExecAgentCommand(ctx context.Context, client *http.Client, sbxID string, bo
 	return AgentCommand(ctx, client, sbxID, body, "/exec", http.MethodPost)
 }
 
-// Constants to replace magic numbers, making the code cleaner.
-const (
-	agentReadyTimeout = 30 * time.Second
-	agentPollInterval = 50 * time.Millisecond
-	agentDialTimeout  = 150 * time.Millisecond
-	agentPort         = 1024
-)
-
 func AgentCommand(ctx context.Context, client *http.Client, sbxID string, body io.Reader, path string, method string) (*http.Response, error) {
 	if client == nil {
 		client = machine.GetSandboxHTTPClient()
 	}
 
-	// 1. Buffer the body in case we need to retry the request.
-	var bodyBytes []byte
-	if body != nil {
-		var err error
-		if bodyBytes, err = io.ReadAll(body); err != nil {
-			return nil, fmt.Errorf("failed to read request body: %w", err)
-		}
-	}
-
-	// 2. Safely construct the URL (handles query params correctly)
+	// Safely construct the URL (the custom transport resolves sbxID via vsock)
 	if path != "" && path[0] != '/' {
 		path = "/" + path
 	}
 	reqURL := "http://" + sbxID + path
 
-	// 3. Helper closure to create and execute the HTTP request
-	doRequest := func() (*http.Response, error) {
-		var reqBody io.Reader
-		if bodyBytes != nil {
-			reqBody = bytes.NewReader(bodyBytes)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, method, reqURL, reqBody)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		return client.Do(req)
-	}
-
-	// 4. First Attempt
-	resp, err := doRequest()
-	if err == nil {
-		return resp, nil
-	}
-
-	// 5. Evaluate if we should retry
-	// Keep readiness probe paths untouched to avoid recursive auto-start loops.
-	if path == "" || path == "/" || !shouldAutoStartOnAgentError(err) {
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, body)
+	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 
-	// 6. Start/Resume Machine and Retry
-	if ensureErr := ensureSandboxRunning(ctx, sbxID); ensureErr != nil {
-		// Note: Requires Go 1.20+ for multiple %w wrapping
-		return nil, fmt.Errorf("agent command failed: %w; auto-start failed: %w", err, ensureErr)
-	}
-
-	return doRequest()
-}
-
-func shouldAutoStartOnAgentError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	var urlErr *url.Error
-	return errors.As(err, &urlErr)
-}
-
-func ensureSandboxRunning(ctx context.Context, sbxID string) error {
-	// Attempt Start, fallback to Resume
-	if err := machine.Start(sbxID); err != nil {
-		if resumeErr := machine.Resume(sbxID); resumeErr != nil {
-			return fmt.Errorf("start failed: %v; resume failed: %w", err, resumeErr)
-		}
-	}
-
-	// SIMPLIFIED: WithTimeout automatically respects the parent context's
-	// deadline if it is shorter than agentReadyTimeout (30s).
-	dialCtx, cancel := context.WithTimeout(ctx, agentReadyTimeout)
-	defer cancel()
-
-	if err := waitForAgentDial(dialCtx, sbxID); err != nil {
-		return fmt.Errorf("agent not ready after auto-start: %w", err)
-	}
-
-	return nil
-}
-
-func waitForAgentDial(ctx context.Context, sbxID string) error {
-	ticker := time.NewTicker(agentPollInterval)
-	defer ticker.Stop()
-
-	var lastErr error
-	for {
-		// Try dialing
-		conn, err := machine.DialVsock(sbxID, agentPort, agentDialTimeout)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-
-		// Wait for next tick OR context cancellation
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timeout/canceled: %w (last error: %v)", ctx.Err(), lastErr)
-		case <-ticker.C:
-			// Loop continues
-		}
-	}
+	return client.Do(req)
 }

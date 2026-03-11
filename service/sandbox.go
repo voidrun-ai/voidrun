@@ -179,7 +179,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		syncEnabled = *req.Sync
 	}
 	if syncEnabled {
-		if err := waitForAgent(spec.ID, timeout); err != nil {
+		if err := waitForAgent(ctx, spec.ID, timeout); err != nil {
 			runtime.Stop(spec.ID)
 			cleanup()
 			return nil, fmt.Errorf("agent not ready: %w", err)
@@ -283,7 +283,7 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		}
 
 		timeout := 30 * time.Second
-		if err := waitForAgent(id, timeout); err != nil {
+		if err := waitForAgent(ctx, id, timeout); err != nil {
 
 			return fmt.Errorf("agent not ready: %w", err)
 		}
@@ -309,7 +309,7 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		}
 
 		// Wait for agent
-		if err := waitForAgent(id, 30*time.Second); err != nil {
+		if err := waitForAgent(ctx, id, 30*time.Second); err != nil {
 			return fmt.Errorf("agent not ready after restart: %w", err)
 		}
 	}
@@ -375,13 +375,8 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.Obje
 	// If stopped, start it
 	if sandbox.Status == "stopped" {
 		log.Printf("[Auto-Start] Sandbox %s is stopped, starting...\n", id)
-		if err := s.Resume(ctx, orgID, id); err != nil {
+		if err := s.Start(ctx, orgID, id); err != nil {
 			return fmt.Errorf("failed to auto-start sandbox: %w", err)
-		}
-
-		// Wait for agent to be ready
-		if err := waitForAgent(sandbox.ID.Hex(), 30*time.Second); err != nil {
-			return fmt.Errorf("agent not ready after start: %w", err)
 		}
 
 		log.Printf("[Auto-Start] Sandbox %s started and ready\n", id)
@@ -536,33 +531,35 @@ type agentNetConfig struct {
 	Hostname    string   `json:"hostname"`
 }
 
-func waitForAgent(sbxID string, timeout time.Duration) error {
+func waitForAgent(ctx context.Context, sbxID string, timeout time.Duration) error {
 	defer util.Track("Agent Readiness Wait")()
-	deadline := time.Now().Add(timeout)
-	sleep := 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
 	start := time.Now()
 	attempts := 0
 	var lastErr error
 
 	for {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("agent readiness timeout after %v (%d attempts): last error: %v", timeout, attempts, lastErr)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		resp, err := AgentCommand(ctx, nil, sbxID, nil, "", http.MethodGet)
-		cancel()
+		err := runtime.Probe(sbxID, 1024, 50*time.Millisecond)
 		attempts++
-
 		if err == nil {
-			resp.Body.Close()
 			log.Printf("   [Agent] Ready on %s after %s (%d attempts)\n", sbxID, time.Since(start), attempts)
 			return nil
 		}
 		lastErr = err
 
-		// log.Printf("   [Agent] VSOCK dial %s: err=%v\n", sbxID, err)
-		time.Sleep(sleep)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("agent readiness timeout after %s (%d attempts): last error: %v",
+				time.Since(start), attempts, lastErr)
+		case <-ticker.C:
+			// next attempt
+		}
 	}
 }
 
