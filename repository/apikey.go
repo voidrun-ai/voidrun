@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"voidrun/config"
@@ -17,11 +18,12 @@ type IAPIKeyRepository interface {
 	Create(ctx context.Context, orgID primitive.ObjectID, apiKey *model.APIKey) (*model.APIKey, error)
 	FindByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (*model.APIKey, error)
 	FindByHash(ctx context.Context, hash string) (*model.APIKey, error)
+	FindByMaskedKey(ctx context.Context, maskedKey string) (*model.APIKey, error)
 	FindByOrgID(ctx context.Context, orgID primitive.ObjectID) ([]*model.APIKey, error)
 	FindActive(ctx context.Context) ([]*model.APIKey, error)
 	DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	UpdateByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, update interface{}) (bool, error)
-	UpdateLastUsed(ctx context.Context, id, orgID primitive.ObjectID) error
+	UpdateLastUsed(ctx context.Context, id, orgID primitive.ObjectID)
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 }
@@ -71,6 +73,19 @@ func (r *APIKeyRepository) FindByIDAndOrg(ctx context.Context, id, orgID primiti
 func (r *APIKeyRepository) FindByHash(ctx context.Context, hash string) (*model.APIKey, error) {
 	var apiKey *model.APIKey
 	err := r.collection.FindOne(ctx, bson.M{"hash": hash, "isActive": true}).Decode(&apiKey)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return apiKey, nil
+}
+
+// FindByMaskedKey retrieves an API key by its masked key
+func (r *APIKeyRepository) FindByMaskedKey(ctx context.Context, maskedKey string) (*model.APIKey, error) {
+	var apiKey *model.APIKey
+	err := r.collection.FindOne(ctx, bson.M{"maskedKey": maskedKey, "isActive": true}).Decode(&apiKey)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -145,14 +160,18 @@ func (r *APIKeyRepository) UpdateByIDAndOrg(ctx context.Context, id, orgID primi
 }
 
 // UpdateLastUsed updates the LastUsedAt timestamp
-func (r *APIKeyRepository) UpdateLastUsed(ctx context.Context, id, orgID primitive.ObjectID) error {
-	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{
-		"$set": bson.M{
-			"lastUsedAt": time.Now(),
-			"updatedAt":  time.Now(),
-		},
-	})
-	return err
+func (r *APIKeyRepository) UpdateLastUsed(ctx context.Context, id, orgID primitive.ObjectID) {
+	go func() {
+		_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{
+			"$set": bson.M{
+				"lastUsedAt": time.Now(),
+				"updatedAt":  time.Now(),
+			},
+		})
+		if err != nil {
+			log.Println("Failed to update last used for API key", id, err)
+		}
+	}()
 }
 
 // Count returns the number of API keys matching a filter

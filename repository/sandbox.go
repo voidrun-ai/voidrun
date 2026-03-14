@@ -174,7 +174,7 @@ func (r *SandboxRepository) FindByID(ctx context.Context, orgID primitive.Object
 }
 
 func (r *SandboxRepository) Find(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error) {
-	baseFilter := bson.M{"orgId": orgID}
+	baseFilter := bson.M{"orgId": orgID, "status": bson.M{"$ne": "deleted"}}
 	if filterMap, ok := filter.(bson.M); ok {
 		for k, v := range filterMap {
 			baseFilter[k] = v
@@ -198,7 +198,7 @@ func (r *SandboxRepository) Find(ctx context.Context, orgID primitive.ObjectID, 
 }
 
 func (r *SandboxRepository) FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error) {
-	cursor, err := r.collection.Find(ctx, bson.M{"status": bson.M{"$ne": "killed"}}, &opts)
+	cursor, err := r.collection.Find(ctx, bson.M{"status": bson.M{"$nin": []string{"killed", "deleted"}}}, &opts)
 	if err != nil {
 		return nil, err
 	}

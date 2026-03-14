@@ -34,16 +34,18 @@ type SandboxService struct {
 	imageRepo  repository.IImageRepository
 	cfg        *config.Config
 	metrics    *metrics.Manager
+	monitor    *runtime.EventMonitor
 	projection primitive.M
 }
 
 // NewSandboxService creates a new sandbox service
-func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, imageRepo repository.IImageRepository, metricsManager *metrics.Manager) *SandboxService {
+func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, imageRepo repository.IImageRepository, metricsManager *metrics.Manager, monitor *runtime.EventMonitor) *SandboxService {
 	return &SandboxService{
 		repo:      repo,
 		imageRepo: imageRepo,
 		cfg:       cfg,
 		metrics:   metricsManager,
+		monitor:   monitor,
 		projection: bson.M{
 			"_id":       1,
 			"name":      1,
@@ -234,6 +236,11 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, runtime.GetSocketPath(spec.ID), cpu, mem, diskMB)
 	}
 
+	// Start CLH event monitor
+	if s.monitor != nil {
+		s.monitor.Start(ctx, sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
+	}
+
 	return sandbox, nil
 }
 
@@ -246,17 +253,29 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 	if err := runtime.Delete(id); err != nil {
 		return fmt.Errorf("delete failed: %w", err)
 	}
+
+	// Stop event monitor (performs one final sync)
+	if s.monitor != nil {
+		s.monitor.Stop(ctx, id)
+	}
+
+	// Physical file cleanup after monitor has synced
+	if err := runtime.Cleanup(id); err != nil {
+		fmt.Printf("[WARN] Failed to cleanup files for %s: %v\n", id, err)
+	}
+
 	if s.metrics != nil {
 		s.metrics.UnregisterSandbox(id)
 	}
 
-	ok, err := s.repo.DeleteByIDAndOrg(ctx, sandbox.ID, orgID)
+	ok, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "deleted")
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return ErrSandboxNotFound
 	}
+
 	return nil
 }
 

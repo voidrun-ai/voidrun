@@ -65,9 +65,11 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 
 	// 3. Start "Empty" Cloud Hypervisor Process
 	clhPath, _ := exec.LookPath("cloud-hypervisor")
+	eventPath := GetEventPath(spec.ID)
 	args := []string{
 		"--api-socket", socketPath,
 		"--log-file", logPath,
+		"--event-monitor", "path=" + eventPath,
 	}
 
 	fmt.Printf(">> [Native] Spawning empty CLH process (API Mode)...\n")
@@ -241,7 +243,7 @@ func Start(id string) error {
 	return nil
 }
 
-// Delete removes the VM via CLH API and cleans up all files
+// Delete shuts down and kills the VM process, but leaves the files on disk for the monitor to sync.
 func Delete(id string) error {
 	socketPath := GetSocketPath(id)
 	pidPath := GetPIDPath(id)
@@ -250,7 +252,7 @@ func Delete(id string) error {
 	// 1. Delete VM via CLH API (this will also shutdown the VM)
 	client := NewCLHClient(socketPath)
 	if client.IsSocketAvailable() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		if err := client.VmDelete(ctx); err != nil {
@@ -263,6 +265,8 @@ func Delete(id string) error {
 		pid, _ := strconv.Atoi(string(data))
 		if process, err := os.FindProcess(pid); err == nil {
 			process.Signal(syscall.SIGTERM)
+			// Wait for process to exit
+			time.Sleep(100 * time.Millisecond)
 		}
 		os.Remove(pidPath)
 	}
@@ -274,15 +278,20 @@ func Delete(id string) error {
 		os.Remove(tapPath)
 	}
 
+	return nil
+}
+
+// Cleanup removes all files from disk for the given sandbox.
+func Cleanup(id string) error {
 	// 4. Delete the instance directory
 	instanceDir := GetInstanceDir(id)
-	fmt.Printf(">> Deleting instance %s at %s\n", id, instanceDir)
+	fmt.Printf(">> Deleting instance directory %s\n", instanceDir)
 
 	if err := os.RemoveAll(instanceDir); err != nil {
 		return fmt.Errorf("failed to delete directory: %w", err)
 	}
 
-	fmt.Printf("   [+] VM %s fully deleted.\n", id)
+	fmt.Printf("   [+] VM %s files cleaned up.\n", id)
 	return nil
 }
 

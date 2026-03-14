@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // Server configuration
@@ -50,7 +52,7 @@ type RedisConfig struct {
 
 // System user configuration
 type SystemUserConfig struct {
-	ID    string
+	ID    primitive.ObjectID
 	Name  string
 	Email string
 }
@@ -136,7 +138,7 @@ const (
 	DefaultNetworkCIDR   = "192.168.100.0/22"
 	// DefaultSubnetPrefix            = "192.168.100."
 	DefaultNameservers = "8.8.8.8,1.1.1.1"
-	DefaultMongoURI    = "mongodb://root:Qaz123wsx123@localhost:27017/vr-db?authSource=admin"
+	DefaultMongoURI    = "mongodb://localhost:27017/vr-db?authSource=admin"
 	DefaultMongoDB     = "vr-db"
 	DefaultJWTSecret   = "change-me-in-production"
 	// Clerk defaults
@@ -173,7 +175,7 @@ const (
 	DefaultCORSAllowCredentials  = false
 	DefaultCORSMaxAgeSec         = 600
 	DefaultAPIKeyCacheTTLSeconds = 3600 // 1 hour
-	DefaultClerkCacheTTLSeconds  = 300  // 5 minutes
+	DefaultClerkCacheTTLSeconds  = 1800 // 30 minutes
 	// Redis defaults
 	DefaultRedisMode           = "single"
 	DefaultRedisURL            = ""

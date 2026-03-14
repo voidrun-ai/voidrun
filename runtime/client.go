@@ -240,6 +240,16 @@ func GetOverlayPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/overlay.qcow2", InstancesRoot, sbxID)
 }
 
+// GetEventPath returns the path to the CLH event file for a sandbox.
+func GetEventPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/vm.evt", InstancesRoot, sbxID)
+}
+
+// GetEventOffsetPath returns the path to the byte-offset tracker for the event file.
+func GetEventOffsetPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/vm.evt_offset", InstancesRoot, sbxID)
+}
+
 func GetSnapshotsRoot() string {
 	return fmt.Sprintf("%s/snapshots", InstancesRoot)
 }
