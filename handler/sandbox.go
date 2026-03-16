@@ -126,7 +126,7 @@ func (h *SandboxHandler) Create(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, model.NewSuccessResponse("Sandbox created", map[string]string{"id": spec.ID.Hex()}))
+	c.JSON(http.StatusCreated, model.NewSuccessResponse("Sandbox created", spec))
 }
 
 func (h *SandboxHandler) Get(c *gin.Context) {
