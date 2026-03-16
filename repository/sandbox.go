@@ -30,6 +30,13 @@ type ISandboxRepository interface {
 	FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error)
 	UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error
 	NextAvailableIP() (string, error)
+	// Lifecycle management methods
+	TouchActivity(ctx context.Context, id primitive.ObjectID) error
+	SetPausedAt(ctx context.Context, id primitive.ObjectID) error
+	SetStoppedAt(ctx context.Context, id primitive.ObjectID) error
+	FindIdleRunning(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
+	FindStalePaused(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
+	FindStaleStopped(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 }
 
 // SandboxRepository handles sandbox persistence in MongoDB
@@ -261,4 +268,98 @@ func (r *SandboxRepository) Exists(ctx context.Context, orgID primitive.ObjectID
 		return false
 	}
 	return count > 0
+}
+
+// TouchActivity updates the lastActivityAt timestamp for a sandbox
+func (r *SandboxRepository) TouchActivity(ctx context.Context, id primitive.ObjectID) error {
+	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
+		"lastActivityAt": time.Now(),
+	}})
+	return err
+}
+
+// SetPausedAt sets the pausedAt timestamp and status to paused
+func (r *SandboxRepository) SetPausedAt(ctx context.Context, id primitive.ObjectID) error {
+	now := time.Now()
+	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
+		"status":    "paused",
+		"pausedAt":  now,
+		"updatedAt": now,
+	}})
+	return err
+}
+
+// SetStoppedAt sets the stoppedAt timestamp and status to stopped
+func (r *SandboxRepository) SetStoppedAt(ctx context.Context, id primitive.ObjectID) error {
+	now := time.Now()
+	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
+		"status":    "stopped",
+		"stoppedAt": now,
+		"updatedAt": now,
+	}})
+	return err
+}
+
+// FindIdleRunning finds running sandboxes that have been idle since before the threshold
+func (r *SandboxRepository) FindIdleRunning(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error) {
+	filter := bson.M{
+		"status": "running",
+		"$or": []bson.M{
+			{"disablePause": bson.M{"$ne": true}},
+			{"disablePause": bson.M{"$exists": false}},
+		},
+		"lastActivityAt": bson.M{"$lt": threshold},
+	}
+	cursor, err := r.collection.Find(ctx, filter, &options.FindOptions{
+		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var sandboxes []*model.Sandbox
+	if err = cursor.All(ctx, &sandboxes); err != nil {
+		return nil, err
+	}
+	return sandboxes, nil
+}
+
+// FindStalePaused finds paused sandboxes that have been paused since before the threshold
+func (r *SandboxRepository) FindStalePaused(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error) {
+	filter := bson.M{
+		"status":   "paused",
+		"pausedAt": bson.M{"$lt": threshold},
+	}
+	cursor, err := r.collection.Find(ctx, filter, &options.FindOptions{
+		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var sandboxes []*model.Sandbox
+	if err = cursor.All(ctx, &sandboxes); err != nil {
+		return nil, err
+	}
+	return sandboxes, nil
+}
+
+// FindStaleStopped finds stopped sandboxes that have been stopped since before the threshold
+func (r *SandboxRepository) FindStaleStopped(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error) {
+	filter := bson.M{
+		"status":    "stopped",
+		"stoppedAt": bson.M{"$lt": threshold},
+	}
+	cursor, err := r.collection.Find(ctx, filter, &options.FindOptions{
+		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1, "createdBy": 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var sandboxes []*model.Sandbox
+	if err = cursor.All(ctx, &sandboxes); err != nil {
+		return nil, err
+	}
+	return sandboxes, nil
 }

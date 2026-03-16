@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -743,13 +742,13 @@ func (h *FSHandler) isSandboxRunning(c *gin.Context, sandboxId string) error {
 		return err
 	}
 
-	isRunning, err := h.sandboxService.IsRunning(c.Request.Context(), orgID, sandboxId)
+	err = h.sandboxService.EnsureRunning(c.Request.Context(), orgID, sandboxId)
 	if err != nil {
 		return err
 	}
 
-	if !isRunning {
-		return errors.New("Sandbox not running")
-	}
+	// Touch activity for auto-pause tracking (async, fire-and-forget)
+	go h.sandboxService.TouchActivity(c.Request.Context(), orgID, sandboxId)
+
 	return nil
 }

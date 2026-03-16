@@ -58,7 +58,7 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to populate initial data: %w", err)
 	}
 
-	router := setupRouter(cfg, handlers, services, middlewares, extraProtectedMiddlewares...)
+	router := setupRouter(cfg, handlers, services, middlewares)
 
 	return &Server{
 		cfg:         cfg,
@@ -110,6 +110,7 @@ func (s *Server) Close() error {
 func (s *Server) Run() error {
 	s.startHealthMonitor()
 	s.resumeEventWatchers()
+	s.startLifecycleManager()
 
 	ver := util.Get()
 	versionLine := fmt.Sprintf("%s", ver.Version)
@@ -121,6 +122,12 @@ func (s *Server) Run() error {
 	}
 	fmt.Printf("🚀 VoidRun Server %s running on %s\n", versionLine, s.cfg.Server.Address())
 	return s.router.Run(s.cfg.Server.Address())
+}
+
+func (s *Server) startLifecycleManager() {
+	if s.services.LifecycleManager != nil {
+		s.services.LifecycleManager.Start(context.Background())
+	}
 }
 
 func (s *Server) startHealthMonitor() {

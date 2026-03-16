@@ -226,6 +226,18 @@ components:
           example:
             DEBUG: "true"
             LOG_LEVEL: "info"
+        disablePause:
+          type: boolean
+          description: "If true, the sandbox will not be auto-paused due to inactivity"
+          example: false
+        region:
+          type: string
+          description: "Target region for the sandbox"
+          example: eu
+        refId:
+          type: string
+          description: "External reference ID for tracking"
+          example: "ftr4dr"
 
     Sandbox:
       type: object
@@ -275,6 +287,18 @@ components:
           example:
             DEBUG: "true"
             LOG_LEVEL: "info"
+        disablePause:
+          type: boolean
+          description: "Indicates if auto-pause is disabled"
+          example: false
+        region:
+          type: string
+          description: "Region where the sandbox is hosted"
+          example: us-east-1
+        refId:
+          type: string
+          description: "External reference ID"
+          example: "ref-123456"
 
     # Generic API Response for list with pagination
     ApiResponseSandboxesList:

@@ -42,21 +42,22 @@ func InitRepositories(cfg *config.Config, db *mongo.Database) *Repositories {
 
 // Services holds all business logic layers
 type Services struct {
-	User       *service.UserService
-	Sandbox    *service.SandboxService
-	Image      *service.ImageService
-	Exec       *service.ExecService
-	Session    *service.SessionExecService
-	FS         *service.FSService
-	APIKey     *service.APIKeyService
-	Org        *service.OrgService
-	PTY        *service.VsockWSDialer
-	PTYSession *service.PTYSessionService
-	Commands   *service.CommandsService
-	Metrics    *metrics.Manager
-	Clerk      *service.ClerkService
-	AuthCache  *service.AuthCache
-	Monitor    *runtime.EventMonitor
+	User             *service.UserService
+	Sandbox          *service.SandboxService
+	Image            *service.ImageService
+	Exec             *service.ExecService
+	Session          *service.SessionExecService
+	FS               *service.FSService
+	APIKey           *service.APIKeyService
+	Org              *service.OrgService
+	PTY              *service.VsockWSDialer
+	PTYSession       *service.PTYSessionService
+	Commands         *service.CommandsService
+	Metrics          *metrics.Manager
+	Clerk            *service.ClerkService
+	AuthCache        *service.AuthCache
+	Monitor          *runtime.EventMonitor
+	LifecycleManager *service.LifecycleManager
 }
 
 func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metrics.Manager) *Services {
@@ -77,21 +78,22 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 	monitor.SetRootContext(context.Background())
 
 	return &Services{
-		User:       service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
-		Sandbox:    service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor),
-		Image:      service.NewImageService(cfg, repos.Image),
-		Exec:       service.NewExecService(cfg),
-		Session:    service.NewSessionExecService(cfg),
-		FS:         service.NewFSService(),
-		APIKey:     service.NewAPIKeyService(repos.APIKey, cfg, authCache),
-		Org:        orgSvc,
-		PTY:        service.NewVsockWSDialer(),
-		PTYSession: service.NewPTYSessionService(),
-		Commands:   service.NewCommandsService(cfg),
-		Metrics:    metricsManager,
-		Clerk:      clerkSvc,
-		AuthCache:  authCache,
-		Monitor:    monitor,
+		User:             service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
+		Sandbox:          service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor),
+		Image:            service.NewImageService(cfg, repos.Image),
+		Exec:             service.NewExecService(cfg),
+		Session:          service.NewSessionExecService(cfg),
+		FS:               service.NewFSService(),
+		APIKey:           service.NewAPIKeyService(repos.APIKey, cfg, authCache),
+		Org:              orgSvc,
+		PTY:              service.NewVsockWSDialer(),
+		PTYSession:       service.NewPTYSessionService(),
+		Commands:         service.NewCommandsService(cfg),
+		Metrics:          metricsManager,
+		Clerk:            clerkSvc,
+		AuthCache:        authCache,
+		Monitor:          monitor,
+		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager),
 	}
 }
 

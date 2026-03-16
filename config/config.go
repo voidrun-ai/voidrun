@@ -57,6 +57,15 @@ type SystemUserConfig struct {
 	Email string
 }
 
+// AutoLifecycleConfig controls automatic sandbox lifecycle transitions
+type AutoLifecycleConfig struct {
+	Enabled               bool
+	PauseAfterIdleSec     int // auto-pause after N seconds of inactivity (default: 60)
+	StopAfterPausedSec    int // auto-stop after N seconds of being paused (default: 900)
+	DeleteAfterStoppedSec int // auto-delete after N seconds of being stopped (default: 604800)
+	CheckIntervalSec      int // how often the manager scans (default: 30)
+}
+
 // Config holds all application configuration
 type Config struct {
 	Server                ServerConfig
@@ -70,6 +79,7 @@ type Config struct {
 	Health                HealthConfig
 	Metrics               MetricsConfig
 	CORS                  CORSConfig
+	AutoLifecycle         AutoLifecycleConfig
 	APIKeyCacheTTLSeconds int
 	ClerkCacheTTLSeconds  int
 }
@@ -184,6 +194,12 @@ const (
 	DefaultRedisSentinelMaster = ""
 	DefaultRedisPassword       = ""
 	DefaultRedisDB             = 0
+	// Auto-lifecycle defaults
+	DefaultAutoLifecycleEnabled               = true
+	DefaultAutoLifecyclePauseAfterIdleSec     = 60     // 1 minute
+	DefaultAutoLifecycleStopAfterPausedSec    = 300    // 5 minutes
+	DefaultAutoLifecycleDeleteAfterStoppedSec = 604800 // 1 week
+	DefaultAutoLifecycleCheckIntervalSec      = 30     // 30 seconds
 	// Pagination defaults
 	DefaultPageSize = 20
 	MaxPageSize     = 100
@@ -274,6 +290,13 @@ func New() *Config {
 			ExposeHeaders:    getEnvCSV("CORS_EXPOSE_HEADERS", DefaultCORSExposeHeaders),
 			AllowCredentials: getEnvBool("CORS_ALLOW_CREDENTIALS", DefaultCORSAllowCredentials),
 			MaxAgeSec:        getEnvInt("CORS_MAX_AGE_SEC", DefaultCORSMaxAgeSec),
+		},
+		AutoLifecycle: AutoLifecycleConfig{
+			Enabled:               getEnvBool("AUTO_LIFECYCLE_ENABLED", DefaultAutoLifecycleEnabled),
+			PauseAfterIdleSec:     getEnvInt("AUTO_LIFECYCLE_PAUSE_AFTER_IDLE_SEC", DefaultAutoLifecyclePauseAfterIdleSec),
+			StopAfterPausedSec:    getEnvInt("AUTO_LIFECYCLE_STOP_AFTER_PAUSED_SEC", DefaultAutoLifecycleStopAfterPausedSec),
+			DeleteAfterStoppedSec: getEnvInt("AUTO_LIFECYCLE_DELETE_AFTER_STOPPED_SEC", DefaultAutoLifecycleDeleteAfterStoppedSec),
+			CheckIntervalSec:      getEnvInt("AUTO_LIFECYCLE_CHECK_INTERVAL_SEC", DefaultAutoLifecycleCheckIntervalSec),
 		},
 		APIKeyCacheTTLSeconds: getEnvInt("API_KEY_CACHE_TTL_SECONDS", DefaultAPIKeyCacheTTLSeconds),
 		ClerkCacheTTLSeconds:  getEnvInt("CLERK_CACHE_TTL_SECONDS", DefaultClerkCacheTTLSeconds),
