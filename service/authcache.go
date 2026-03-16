@@ -14,6 +14,7 @@ import (
 
 const (
 	apiKeyCacheKeyPrefix  = "auth:apikey:"
+	apiKeyIDMapPrefix     = "auth:map_id:" // Maps KeyID -> plainKeySuffix
 	clerkTokenCachePrefix = "auth:clerk:"
 )
 
@@ -21,6 +22,7 @@ const (
 type AuthCacheEntry struct {
 	UserID string `json:"userID"`
 	OrgID  string `json:"orgID"`
+	KeyID  string `json:"keyID"` // Database ID
 }
 
 // AuthCache wraps Redis client for auth caching
@@ -31,24 +33,24 @@ type AuthCache struct {
 }
 
 // NewAuthCache creates a new AuthCache based on the Redis configuration
-func NewAuthCache(cfg *config.RedisConfig, apiKeyTTLSeconds, clerkTTLSeconds int) (*AuthCache, error) {
-	if apiKeyTTLSeconds <= 0 {
-		apiKeyTTLSeconds = 3600 // default 1 hour
+func NewAuthCache(cfg *config.Config) (*AuthCache, error) {
+	if cfg.APIKeyCacheTTLSeconds <= 0 {
+		cfg.APIKeyCacheTTLSeconds = 3600 // default 1 hour
 	}
-	if clerkTTLSeconds <= 0 {
-		clerkTTLSeconds = 300 // default 5 minutes
+	if cfg.ClerkCacheTTLSeconds <= 0 {
+		cfg.ClerkCacheTTLSeconds = 300 // default 5 minutes
 	}
 
 	var client redis.Cmdable
 
-	mode := strings.ToLower(cfg.Mode)
+	mode := strings.ToLower(cfg.Redis.Mode)
 	if mode == "" {
 		mode = "single"
 	}
 
 	switch mode {
 	case "cluster":
-		addrs := strings.Split(cfg.ClusterAddrs, ",")
+		addrs := strings.Split(cfg.Redis.ClusterAddrs, ",")
 		if len(addrs) == 0 || (len(addrs) == 1 && addrs[0] == "") {
 			return nil, fmt.Errorf("REDIS_CLUSTER_ADDRS is required for cluster mode")
 		}
@@ -66,15 +68,15 @@ func NewAuthCache(cfg *config.RedisConfig, apiKeyTTLSeconds, clerkTTLSeconds int
 
 		client = redis.NewClusterClient(&redis.ClusterOptions{
 			Addrs:    cleanAddrs,
-			Password: cfg.Password,
+			Password: cfg.Redis.Password,
 		})
 
 	case "sentinel":
-		addrs := strings.Split(cfg.SentinelAddrs, ",")
+		addrs := strings.Split(cfg.Redis.SentinelAddrs, ",")
 		if len(addrs) == 0 || (len(addrs) == 1 && addrs[0] == "") {
 			return nil, fmt.Errorf("REDIS_SENTINEL_ADDRS is required for sentinel mode")
 		}
-		if cfg.SentinelMaster == "" {
+		if cfg.Redis.SentinelMaster == "" {
 			return nil, fmt.Errorf("REDIS_SENTINEL_MASTER is required for sentinel mode")
 		}
 		// Clean up addresses
@@ -90,21 +92,21 @@ func NewAuthCache(cfg *config.RedisConfig, apiKeyTTLSeconds, clerkTTLSeconds int
 		}
 
 		client = redis.NewFailoverClient(&redis.FailoverOptions{
-			MasterName:    cfg.SentinelMaster,
+			MasterName:    cfg.Redis.SentinelMaster,
 			SentinelAddrs: cleanAddrs,
-			Password:      cfg.Password,
-			DB:            cfg.DB,
+			Password:      cfg.Redis.Password,
+			DB:            cfg.Redis.DB,
 		})
 
 	default: // "single"
-		opts, parseErr := redis.ParseURL(cfg.URL)
+		opts, parseErr := redis.ParseURL(cfg.Redis.URL)
 		if parseErr != nil {
 			return nil, fmt.Errorf("failed to parse REDIS_URL: %w", parseErr)
 		}
-		if cfg.Password != "" {
-			opts.Password = cfg.Password
+		if cfg.Redis.Password != "" {
+			opts.Password = cfg.Redis.Password
 		}
-		opts.DB = cfg.DB
+		opts.DB = cfg.Redis.DB
 		client = redis.NewClient(opts)
 	}
 
@@ -117,8 +119,8 @@ func NewAuthCache(cfg *config.RedisConfig, apiKeyTTLSeconds, clerkTTLSeconds int
 
 	return &AuthCache{
 		client:    client,
-		apiKeyTTL: time.Duration(apiKeyTTLSeconds) * time.Second,
-		clerkTTL:  time.Duration(clerkTTLSeconds) * time.Second,
+		apiKeyTTL: time.Duration(cfg.APIKeyCacheTTLSeconds) * time.Second,
+		clerkTTL:  time.Duration(cfg.ClerkCacheTTLSeconds) * time.Second,
 	}, nil
 }
 
@@ -137,13 +139,23 @@ func (ac *AuthCache) GetAPIKey(ctx context.Context, plainKey string) (*AuthCache
 }
 
 // SetAPIKey caches auth data for an API key
+// SetAPIKey caches auth data for an API key and creates an ID lookup mapping
 func (ac *AuthCache) SetAPIKey(ctx context.Context, plainKey string, entry *AuthCacheEntry) error {
-	if ac == nil || ac.client == nil {
+	if ac == nil || ac.client == nil || entry == nil {
 		return nil // Graceful degradation
 	}
 
-	key := apiKeyCacheKeyPrefix + key(plainKey)
-	return ac.set(ctx, key, entry, ac.apiKeyTTL)
+	suffix := key(plainKey)
+	dataKey := apiKeyCacheKeyPrefix + suffix
+	idMapKey := apiKeyIDMapPrefix + entry.KeyID
+
+	// 1. Store main data entry
+	if err := ac.set(ctx, dataKey, entry, ac.apiKeyTTL); err != nil {
+		return err
+	}
+
+	// 2. Store ID-to-Suffix mapping for invalidation
+	return ac.client.Set(ctx, idMapKey, suffix, ac.apiKeyTTL).Err()
 }
 
 // DeleteAPIKey invalidates cached auth data for an API key
@@ -154,6 +166,31 @@ func (ac *AuthCache) DeleteAPIKey(ctx context.Context, plainKey string) error {
 
 	key := apiKeyCacheKeyPrefix + key(plainKey)
 	return ac.delete(ctx, key)
+}
+
+// DeleteAPIKeyByID invalidates cached auth data using the database ID mapping
+func (ac *AuthCache) DeleteAPIKeyByID(ctx context.Context, keyID string) error {
+	if ac == nil || ac.client == nil || keyID == "" {
+		return nil
+	}
+
+	idMapKey := apiKeyIDMapPrefix + keyID
+
+	// 1. Get the suffix from the mapping
+	suffix, err := ac.client.Get(ctx, idMapKey).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil // No mapping found, nothing to delete
+		}
+		return fmt.Errorf("failed to get ID mapping: %w", err)
+	}
+
+	// 2. Delete the main data entry
+	dataKey := apiKeyCacheKeyPrefix + suffix
+	_ = ac.delete(ctx, dataKey)
+
+	// 3. Delete the mapping itself
+	return ac.delete(ctx, idMapKey)
 }
 
 // GetClerkToken retrieves cached auth data for a Clerk token

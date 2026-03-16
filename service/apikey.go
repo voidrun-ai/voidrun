@@ -49,9 +49,24 @@ func generateAndHash() (plainKey string, hash string, err error) {
 
 // GenerateKey creates a new API key for an organization
 func (s *APIKeyService) GenerateKey(ctx context.Context, orgID, userID primitive.ObjectID, keyName string) (*model.GeneratedAPIKeyResponse, error) {
-	plainKey, hash, err := generateAndHash()
-	if err != nil {
-		return nil, err
+	var plainKey, hash, maskedKey string
+	var err error
+	// Extremely unlikely to have a collision with 32 bytes of entropy, but good to be safe
+	for i := 0; i < 5; i++ {
+		plainKey, hash, err = generateAndHash()
+		if err != nil {
+			return nil, err
+		}
+		maskedKey = util.MaskAPIKey(plainKey)
+
+		// Check if maskedKey already exists
+		existing, _ := s.repo.FindByMaskedKey(ctx, maskedKey)
+		if existing == nil {
+			break
+		}
+		if i == 4 {
+			return nil, fmt.Errorf("failed to generate unique API key")
+		}
 	}
 
 	apiKey := &model.APIKey{
@@ -59,6 +74,7 @@ func (s *APIKeyService) GenerateKey(ctx context.Context, orgID, userID primitive
 		Name:      keyName,
 		Scopes:    []string{"*"},
 		Hash:      hash,
+		MaskedKey: maskedKey,
 		CreatedBy: userID,
 		CreatedAt: time.Now(),
 		IsActive:  true,
@@ -132,6 +148,12 @@ func (s *APIKeyService) RevokeKeyByOrg(ctx context.Context, orgID primitive.Obje
 		return fmt.Errorf("invalid key ID: %w", err)
 	}
 
+	// Fetch key first to get maskedKey for cache invalidation
+	keyDoc, err := s.repo.FindByIDAndOrg(ctx, keyOID, orgID)
+	if err != nil || keyDoc == nil {
+		return ErrAPIKeyNotFound
+	}
+
 	ok, err := s.repo.DeleteByIDAndOrg(ctx, keyOID, orgID)
 	if err != nil {
 		return fmt.Errorf("failed to revoke key: %w", err)
@@ -140,8 +162,8 @@ func (s *APIKeyService) RevokeKeyByOrg(ctx context.Context, orgID primitive.Obje
 		return ErrAPIKeyNotFound
 	}
 
-	// Note: Cache invalidation for the revoked key is handled at the middleware level
-	// since we don't have access to the plain key here (only the hash is stored)
+	// Invalidate cache by ID mapping
+	s.InvalidateAPIKeyCache(ctx, keyOID.Hex())
 	return nil
 }
 
@@ -160,17 +182,20 @@ func (s *APIKeyService) ActivateKeyByOrg(ctx context.Context, orgID primitive.Ob
 func (s *APIKeyService) ValidateKey(ctx context.Context, plainKey string) (*model.APIKey, error) {
 	defer util.Track("Validate Auth Key (Total)")()
 
-	// Query database for all active keys
-	keys, err := s.repo.FindActive(ctx)
+	maskedKey := util.MaskAPIKey(plainKey)
+
+	// Query database by maskedKey
+	key, err := s.repo.FindByMaskedKey(ctx, maskedKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate key: %w", err)
 	}
+	if key == nil {
+		return nil, fmt.Errorf("invalid api key")
+	}
 
-	for _, key := range keys {
-		if util.VerifyAPIKey(plainKey, key.Hash) {
-			_ = s.repo.UpdateLastUsed(ctx, key.ID, key.OrgID)
-			return key, nil
-		}
+	if util.VerifyAPIKey(plainKey, key.Hash) {
+		s.repo.UpdateLastUsed(ctx, key.ID, key.OrgID)
+		return key, nil
 	}
 
 	return nil, fmt.Errorf("invalid api key")
@@ -192,7 +217,7 @@ func (s *APIKeyService) ValidateKeyForOrg(ctx context.Context, plainKey string, 
 
 		if util.VerifyAPIKey(plainKey, key.Hash) {
 			// Update last used
-			_ = s.repo.UpdateLastUsed(ctx, key.ID, key.OrgID)
+			s.repo.UpdateLastUsed(ctx, key.ID, key.OrgID)
 			return true, nil
 		}
 	}
@@ -248,6 +273,12 @@ func (s *APIKeyService) setKeyActiveByOrg(ctx context.Context, orgID primitive.O
 	if !ok {
 		return ErrAPIKeyNotFound
 	}
+
+	// Invalidate cache if deactivating
+	if !isActive {
+		s.InvalidateAPIKeyCache(ctx, keyOID.Hex())
+	}
+
 	return nil
 }
 
@@ -271,11 +302,11 @@ func (s *APIKeyService) GetKeyCount(ctx context.Context, orgID string) (int64, e
 	return count, err
 }
 
-// InvalidateAPIKeyCache invalidates the cache for a specific API key
+// InvalidateAPIKeyCache invalidates the cache for a specific API key using its database ID
 // This is called when a key is revoked or deactivated
-func (s *APIKeyService) InvalidateAPIKeyCache(ctx context.Context, plainKey string) {
+func (s *APIKeyService) InvalidateAPIKeyCache(ctx context.Context, keyID string) {
 	if s.authCache != nil {
-		if err := s.authCache.DeleteAPIKey(ctx, plainKey); err != nil {
+		if err := s.authCache.DeleteAPIKeyByID(ctx, keyID); err != nil {
 			fmt.Printf("[APIKey] Failed to invalidate cache: %v\n", err)
 		}
 	}

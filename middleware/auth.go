@@ -43,20 +43,15 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 			return
 		}
 
-		var orgID, userID string
+		var orgID, userID, authMethod string
 
 		switch {
 		case apiKey != "":
 			orgID, userID = handleAPIKeyAuth(c, apiKeySvc, authCache, apiKey)
+			authMethod = "apikey"
 		case bearerToken != "":
-			claims, err := clerkSvc.ValidateToken(c.Request.Context(), bearerToken)
-			if err == nil && claims != nil {
-				orgID, userID = handleClerkAuth(c, userSvc, authCache, bearerToken, claims)
-			} else {
-				fmt.Printf("[Auth] Clerk token validation failed: %v\n", err)
-				// Clerk was enabled but token validation failed
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid clerk token"})
-			}
+			orgID, userID = handleClerkAuth(c, userSvc, clerkSvc, authCache, bearerToken)
+			authMethod = "token"
 
 		default:
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required (X-API-Key or Bearer token)"})
@@ -64,12 +59,13 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 
 		c.Set("orgID", orgID)
 		c.Set("userID", userID)
+		c.Set("authMethod", authMethod)
 		c.Next()
 	}
 }
 
 // handleClerkAuth handles authentication with Clerk JWT tokens
-func handleClerkAuth(c *gin.Context, userSvc *service.UserService, authCache *service.AuthCache, token string, claims *service.ClerkClaims) (string, string) {
+func handleClerkAuth(c *gin.Context, userSvc *service.UserService, clerkSvc *service.ClerkService, authCache *service.AuthCache, token string) (string, string) {
 	ctx := c.Request.Context()
 	orgID := c.GetHeader("X-Org-ID")
 
@@ -90,6 +86,14 @@ func handleClerkAuth(c *gin.Context, userSvc *service.UserService, authCache *se
 	}
 
 	// Cache miss - validate and provision user
+	claims, err := clerkSvc.ValidateToken(c.Request.Context(), token)
+	if err != nil || claims == nil {
+		fmt.Printf("[Auth] Clerk token validation failed: %v\n", err)
+		// Clerk was enabled but token validation failed
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid clerk token"})
+		return "", ""
+	}
+
 	clerkID := claims.Sub
 	user, err := userSvc.CreateNewUserAndDefaultOrg(ctx, clerkID, claims)
 	if err != nil {
@@ -147,6 +151,7 @@ func handleAPIKeyAuth(c *gin.Context, apiKeySvc *service.APIKeyService, authCach
 		if err := authCache.SetAPIKey(ctx, plainKey, &service.AuthCacheEntry{
 			UserID: userID,
 			OrgID:  resolvedOrgID,
+			KeyID:  keyDoc.ID.Hex(),
 		}); err != nil {
 			fmt.Printf("[Auth] API key cache set error: %v\n", err)
 		} else {

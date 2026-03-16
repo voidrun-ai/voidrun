@@ -34,27 +34,36 @@ type SandboxService struct {
 	imageRepo  repository.IImageRepository
 	cfg        *config.Config
 	metrics    *metrics.Manager
+	monitor    *runtime.EventMonitor
 	projection primitive.M
 }
 
 // NewSandboxService creates a new sandbox service
-func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, imageRepo repository.IImageRepository, metricsManager *metrics.Manager) *SandboxService {
+func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, imageRepo repository.IImageRepository, metricsManager *metrics.Manager, monitor *runtime.EventMonitor) *SandboxService {
 	return &SandboxService{
 		repo:      repo,
 		imageRepo: imageRepo,
 		cfg:       cfg,
 		metrics:   metricsManager,
+		monitor:   monitor,
 		projection: bson.M{
-			"_id":       1,
-			"name":      1,
-			"image":     1,
-			"cpu":       1,
-			"mem":       1,
-			"diskMB":    1,
-			"status":    1,
-			"createdAt": 1,
-			"orgId":     1,
-			"createdBy": 1,
+			"_id":            1,
+			"name":           1,
+			"image":          1,
+			"cpu":            1,
+			"mem":            1,
+			"diskMB":         1,
+			"status":         1,
+			"disablePause":   1,
+			"lastActivityAt": 1,
+			"pausedAt":       1,
+			"stoppedAt":      1,
+			"createdAt":      1,
+			"orgId":          1,
+			"createdBy":      1,
+			"envVars":        1,
+			"region":         1,
+			"refId":          1,
 		},
 	}
 }
@@ -207,19 +216,24 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		}
 	}()
 
+	now := time.Now()
 	sandbox := &model.Sandbox{
-		ID:        objID,
-		Name:      req.Name,
-		Image:     req.Image,
-		IP:        ip,
-		CPU:       cpu,
-		Mem:       mem,
-		DiskMB:    diskMB,
-		OrgID:     req.OrgID,
-		EnvVars:   req.EnvVars, // Store env vars in the sandbox record
-		Status:    "running",
-		CreatedAt: time.Now(),
-		CreatedBy: req.UserID,
+		ID:             objID,
+		Name:           req.Name,
+		Image:          req.Image,
+		IP:             ip,
+		CPU:            cpu,
+		Mem:            mem,
+		DiskMB:         diskMB,
+		OrgID:          req.OrgID,
+		EnvVars:        req.EnvVars,
+		DisablePause:   req.DisablePause,
+		Region:         req.Region,
+		RefID:          req.RefID,
+		LastActivityAt: &now,
+		Status:         "running",
+		CreatedAt:      now,
+		CreatedBy:      req.UserID,
 	}
 
 	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), sandbox.OrgID.Hex())
@@ -234,6 +248,11 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, runtime.GetSocketPath(spec.ID), cpu, mem, diskMB)
 	}
 
+	// Start CLH event monitor
+	if s.monitor != nil {
+		s.monitor.Start(ctx, sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
+	}
+
 	return sandbox, nil
 }
 
@@ -246,17 +265,29 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 	if err := runtime.Delete(id); err != nil {
 		return fmt.Errorf("delete failed: %w", err)
 	}
+
+	// Stop event monitor (performs one final sync)
+	if s.monitor != nil {
+		s.monitor.Stop(ctx, id)
+	}
+
+	// Physical file cleanup after monitor has synced
+	if err := runtime.Cleanup(id); err != nil {
+		fmt.Printf("[WARN] Failed to cleanup files for %s: %v\n", id, err)
+	}
+
 	if s.metrics != nil {
 		s.metrics.UnregisterSandbox(id)
 	}
 
-	ok, err := s.repo.DeleteByIDAndOrg(ctx, sandbox.ID, orgID)
+	ok, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "deleted")
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return ErrSandboxNotFound
 	}
+
 	return nil
 }
 
@@ -314,7 +345,7 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		}
 	}
 
-	// Update status to running
+	// Update status to running and clear stoppedAt
 	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
 		// VM is running but DB update failed - log but don't fail
 		fmt.Printf("[WARN] VM started but failed to update DB status: %v\n", err)
@@ -351,9 +382,13 @@ func (s *SandboxService) Stop(ctx context.Context, orgID primitive.ObjectID, id 
 		s.metrics.UnregisterSandbox(sandbox.ID.Hex())
 	}
 
-	// Update database status to stopped
+	// Update database status to stopped and set stoppedAt
 	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "stopped"); err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
+	}
+	// Also set stoppedAt timestamp for auto-delete tracking
+	if err := s.repo.SetStoppedAt(ctx, sandbox.ID); err != nil {
+		log.Printf("[WARN] Failed to set stoppedAt for %s: %v", id, err)
 	}
 
 	return nil
@@ -372,6 +407,17 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.Obje
 		return nil
 	}
 
+	// If paused, resume it
+	if sandbox.Status == "paused" {
+		log.Printf("[Auto-Resume] Sandbox %s is paused, resuming...\n", id)
+		if err := s.Resume(ctx, orgID, id); err != nil {
+			return fmt.Errorf("failed to auto-resume sandbox: %w", err)
+		}
+
+		log.Printf("[Auto-Resume] Sandbox %s resumed and ready\n", id)
+		return nil
+	}
+
 	// If stopped, start it
 	if sandbox.Status == "stopped" {
 		log.Printf("[Auto-Start] Sandbox %s is stopped, starting...\n", id)
@@ -384,13 +430,17 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.Obje
 	}
 
 	// Other states
-	return fmt.Errorf("sandbox in unexpected state for auto-start: %s", sandbox.Status)
+	return fmt.Errorf("sandbox in unexpected state for auto-start/resume: %s", sandbox.Status)
 }
 
 func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id string) error {
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
+	}
+
+	if sandbox.DisablePause {
+		return fmt.Errorf("sandbox has pause disabled")
 	}
 
 	if sandbox.Status != "running" {
@@ -401,9 +451,12 @@ func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id
 		return err
 	}
 
-	// Update database status to paused
+	// Update database status to paused and set pausedAt
 	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "paused"); err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
+	}
+	if err := s.repo.SetPausedAt(ctx, sandbox.ID); err != nil {
+		log.Printf("[WARN] Failed to set pausedAt for %s: %v", id, err)
 	}
 
 	return nil
@@ -427,6 +480,11 @@ func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, i
 	// Update database status to running
 	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
+	}
+
+	// Touch activity on resume so the sandbox doesn't immediately get auto-paused again
+	if err := s.repo.TouchActivity(ctx, sandbox.ID); err != nil {
+		log.Printf("[WARN] Failed to touch activity on resume for %s: %v", id, err)
 	}
 
 	return nil
@@ -782,4 +840,13 @@ func (s *SandboxService) getOrgScopedSandbox(ctx context.Context, orgID primitiv
 		return nil, ErrSandboxNotFound
 	}
 	return sandbox, nil
+}
+
+// TouchActivity updates the lastActivityAt timestamp for a sandbox (called by handlers on API access).
+func (s *SandboxService) TouchActivity(ctx context.Context, orgID primitive.ObjectID, id string) {
+	objID, err := util.ParseObjectID(id)
+	if err != nil {
+		return
+	}
+	_ = s.repo.TouchActivity(ctx, objID)
 }

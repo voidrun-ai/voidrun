@@ -11,7 +11,10 @@ type CreateSandboxRequest struct {
 	OrgID   primitive.ObjectID `json:"orgId,omitempty"`
 	UserID  primitive.ObjectID `json:"userId,omitempty"`
 	Sync    *bool              `json:"sync"`
-	EnvVars map[string]string  `json:"envVars,omitempty"`
+	EnvVars      map[string]string `json:"envVars,omitempty"`
+	DisablePause bool              `json:"disablePause,omitempty"`
+	Region       string            `json:"region,omitempty"`
+	RefID        string            `json:"refId,omitempty"`
 }
 
 // ExecRequest represents a command execution request

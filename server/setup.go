@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 
 	"voidrun/config"
@@ -9,6 +10,7 @@ import (
 	"voidrun/middleware"
 	"voidrun/model"
 	"voidrun/repository"
+	"voidrun/runtime"
 	"voidrun/service"
 	"voidrun/util"
 
@@ -24,6 +26,7 @@ type Repositories struct {
 	Image   repository.IImageRepository
 	APIKey  repository.IAPIKeyRepository
 	Org     repository.IOrgRepository
+	Event   repository.IEventRepository
 }
 
 func InitRepositories(cfg *config.Config, db *mongo.Database) *Repositories {
@@ -33,25 +36,28 @@ func InitRepositories(cfg *config.Config, db *mongo.Database) *Repositories {
 		Image:   repository.NewImageRepository(cfg, db),
 		APIKey:  repository.NewAPIKeyRepository(cfg, db),
 		Org:     repository.NewOrgRepository(cfg, db),
+		Event:   repository.NewEventRepository(db),
 	}
 }
 
 // Services holds all business logic layers
 type Services struct {
-	User       *service.UserService
-	Sandbox    *service.SandboxService
-	Image      *service.ImageService
-	Exec       *service.ExecService
-	Session    *service.SessionExecService
-	FS         *service.FSService
-	APIKey     *service.APIKeyService
-	Org        *service.OrgService
-	PTY        *service.VsockWSDialer
-	PTYSession *service.PTYSessionService
-	Commands   *service.CommandsService
-	Metrics    *metrics.Manager
-	Clerk      *service.ClerkService
-	AuthCache  *service.AuthCache
+	User             *service.UserService
+	Sandbox          *service.SandboxService
+	Image            *service.ImageService
+	Exec             *service.ExecService
+	Session          *service.SessionExecService
+	FS               *service.FSService
+	APIKey           *service.APIKeyService
+	Org              *service.OrgService
+	PTY              *service.VsockWSDialer
+	PTYSession       *service.PTYSessionService
+	Commands         *service.CommandsService
+	Metrics          *metrics.Manager
+	Clerk            *service.ClerkService
+	AuthCache        *service.AuthCache
+	Monitor          *runtime.EventMonitor
+	LifecycleManager *service.LifecycleManager
 }
 
 func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metrics.Manager) *Services {
@@ -60,27 +66,34 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 
 	// Initialize AuthCache (Redis-backed)
 	var authCache *service.AuthCache
-	authCache, err := service.NewAuthCache(&cfg.Redis, cfg.APIKeyCacheTTLSeconds, cfg.ClerkCacheTTLSeconds)
+	authCache, err := service.NewAuthCache(cfg)
 	if err != nil {
 		fmt.Printf("[WARN] Failed to initialize Redis auth cache: %v. Auth will fall back to database lookups.\n", err)
 		// authCache remains nil, which triggers graceful degradation
 	}
 
+	// Initialize Event Monitor
+	monitor := runtime.NewEventMonitor(repos.Event)
+	// Set root context for monitor (used for watcher goroutines)
+	monitor.SetRootContext(context.Background())
+
 	return &Services{
-		User:       service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
-		Sandbox:    service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager),
-		Image:      service.NewImageService(cfg, repos.Image),
-		Exec:       service.NewExecService(cfg),
-		Session:    service.NewSessionExecService(cfg),
-		FS:         service.NewFSService(),
-		APIKey:     service.NewAPIKeyService(repos.APIKey, cfg, authCache),
-		Org:        orgSvc,
-		PTY:        service.NewVsockWSDialer(),
-		PTYSession: service.NewPTYSessionService(),
-		Commands:   service.NewCommandsService(cfg),
-		Metrics:    metricsManager,
-		Clerk:      clerkSvc,
-		AuthCache:  authCache,
+		User:             service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
+		Sandbox:          service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor),
+		Image:            service.NewImageService(cfg, repos.Image),
+		Exec:             service.NewExecService(cfg),
+		Session:          service.NewSessionExecService(cfg),
+		FS:               service.NewFSService(),
+		APIKey:           service.NewAPIKeyService(repos.APIKey, cfg, authCache),
+		Org:              orgSvc,
+		PTY:              service.NewVsockWSDialer(),
+		PTYSession:       service.NewPTYSessionService(),
+		Commands:         service.NewCommandsService(cfg),
+		Metrics:          metricsManager,
+		Clerk:            clerkSvc,
+		AuthCache:        authCache,
+		Monitor:          monitor,
+		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager),
 	}
 }
 
@@ -113,20 +126,23 @@ func InitHandlers(services *Services) *Handlers {
 
 // Middlewares stores reusable middleware handlers.
 type Middlewares struct {
-	Auth gin.HandlerFunc
+	Auth  gin.HandlerFunc
 }
 
 // InitMiddlewares builds middleware handler references for reuse.
 func InitMiddlewares(cfg *config.Config, s *Services) *Middlewares {
 	return &Middlewares{
-		Auth: middleware.AuthMiddleware(cfg, s.APIKey, s.User, s.Clerk, s.AuthCache),
+		Auth:  middleware.AuthMiddleware(cfg, s.APIKey, s.User, s.Clerk, s.AuthCache),
 	}
 }
 
 // PopulateInitialData seeds system users/images
 func PopulateInitialData(cfg *config.Config, repos *Repositories) error {
 	userRepo := repos.User
+	systemUserID := util.GenerateObjectID()
+	cfg.SystemUser.ID = systemUserID
 	if err := userRepo.EnsureSystemUser(model.User{
+		ID:    systemUserID,
 		Name:  cfg.SystemUser.Name,
 		Email: cfg.SystemUser.Email,
 	}); err != nil {
@@ -135,12 +151,11 @@ func PopulateInitialData(cfg *config.Config, repos *Repositories) error {
 
 	// Create default system images (using concrete repo)
 	if imgRepo, ok := repos.Image.(interface{ EnsureSystemImage(model.Image) error }); ok {
-		sysUserID, _ := util.ParseObjectID(cfg.SystemUser.ID)
 		if err := imgRepo.EnsureSystemImage(model.Image{
 			ID:        primitive.NewObjectID(),
 			Name:      "alpine",
 			Tag:       "latest",
-			CreatedBy: sysUserID,
+			CreatedBy: systemUserID,
 		}); err != nil {
 			return err
 		}
@@ -148,7 +163,7 @@ func PopulateInitialData(cfg *config.Config, repos *Repositories) error {
 			ID:        primitive.NewObjectID(),
 			Name:      "debian",
 			Tag:       "latest",
-			CreatedBy: sysUserID,
+			CreatedBy: systemUserID,
 		}); err != nil {
 			return err
 		}

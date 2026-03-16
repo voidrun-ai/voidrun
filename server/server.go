@@ -109,6 +109,9 @@ func (s *Server) Close() error {
 // Run starts the server
 func (s *Server) Run() error {
 	s.startHealthMonitor()
+	s.resumeEventWatchers()
+	s.startLifecycleManager()
+
 	ver := util.Get()
 	versionLine := fmt.Sprintf("%s", ver.Version)
 	if ver.Commit != "" {
@@ -119,6 +122,12 @@ func (s *Server) Run() error {
 	}
 	fmt.Printf("🚀 VoidRun Server %s running on %s\n", versionLine, s.cfg.Server.Address())
 	return s.router.Run(s.cfg.Server.Address())
+}
+
+func (s *Server) startLifecycleManager() {
+	if s.services.LifecycleManager != nil {
+		s.services.LifecycleManager.Start(context.Background())
+	}
 }
 
 func (s *Server) startHealthMonitor() {
@@ -140,7 +149,32 @@ func (s *Server) startHealthMonitor() {
 	}()
 }
 
-func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares) *gin.Engine {
+func (s *Server) resumeEventWatchers() {
+	if s.services.Monitor == nil {
+		return
+	}
+
+	ctx := context.Background()
+	// Find all non-killed sandboxes to resume watching
+	sandboxes, err := s.repos.Sandbox.FindForHealth(ctx, options.FindOptions{})
+	if err != nil {
+		fmt.Printf("[event_monitor] failed to fetch sandboxes for resume: %v\n", err)
+		return
+	}
+
+	var meta []runtime.SandboxMeta
+	for _, sb := range sandboxes {
+		meta = append(meta, runtime.SandboxMeta{
+			SandboxID: sb.ID,
+			OrgID:     sb.OrgID,
+			UserID:    sb.CreatedBy,
+		})
+	}
+
+	s.services.Monitor.ResumeAll(ctx, meta)
+}
+
+func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, extraProtectedMiddlewares ...gin.HandlerFunc) *gin.Engine {
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
 
@@ -175,6 +209,9 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares) 
 	// Protected routes require API key or JWT auth
 	protected := api.Group("")
 	protected.Use(mw.Auth)
+	for _, extra := range extraProtectedMiddlewares {
+		protected.Use(extra)
+	}
 
 	// Sandbox routes
 	sandboxes := protected.Group("/sandboxes")

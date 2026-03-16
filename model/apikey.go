@@ -13,6 +13,7 @@ type APIKey struct {
 	Name       string             `bson:"name" json:"name"`
 	Scopes     []string           `bson:"scopes,omitempty" json:"scopes,omitempty"`
 	Hash       string             `bson:"hash" json:"hash"` // Bcrypt hash - never expose
+	MaskedKey  string             `bson:"maskedKey" json:"maskedKey"`
 	CreatedBy  primitive.ObjectID `bson:"createdBy" json:"createdBy"`
 	CreatedAt  time.Time          `bson:"createdAt" json:"createdAt"`
 	LastUsedAt time.Time          `bson:"lastUsedAt,omitempty" json:"lastUsedAt,omitempty"`
@@ -25,6 +26,7 @@ type APIKeyResponse struct {
 	ID         string    `json:"id"`
 	OrgID      string    `json:"orgId"`
 	Name       string    `json:"name"`
+	MaskedKey  string    `json:"maskedKey"`
 	Scopes     []string  `json:"scopes,omitempty"`
 	CreatedBy  string    `json:"createdBy"`
 	CreatedAt  time.Time `json:"createdAt"`
@@ -39,6 +41,7 @@ func (a *APIKey) ToResponse() APIKeyResponse {
 		ID:         a.ID.Hex(),
 		OrgID:      a.OrgID.Hex(),
 		Name:       a.Name,
+		MaskedKey:  a.MaskedKey,
 		Scopes:     a.Scopes,
 		CreatedBy:  a.CreatedBy.Hex(),
 		CreatedAt:  a.CreatedAt,
