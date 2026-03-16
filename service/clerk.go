@@ -9,6 +9,7 @@ import (
 	"voidrun/config"
 
 	"github.com/clerk/clerk-sdk-go/v2"
+	"github.com/clerk/clerk-sdk-go/v2/jwks"
 	"github.com/clerk/clerk-sdk-go/v2/jwt"
 	clerkuser "github.com/clerk/clerk-sdk-go/v2/user"
 )
@@ -41,15 +42,20 @@ type ClerkUser struct {
 
 // ClerkService handles Clerk authentication via official SDK
 type ClerkService struct {
-	Config *config.Config
+	Config     *config.Config
+	jwksClient *jwks.Client
 }
 
 // NewClerkService creates a new Clerk service
 func NewClerkService(cfg *config.Config) *ClerkService {
 	// Initialize official clerk SDK configuration globally
 	clerk.SetKey(cfg.Auth.ClerkSecretKey)
+	jwksClient := &jwks.Client{
+		Backend: clerk.GetBackend(),
+	}
 	return &ClerkService{
-		Config: cfg,
+		Config:     cfg,
+		jwksClient: jwksClient,
 	}
 }
 
@@ -79,7 +85,8 @@ func (s *ClerkService) ValidateToken(ctx context.Context, token string) (*ClerkC
 	var err error
 
 	verifyParams := &jwt.VerifyParams{
-		Token: token,
+		Token:      token,
+		JWKSClient: s.jwksClient,
 	}
 
 	sessionClaims, err = jwt.Verify(ctx, verifyParams)
