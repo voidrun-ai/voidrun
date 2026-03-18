@@ -50,7 +50,7 @@ type Services struct {
 	FS               *service.FSService
 	APIKey           *service.APIKeyService
 	Org              *service.OrgService
-	PTY              *service.VsockWSDialer
+	Dialer           *service.VsockWSDialer
 	PTYSession       *service.PTYSessionService
 	Commands         *service.CommandsService
 	Metrics          *metrics.Manager
@@ -86,7 +86,7 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		FS:               service.NewFSService(),
 		APIKey:           service.NewAPIKeyService(repos.APIKey, cfg, authCache),
 		Org:              orgSvc,
-		PTY:              service.NewVsockWSDialer(),
+		Dialer:           service.NewVsockWSDialer(),
 		PTYSession:       service.NewPTYSessionService(),
 		Commands:         service.NewCommandsService(cfg),
 		Metrics:          metricsManager,
@@ -116,9 +116,9 @@ func InitHandlers(services *Services) *Handlers {
 		Sandbox:  handler.NewSandboxHandler(services.Sandbox),
 		Image:    handler.NewImageHandler(services.Image),
 		Exec:     handler.NewExecHandler(services.Exec, services.Session, services.Sandbox, services.Commands),
-		FS:       handler.NewFSHandler(services.FS, services.Sandbox),
+		FS:       handler.NewFSHandler(services.FS, services.Sandbox, services.Dialer),
 		Org:      handler.NewOrgHandler(services.Org, services.APIKey, services.User),
-		PTY:      handler.NewPTYHandler(services.PTY, services.PTYSession, services.Sandbox),
+		PTY:      handler.NewPTYHandler(services.Dialer, services.PTYSession, services.Sandbox),
 		Commands: handler.NewCommandsHandler(services.Commands, services.Sandbox),
 		Version:  handler.NewVersionHandler(),
 	}
@@ -126,13 +126,13 @@ func InitHandlers(services *Services) *Handlers {
 
 // Middlewares stores reusable middleware handlers.
 type Middlewares struct {
-	Auth  gin.HandlerFunc
+	Auth gin.HandlerFunc
 }
 
 // InitMiddlewares builds middleware handler references for reuse.
 func InitMiddlewares(cfg *config.Config, s *Services) *Middlewares {
 	return &Middlewares{
-		Auth:  middleware.AuthMiddleware(cfg, s.APIKey, s.User, s.Clerk, s.AuthCache),
+		Auth: middleware.AuthMiddleware(cfg, s.APIKey, s.User, s.Clerk, s.AuthCache),
 	}
 }
 
