@@ -56,6 +56,7 @@ func sanitizeFilename(name string) string {
 type FSHandler struct {
 	fsService      *service.FSService
 	sandboxService *service.SandboxService
+	dialer         *service.VsockWSDialer
 }
 
 // Shared 64KB Buffer Pool
@@ -99,10 +100,11 @@ func HandleJSONResponse(c *gin.Context, resp *http.Response) {
 }
 
 // NewFSHandler creates a new filesystem handler
-func NewFSHandler(fsService *service.FSService, sandboxService *service.SandboxService) *FSHandler {
+func NewFSHandler(fsService *service.FSService, sandboxService *service.SandboxService, dialer *service.VsockWSDialer) *FSHandler {
 	return &FSHandler{
 		fsService:      fsService,
 		sandboxService: sandboxService,
+		dialer:         dialer,
 	}
 }
 
@@ -688,8 +690,7 @@ func (h *FSHandler) StreamWatchEvents(c *gin.Context) {
 	// Connect to agent's WebSocket stream
 	agentURL := fmt.Sprintf("ws://%s/watch/stream?sessionId=%s", id, sessionID)
 
-	dialer := service.NewVsockWSDialer()
-	agentConn, _, err := dialer.DialContext(c.Request.Context(), agentURL, nil)
+	agentConn, _, err := h.dialer.DialContext(c.Request.Context(), agentURL, nil)
 	if err != nil {
 		log.Printf("[Watch] Failed to connect to agent: %v", err)
 		clientConn.WriteJSON(map[string]string{"error": "Failed to connect to watch session"})

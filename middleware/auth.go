@@ -31,16 +31,18 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 	return func(c *gin.Context) {
 
 		apiKey := c.GetHeader("X-API-Key")
-
-		// ws will send api key to query param
-		if apiKey == "" {
-			apiKey = c.Query("apiKey")
-		}
-
 		bearerToken := extractBearerToken(c.GetHeader("Authorization"))
-		if apiKey != "" && bearerToken != "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "provide either X-API-Key or Bearer token, not both"})
-			return
+		if apiKey == "" && bearerToken == "" {
+			if c.IsWebsocket() {
+				// ws will send api key to query param
+				apiKey = c.Query("apiKey")
+				bearerToken = c.Query("token")
+			}
+
+			if apiKey != "" && bearerToken != "" {
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "provide either X-API-Key or Bearer token, not both"})
+				return
+			}
 		}
 
 		var orgID, userID, authMethod string
