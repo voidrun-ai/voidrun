@@ -246,7 +246,7 @@ func (r *SandboxRepository) UpdateStatusByIDAndOrg(ctx context.Context, id, orgI
 }
 
 func (r *SandboxRepository) Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error) {
-	baseFilter := bson.M{"orgId": orgID}
+	baseFilter := bson.M{"orgId": orgID, "status": bson.M{"$ne": "deleted"}}
 	if filterMap, ok := filter.(bson.M); ok {
 		for k, v := range filterMap {
 			baseFilter[k] = v
@@ -305,8 +305,8 @@ func (r *SandboxRepository) FindIdleRunning(ctx context.Context, threshold time.
 	filter := bson.M{
 		"status": "running",
 		"$or": []bson.M{
-			{"disablePause": bson.M{"$ne": true}},
-			{"disablePause": bson.M{"$exists": false}},
+			{"autoSleep": bson.M{"$ne": false}},
+			{"autoSleep": bson.M{"$exists": false}},
 		},
 		"lastActivityAt": bson.M{"$lt": threshold},
 	}

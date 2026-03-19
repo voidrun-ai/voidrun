@@ -16,7 +16,7 @@ type Sandbox struct {
 	Mem            int                `bson:"mem" json:"mem"`
 	DiskMB         int                `bson:"diskMB" json:"diskMB"`
 	Status         string             `bson:"status" json:"status"`
-	DisablePause   bool               `bson:"disablePause,omitempty" json:"disablePause,omitempty"`
+	AutoSleep      bool               `bson:"autoSleep" json:"autoSleep"`
 	LastActivityAt *time.Time         `bson:"lastActivityAt,omitempty" json:"-"`
 	PausedAt       *time.Time         `bson:"pausedAt,omitempty" json:"-"`
 	StoppedAt      *time.Time         `bson:"stoppedAt,omitempty" json:"-"`
