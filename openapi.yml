@@ -226,10 +226,10 @@ components:
           example:
             DEBUG: "true"
             LOG_LEVEL: "info"
-        disablePause:
+        autoSleep:
           type: boolean
-          description: "If true, the sandbox will not be auto-paused due to inactivity"
-          example: false
+          description: "If true, the sandbox will be auto-paused due to inactivity"
+          example: true
         region:
           type: string
           description: "Target region for the sandbox"
@@ -287,10 +287,10 @@ components:
           example:
             DEBUG: "true"
             LOG_LEVEL: "info"
-        disablePause:
+        autoSleep:
           type: boolean
-          description: "Indicates if auto-pause is disabled"
-          example: false
+          description: "Indicates if auto-sleep is enabled"
+          example: true
         region:
           type: string
           description: "Region where the sandbox is hosted"

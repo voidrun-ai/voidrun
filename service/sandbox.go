@@ -54,14 +54,13 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 			"mem":            1,
 			"diskMB":         1,
 			"status":         1,
-			"disablePause":   1,
+			"autoSleep":      1,
 			"lastActivityAt": 1,
 			"pausedAt":       1,
 			"stoppedAt":      1,
 			"createdAt":      1,
 			"orgId":          1,
 			"createdBy":      1,
-			"envVars":        1,
 			"region":         1,
 			"refId":          1,
 		},
@@ -216,6 +215,11 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		}
 	}()
 
+	autoSleep := true
+	if req.AutoSleep != nil {
+		autoSleep = *req.AutoSleep
+	}
+
 	now := time.Now()
 	sandbox := &model.Sandbox{
 		ID:             objID,
@@ -227,7 +231,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		DiskMB:         diskMB,
 		OrgID:          req.OrgID,
 		EnvVars:        req.EnvVars,
-		DisablePause:   req.DisablePause,
+		AutoSleep:      autoSleep,
 		Region:         req.Region,
 		RefID:          req.RefID,
 		LastActivityAt: &now,
@@ -439,12 +443,12 @@ func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id
 		return err
 	}
 
-	if sandbox.DisablePause {
-		return fmt.Errorf("sandbox has pause disabled")
-	}
-
 	if sandbox.Status != "running" {
 		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
+	}
+
+	if !sandbox.AutoSleep {
+		return fmt.Errorf("sandbox has auto-sleep disabled")
 	}
 
 	if err := runtime.Pause(id); err != nil {
