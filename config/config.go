@@ -80,6 +80,7 @@ type Config struct {
 	Metrics               MetricsConfig
 	CORS                  CORSConfig
 	AutoLifecycle         AutoLifecycleConfig
+	Monitor               MonitorConfig
 	APIKeyCacheTTLSeconds int
 	ClerkCacheTTLSeconds  int
 }
@@ -112,6 +113,11 @@ type HealthConfig struct {
 	Enabled     bool
 	IntervalSec int
 	Concurrency int
+}
+
+// Monitor configuration
+type MonitorConfig struct {
+	Enabled bool
 }
 
 // Metrics configuration
@@ -200,6 +206,8 @@ const (
 	DefaultAutoLifecycleStopAfterPausedSec    = 300    // 5 minutes
 	DefaultAutoLifecycleDeleteAfterStoppedSec = 604800 // 1 week
 	DefaultAutoLifecycleCheckIntervalSec      = 30     // 30 seconds
+	// Monitor defaults
+	DefaultMonitorEnabled = true
 	// Pagination defaults
 	DefaultPageSize = 20
 	MaxPageSize     = 100
@@ -297,6 +305,9 @@ func New() *Config {
 			StopAfterPausedSec:    getEnvInt("AUTO_LIFECYCLE_STOP_AFTER_PAUSED_SEC", DefaultAutoLifecycleStopAfterPausedSec),
 			DeleteAfterStoppedSec: getEnvInt("AUTO_LIFECYCLE_DELETE_AFTER_STOPPED_SEC", DefaultAutoLifecycleDeleteAfterStoppedSec),
 			CheckIntervalSec:      getEnvInt("AUTO_LIFECYCLE_CHECK_INTERVAL_SEC", DefaultAutoLifecycleCheckIntervalSec),
+		},
+		Monitor: MonitorConfig{
+			Enabled: getEnvBool("MONITOR_ENABLED", DefaultMonitorEnabled),
 		},
 		APIKeyCacheTTLSeconds: getEnvInt("API_KEY_CACHE_TTL_SECONDS", DefaultAPIKeyCacheTTLSeconds),
 		ClerkCacheTTLSeconds:  getEnvInt("CLERK_CACHE_TTL_SECONDS", DefaultClerkCacheTTLSeconds),

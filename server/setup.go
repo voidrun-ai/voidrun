@@ -72,10 +72,13 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		// authCache remains nil, which triggers graceful degradation
 	}
 
-	// Initialize Event Monitor
-	monitor := runtime.NewEventMonitor(repos.Event)
-	// Set root context for monitor (used for watcher goroutines)
-	monitor.SetRootContext(context.Background())
+	// Initialize Event Monitor if enabled
+	var monitor *runtime.EventMonitor
+	if cfg.Monitor.Enabled {
+		monitor = runtime.NewEventMonitor(repos.Event)
+		// Set root context for monitor (used for watcher goroutines)
+		monitor.SetRootContext(context.Background())
+	}
 
 	return &Services{
 		User:             service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
