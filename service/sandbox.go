@@ -207,7 +207,6 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 
 	go func() {
 		log.Printf("   [Agent] Configuring network on %s (async)...\n", spec.ID)
-		time.Sleep(2 * time.Second)
 		if cfgErr := configureAgentNetwork(spec.ID, &netCfg); cfgErr != nil {
 			log.Printf("   [Agent] network config failed on %s: %v\n", spec.ID, cfgErr)
 		} else {
