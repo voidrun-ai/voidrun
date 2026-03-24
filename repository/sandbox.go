@@ -21,8 +21,8 @@ import (
 
 type ISandboxRepository interface {
 	Create(ctx context.Context, sandbox *model.Sandbox) error
-	FindByID(ctx context.Context, orgID primitive.ObjectID, id string, opts options.FindOneOptions) (*model.Sandbox, error)
-	Find(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error)
+	FindByIDAndOrg(ctx context.Context, orgID primitive.ObjectID, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
+	FindAndOrg(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error)
 	DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	UpdateStatusByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, status string) (bool, error)
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
@@ -37,6 +37,7 @@ type ISandboxRepository interface {
 	FindIdleRunning(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 	FindStalePaused(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 	FindStaleStopped(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
+	FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
 }
 
 // SandboxRepository handles sandbox persistence in MongoDB
@@ -163,14 +164,9 @@ func (r *SandboxRepository) Create(ctx context.Context, sandbox *model.Sandbox) 
 	return nil
 }
 
-func (r *SandboxRepository) FindByID(ctx context.Context, orgID primitive.ObjectID, id string, opts options.FindOneOptions) (*model.Sandbox, error) {
-	oid, err := util.ParseObjectID(id)
-	if err != nil {
-		return nil, err
-	}
-
+func (r *SandboxRepository) FindByIDAndOrg(ctx context.Context, orgID primitive.ObjectID, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error) {
 	var sandbox *model.Sandbox
-	err = r.collection.FindOne(ctx, bson.M{"_id": oid, "orgId": orgID}, &opts).Decode(&sandbox)
+	err := r.collection.FindOne(ctx, bson.M{"_id": id, "orgId": orgID}, &opts).Decode(&sandbox)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -180,7 +176,7 @@ func (r *SandboxRepository) FindByID(ctx context.Context, orgID primitive.Object
 	return sandbox, nil
 }
 
-func (r *SandboxRepository) Find(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error) {
+func (r *SandboxRepository) FindAndOrg(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error) {
 	baseFilter := bson.M{"orgId": orgID, "status": bson.M{"$ne": "deleted"}}
 	if filterMap, ok := filter.(bson.M); ok {
 		for k, v := range filterMap {
@@ -362,4 +358,16 @@ func (r *SandboxRepository) FindStaleStopped(ctx context.Context, threshold time
 		return nil, err
 	}
 	return sandboxes, nil
+}
+
+func (r *SandboxRepository) FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error) {
+	var sandbox *model.Sandbox
+	err := r.collection.FindOne(ctx, bson.M{"_id": id}, &opts).Decode(&sandbox)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return sandbox, nil
 }

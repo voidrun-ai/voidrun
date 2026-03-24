@@ -30,9 +30,14 @@ type Repositories struct {
 }
 
 func InitRepositories(cfg *config.Config, db *mongo.Database) *Repositories {
+	sbRepo := repository.NewSandboxRepository(cfg, db)
+	if err := sbRepo.Init(context.Background()); err != nil {
+		panic(err)
+	}
+
 	return &Repositories{
 		User:    repository.NewUserRepository(cfg, db),
-		Sandbox: repository.NewSandboxRepository(cfg, db),
+		Sandbox: sbRepo,
 		Image:   repository.NewImageRepository(cfg, db),
 		APIKey:  repository.NewAPIKeyRepository(cfg, db),
 		Org:     repository.NewOrgRepository(cfg, db),
