@@ -92,7 +92,7 @@ func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive
 	opts.SetLimit(int64(pageSize))
 	opts.SetSort(bson.D{{Key: "_id", Value: -1}}) // Sort by _id descending (latest first, uses default index)
 	opts.SetProjection(s.projection)
-	sbxList, err := s.repo.Find(ctx, orgID, filter, opts)
+	sbxList, err := s.repo.FindAndOrg(ctx, orgID, filter, opts)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -835,7 +835,11 @@ func setAgentEnvVars(sbxID string, envVars map[string]string) error {
 }
 
 func (s *SandboxService) getOrgScopedSandbox(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error) {
-	sandbox, err := s.repo.FindByID(ctx, orgID, id, options.FindOneOptions{Projection: s.projection})
+	objID, err := util.ParseObjectID(id)
+	if err != nil {
+		return nil, err
+	}
+	sandbox, err := s.repo.FindByIDAndOrg(ctx, orgID, objID, options.FindOneOptions{Projection: s.projection})
 	if err != nil {
 		return nil, err
 	}

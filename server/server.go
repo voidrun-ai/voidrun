@@ -31,7 +31,7 @@ type Server struct {
 }
 
 // New creates a new server instance
-func New(cfg *config.Config) (*Server, error) {
+func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Server, error) {
 	// Initialize machine package with config paths
 	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
 	var metricsManager *metrics.Manager
@@ -58,7 +58,7 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to populate initial data: %w", err)
 	}
 
-	router := setupRouter(cfg, handlers, services, middlewares)
+	router := setupRouter(cfg, handlers, services, middlewares, extraProtectedMiddlewares...)
 
 	return &Server{
 		cfg:         cfg,
