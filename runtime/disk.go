@@ -59,7 +59,7 @@ func PrepareInstance(ctx context.Context, cfg config.Config, spec model.SandboxS
 	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	log.Printf("[DEBUG] Creating overlay: %s -> %s (Size: %s)", basePath, overlayPath, sizeArg)
+	// log.Printf("[DEBUG] Creating overlay: %s -> %s (Size: %s)", basePath, overlayPath, sizeArg)
 
 	cmd := exec.CommandContext(cmdCtx, "qemu-img", "create",
 		"-f", "qcow2",

@@ -38,13 +38,14 @@ type ISandboxRepository interface {
 	FindStalePaused(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 	FindStaleStopped(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 	FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
+	FreeIP(ctx context.Context, ip string)
 }
 
 // SandboxRepository handles sandbox persistence in MongoDB
 type SandboxRepository struct {
 	instancesDir string
 	networkCIDR  string
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	cfg          *config.Config
 	collection   *mongo.Collection
 	allocatedIPs map[string]bool // Cache of all allocated IPs
@@ -76,7 +77,7 @@ func (r *SandboxRepository) Init(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	cur, err := r.collection.Find(ctx, bson.M{"ip": bson.M{"$ne": ""}}, &options.FindOptions{
+	cur, err := r.collection.Find(ctx, bson.M{"ip": bson.M{"$ne": ""}, "status": bson.M{"$nin": []string{"deleted", "killed"}}}, &options.FindOptions{
 		Projection: bson.M{"ip": 1},
 	})
 	if err != nil {
@@ -370,4 +371,10 @@ func (r *SandboxRepository) FindByID(ctx context.Context, id primitive.ObjectID,
 		return nil, err
 	}
 	return sandbox, nil
+}
+
+func (r *SandboxRepository) FreeIP(ctx context.Context, ip string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.allocatedIPs, ip)
 }

@@ -78,7 +78,7 @@ func handleClerkAuth(c *gin.Context, userSvc *service.UserService, clerkSvc *ser
 			fmt.Printf("[Auth] Clerk cache get error: %v\n", err)
 		} else if cachedEntry != nil {
 			// Cache hit - use cached userID and orgID
-			fmt.Printf("[Auth] Clerk cache HIT - userID: %s, orgID: %s\n", cachedEntry.UserID, cachedEntry.OrgID)
+			// fmt.Printf("[Auth] Clerk cache HIT - userID: %s, orgID: %s\n", cachedEntry.UserID, cachedEntry.OrgID)
 			c.Set("orgID", cachedEntry.OrgID)
 			return cachedEntry.OrgID, cachedEntry.UserID
 		}
@@ -130,7 +130,7 @@ func handleAPIKeyAuth(c *gin.Context, apiKeySvc *service.APIKeyService, authCach
 			fmt.Printf("[Auth] API key cache get error: %v\n", err)
 		} else if cachedEntry != nil {
 			// Cache hit - use cached userID and orgID
-			fmt.Printf("[Auth] API key cache HIT - userID: %s, orgID: %s\n", cachedEntry.UserID, cachedEntry.OrgID)
+			// fmt.Printf("[Auth] API key cache HIT - userID: %s, orgID: %s\n", cachedEntry.UserID, cachedEntry.OrgID)
 			return cachedEntry.OrgID, cachedEntry.UserID
 		}
 		fmt.Printf("[Auth] API key cache MISS - validating key\n")

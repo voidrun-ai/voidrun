@@ -12,7 +12,8 @@ type Org struct {
 	OwnerID    primitive.ObjectID   `bson:"ownerId" json:"ownerId"`
 	Members    []primitive.ObjectID `bson:"members" json:"members"`
 	Plan       string               `bson:"plan" json:"plan"`
-	UsageCount int                  `bson:"usage" json:"usage"`
+	UsageCount float64              `bson:"usage" json:"usage"`
+	Balance    float64              `bson:"balance" json:"balance"`
 
 	CreatedAt time.Time          `json:"createdAt" bson:"createdAt"`
 	CreatedBy primitive.ObjectID `json:"createdBy" bson:"createdBy"`
