@@ -265,8 +265,22 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 		return err
 	}
 
+	s.repo.FreeIP(ctx, sandbox.IP)
+
+	ok, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "deleted")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrSandboxNotFound
+	}
+
+	if s.metrics != nil {
+		s.metrics.UnregisterSandbox(id)
+	}
+
 	if err := runtime.Delete(id); err != nil {
-		return fmt.Errorf("delete failed: %w", err)
+		fmt.Printf("[WARN] Failed to delete sandbox %s: %v\n", id, err)
 	}
 
 	// Stop event monitor (performs one final sync)
@@ -277,18 +291,6 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 	// Physical file cleanup after monitor has synced
 	if err := runtime.Cleanup(id); err != nil {
 		fmt.Printf("[WARN] Failed to cleanup files for %s: %v\n", id, err)
-	}
-
-	if s.metrics != nil {
-		s.metrics.UnregisterSandbox(id)
-	}
-
-	ok, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "deleted")
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return ErrSandboxNotFound
 	}
 
 	return nil
