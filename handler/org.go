@@ -30,6 +30,7 @@ func orgToResponse(org *model.Org) model.OrgResponse {
 		Name:      org.Name,
 		Plan:      org.Plan,
 		Usage:     org.UsageCount,
+		Balance:   org.Balance,
 		CreatedAt: org.CreatedAt,
 		UpdatedAt: org.UpdatedAt,
 	}

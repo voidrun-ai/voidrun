@@ -110,7 +110,8 @@ type OrgResponse struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Plan      string    `json:"plan"`
-	Usage     int       `json:"usage"`
+	Usage     float64   `json:"usage"`
+	Balance   float64   `json:"balance"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

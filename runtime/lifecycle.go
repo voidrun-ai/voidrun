@@ -22,9 +22,9 @@ const defaultNetDeviceID = "net0"
 
 func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {
 
-	fmt.Printf("   [CONFIG] Bridge Name: '%s'\n", cfg.Network.BridgeName)
-	fmt.Printf("   [CONFIG] TAP Prefix: '%s'\n", cfg.Network.TapPrefix)
-	fmt.Printf("   [CONFIG] Instances Dir: '%s'\n", cfg.Paths.InstancesDir)
+	// fmt.Printf("   [CONFIG] Bridge Name: '%s'\n", cfg.Network.BridgeName)
+	// fmt.Printf("   [CONFIG] TAP Prefix: '%s'\n", cfg.Network.TapPrefix)
+	// fmt.Printf("   [CONFIG] Instances Dir: '%s'\n", cfg.Paths.InstancesDir)
 
 	// Use centralized path helpers
 	tapPath := GetTapPath(spec.ID)
@@ -112,7 +112,7 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	debugConsole := cfg.Sandbox.DebugBootConsole
 
 	cmdLine := strings.TrimSpace(cfg.Sandbox.KernelCmdline)
-	log.Printf("   [Kernel] CmdLine: %s\n", cmdLine)
+	// log.Printf("   [Kernel] CmdLine: %s\n", cmdLine)
 
 	payload := PayloadConfig{
 		Kernel:  cfg.Paths.KernelPath,
@@ -122,11 +122,11 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 		initrdPath, _ := filepath.Abs(cfg.Paths.InitrdPath)
 		payload.Initramfs = initrdPath
 	}
-	log.Printf("   [CLH] Kernel: %s\n", payload.Kernel)
+	// log.Printf("   [CLH] Kernel: %s\n", payload.Kernel)
 	if payload.Initramfs != "" {
-		log.Printf("   [CLH] Initrd: %s\n", payload.Initramfs)
+		// log.Printf("   [CLH] Initrd: %s\n", payload.Initramfs)
 	}
-	log.Printf("   [CLH] CmdLine: %s\n", payload.Cmdline)
+	// log.Printf("   [CLH] CmdLine: %s\n", payload.Cmdline)
 
 	// Create Config Struct
 	vmCfg := VmConfig{
@@ -175,7 +175,7 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	}
 
 	// B. Send Boot Signal
-	fmt.Println("   [+] Sending Boot Signal...")
+	// fmt.Println("   [+] Sending Boot Signal...")
 	if err := clhClient.VmBoot(ctx); err != nil {
 		Stop(spec.ID)
 		return fmt.Errorf("vm.boot failed: %w", err)

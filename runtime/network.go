@@ -99,14 +99,20 @@ func DeleteTap(tapName string) error {
 }
 
 func GenerateMAC(ip string) string {
-	mac := "AA:FC:00:00:00:01"
+	// Fallback MAC if parsing fails
+	mac := "02:00:00:00:00:01"
+
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
 		return mac
 	}
+
 	ipv4 := parsedIP.To4()
 	if ipv4 == nil {
 		return mac
 	}
-	return fmt.Sprintf("AA:FC:00:00:00:%02X", ipv4[3])
+
+	// 02:00 denotes a "Locally Administered" MAC address according to IEEE standards.
+	// The remaining 4 bytes are exactly the 4 octets of the IP address.
+	return fmt.Sprintf("02:00:%02X:%02X:%02X:%02X", ipv4[0], ipv4[1], ipv4[2], ipv4[3])
 }
