@@ -147,6 +147,18 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		req.Image = s.cfg.Sandbox.DefaultImage
 	}
 
+	// Resolve image name/tag to actual image record
+	resolvedImg, err := s.imageRepo.ResolveImage(ctx, req.OrgID, req.Image)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve image %q: %w", req.Image, err)
+	}
+	// Update request to use the specific name:tag resolved
+	req.Image = fmt.Sprintf("%s:%s", resolvedImg.Name, resolvedImg.Tag)
+
+	if resolvedImg.SizeGB > 0 {
+		diskMB = int(resolvedImg.SizeGB * 1024)
+	}
+
 	spec := model.SandboxSpec{
 		ID:        instanceID,
 		Type:      req.Image,
