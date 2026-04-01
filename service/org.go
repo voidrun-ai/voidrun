@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"voidrun/model"
 	"voidrun/repository"
@@ -27,6 +29,25 @@ func (s *OrgService) EnsureDefaultOrg(ctx context.Context, ownerID primitive.Obj
 	if existing != nil {
 		return existing, nil
 	}
+
+	// Ensure unique name
+	baseName := name
+	for i := 0; i < 5; i++ {
+		orgWithSameName, err := s.repo.FindByName(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if orgWithSameName == nil {
+			break
+		}
+		// Suffix the name with random string if collision happens
+		if strings.HasSuffix(baseName, "-Org") {
+			name = fmt.Sprintf("%s-%s-Org", strings.TrimSuffix(baseName, "-Org"), primitive.NewObjectID().Hex()[:4])
+		} else {
+			name = fmt.Sprintf("%s-%s", baseName, primitive.NewObjectID().Hex()[:4])
+		}
+	}
+
 	org := &model.Org{
 		Name:      name,
 		OwnerID:   ownerID,
