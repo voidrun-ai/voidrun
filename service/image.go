@@ -33,7 +33,7 @@ func (s *ImageService) ListByOrg(ctx context.Context, orgID primitive.ObjectID) 
 	filter := bson.M{
 		"$or": []bson.M{
 			{"orgId": orgID},
-			{"system": true},
+			{"system": true, "active": true},
 		},
 	}
 

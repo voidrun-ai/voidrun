@@ -122,3 +122,33 @@ type CurrentOrgResponse struct {
 	ActiveOrgID string        `json:"activeOrgId"`
 	Orgs        []OrgResponse `json:"orgs"`
 }
+
+// ImageResponse is the public representation of an image returned by the API.
+type ImageResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Tag       string    `json:"tag"`
+	SizeGB      int64     `json:"sizeGB"`
+	System    bool      `json:"system"`
+	Active    bool      `json:"active"`
+	OrgID       string    `json:"orgId"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"createdAt"`
+	CreatedBy string    `json:"createdBy"`
+}
+
+// NewImageResponse converts a model.Image to an ImageResponse.
+func NewImageResponse(img *Image) ImageResponse {
+	return ImageResponse{
+		ID:        img.ID.Hex(),
+		Name:      img.Name,
+		Tag:       img.Tag,
+		SizeGB:      img.SizeGB,
+		System:    img.System,
+		Active:    img.Active,
+		OrgID:       img.OrgID.Hex(),
+		Description: img.Description,
+		CreatedAt:   img.CreatedAt,
+		CreatedBy:   img.CreatedBy.Hex(),
+	}
+}

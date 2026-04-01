@@ -49,7 +49,12 @@ func (h *ImageHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
 		return
 	}
-	c.JSON(http.StatusOK, images)
+
+	resp := make([]model.ImageResponse, len(images))
+	for i, img := range images {
+		resp[i] = model.NewImageResponse(img)
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // Get handles GET /images/:id
@@ -71,7 +76,7 @@ func (h *ImageHandler) Get(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, image)
+	c.JSON(http.StatusOK, model.NewImageResponse(image))
 }
 
 // Create handles POST /images
@@ -175,5 +180,5 @@ func (h *ImageHandler) GetByName(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, image)
+	c.JSON(http.StatusOK, model.NewImageResponse(image))
 }

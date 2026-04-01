@@ -194,7 +194,8 @@ components:
           example: vm-01
         image:
           type: string
-          example: debian
+          description: "Image name in `name:ver` or `name` format. If omitted, defaults to the latest active `code` image."
+          example: code
         cpu:
           type: integer
           minimum: 1
@@ -250,8 +251,8 @@ components:
           example: vm-01
         image:
           type: string
-          description: Image name or ID used to create the sandbox
-          example: debian
+          description: "Resolved image in `name:ver` format"
+          example: "code:1.0.42"
         cpu:
           type: integer
           description: Number of vCPUs allocated
@@ -596,7 +597,7 @@ components:
     Image:
       type: object
       properties:
-        _id:
+        id:
           type: string
           example: 65ae1234567890abcdef1234
         name:
@@ -605,9 +606,16 @@ components:
         tag:
           type: string
           example: latest
+        sizeGB:
+          type: integer
+          description: Virtual size in GB
+          example: 20
         system:
           type: boolean
           example: false
+        active:
+          type: boolean
+          example: true
         orgId:
           type: string
           example: 65ae1234567890abcdef1234
