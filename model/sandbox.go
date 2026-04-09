@@ -26,6 +26,9 @@ type Sandbox struct {
 	EnvVars        map[string]string  `bson:"envVars,omitempty" json:"-"`
 	Region         string             `bson:"region,omitempty" json:"region,omitempty"`
 	RefID          string             `bson:"refId,omitempty" json:"refId,omitempty"`
+	TapName        string             `bson:"tapName,omitempty" json:"-"`
+	// TapDeleted is set by EE tap cleanup after the kernel TAP is removed (terminal sandboxes only).
+	TapDeleted bool `bson:"tapDeleted,omitempty" json:"-"`
 }
 
 type SandboxSpec struct {

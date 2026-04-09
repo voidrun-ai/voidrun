@@ -63,6 +63,8 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 			"createdBy":      1,
 			"region":         1,
 			"refId":          1,
+			"tapName":        1,
+			"tapDeleted":     1,
 		},
 	}
 }
@@ -171,19 +173,21 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	// Rollback function for cleanup on failure
 	cleanup := func() {
 		fmt.Printf("   [!] Rollback: Deleting failed instance %s\n", spec.ID)
+		if spec.TapName != "" {
+			_ = runtime.DeleteTap(spec.TapName)
+		}
 		os.RemoveAll(runtime.GetInstanceDir(spec.ID))
+	}
+
+	overlay, err := runtime.PrepareInstance(ctx, *s.cfg, spec)
+	if err != nil {
+		return nil, fmt.Errorf("storage init failed: %w", err)
 	}
 
 	if err := runtime.ConfigureNetwork(*s.cfg, &spec); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR ConfigureNetwork: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
-	}
-
-	// Prepare storage (pass config by value, not pointer)
-	overlay, err := runtime.PrepareInstance(ctx, *s.cfg, spec)
-	if err != nil {
-		return nil, fmt.Errorf("storage init failed: %w", err)
 	}
 
 	if err := runtime.Create(*s.cfg, spec, overlay); err != nil {
@@ -245,6 +249,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		AutoSleep:      autoSleep,
 		Region:         req.Region,
 		RefID:          req.RefID,
+		TapName:        spec.TapName,
 		LastActivityAt: &now,
 		Status:         "running",
 		CreatedAt:      now,
@@ -291,7 +296,7 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 		s.metrics.UnregisterSandbox(id)
 	}
 
-	if err := runtime.Delete(id); err != nil {
+	if err := runtime.Delete(id, sandbox.TapName); err != nil {
 		fmt.Printf("[WARN] Failed to delete sandbox %s: %v\n", id, err)
 	}
 
@@ -339,19 +344,31 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		// Cold start - hypervisor not running, need to recreate
 		log.Printf("[Start] Cold start for sandbox %s - recreating VM\n", id)
 
-		// Build spec from DB data
 		spec := model.SandboxSpec{
 			ID:        id,
+			Type:      sandbox.Image,
 			CPUs:      sandbox.CPU,
 			MemoryMB:  sandbox.Mem,
 			DiskMB:    sandbox.DiskMB,
 			IPAddress: sandbox.IP,
 		}
 
-		// Get existing overlay path
-		overlayPath := runtime.GetOverlayPath(id)
+		tap := strings.TrimSpace(sandbox.TapName)
+		if tap == "" {
+			if err := runtime.ConfigureNetwork(*s.cfg, &spec); err != nil {
+				return fmt.Errorf("cold start network setup failed: %w", err)
+			}
+			if ok, err := s.repo.UpdateTapNameByIDAndOrg(ctx, sandbox.ID, orgID, spec.TapName); err != nil {
+				log.Printf("[WARN] failed to persist new tap name for %s: %v\n", id, err)
+			} else if !ok {
+				log.Printf("[WARN] tap name update matched no document for %s\n", id)
+			}
+		} else {
+			spec.TapName = tap
+			spec.MacAddress = runtime.GenerateMAC(sandbox.IP)
+		}
 
-		// Recreate the VM (boots it automatically)
+		overlayPath := runtime.GetOverlayPath(id)
 		if err := runtime.Create(*s.cfg, spec, overlayPath); err != nil {
 			return fmt.Errorf("failed to recreate VM: %w", err)
 		}
