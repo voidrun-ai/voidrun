@@ -228,10 +228,6 @@ func GetPIDPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/vm.pid", InstancesRoot, sbxID)
 }
 
-func GetTapPath(sbxID string) string {
-	return fmt.Sprintf("%s/%s/vm.tap", InstancesRoot, sbxID)
-}
-
 func GetLogPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/vm.log", InstancesRoot, sbxID)
 }

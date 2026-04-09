@@ -267,7 +267,10 @@ components:
           example: 5120
         status:
           type: string
-          enum: [running, stopped, paused, error]
+          description: >-
+            Lifecycle state. Terminal states `killed` and `deleted` may still appear
+            in list responses for historical or cleanup rows.
+          enum: [running, stopped, paused, error, killed, deleted]
           example: running
         createdAt:
           type: string
