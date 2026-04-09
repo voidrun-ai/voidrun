@@ -24,11 +24,6 @@ func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {
 
 	// fmt.Printf("   [CONFIG] Bridge Name: '%s'\n", cfg.Network.BridgeName)
 	// fmt.Printf("   [CONFIG] TAP Prefix: '%s'\n", cfg.Network.TapPrefix)
-	// fmt.Printf("   [CONFIG] Instances Dir: '%s'\n", cfg.Paths.InstancesDir)
-
-	// Use centralized path helpers
-	tapPath := GetTapPath(spec.ID)
-
 	// Generate MAC based on IP
 	macAddr := GenerateMAC(spec.IPAddress)
 	log.Printf("   [Net] Generated MAC %s for IP %s\n", macAddr, spec.IPAddress)
@@ -44,9 +39,6 @@ func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {
 	spec.MacAddress = macAddr
 
 	log.Printf("   [Net] Created TAP interface %s\n", tapName)
-
-	// Save TAP name for cleanup later
-	os.WriteFile(tapPath, []byte(tapName), 0644)
 
 	return nil
 }
@@ -244,10 +236,9 @@ func Start(id string) error {
 }
 
 // Delete shuts down and kills the VM process, but leaves the files on disk for the monitor to sync.
-func Delete(id string) error {
+func Delete(id, tapName string) error {
 	socketPath := GetSocketPath(id)
 	pidPath := GetPIDPath(id)
-	tapPath := GetTapPath(id)
 
 	// 1. Delete VM via CLH API (this will also shutdown the VM)
 	client := NewCLHClient(socketPath)
@@ -272,11 +263,7 @@ func Delete(id string) error {
 	}
 
 	// 3. Clean up TAP interface
-	if tapData, err := os.ReadFile(tapPath); err == nil {
-		tapName := string(tapData)
-		DeleteTap(tapName)
-		os.Remove(tapPath)
-	}
+	DeleteTap(tapName)
 
 	return nil
 }
