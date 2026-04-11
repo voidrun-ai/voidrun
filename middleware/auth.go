@@ -57,6 +57,12 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 
 		default:
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required (X-API-Key or Bearer token)"})
+			return
+		}
+
+		// If auth handler aborted (e.g. invalid key/token), don't continue
+		if c.IsAborted() {
+			return
 		}
 
 		c.Set("orgID", orgID)

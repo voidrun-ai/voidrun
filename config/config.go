@@ -55,6 +55,7 @@ type SystemUserConfig struct {
 	ID    primitive.ObjectID
 	Name  string
 	Email string
+	OrgID primitive.ObjectID
 }
 
 // AutoLifecycleConfig controls automatic sandbox lifecycle transitions
@@ -93,6 +94,7 @@ type AuthConfig struct {
 	ClerkPublishableKey string
 	ClerkJWKSURL        string
 	ClerkEnabled        bool
+	LocalMode           bool
 }
 
 // Sandbox configuration
@@ -106,6 +108,7 @@ type SandboxConfig struct {
 	DebugBootConsole    bool
 	DefaultOverlayImage string
 	DefaultHostname     string
+	DiskFormat          string // "qcow2" (backing file), "qcow2-flat" (standalone copy), "raw" (reflink)
 }
 
 // Health monitor configuration
@@ -162,6 +165,7 @@ const (
 	DefaultClerkPublishableKey     = ""
 	DefaultClerkJWKSURL            = ""
 	DefaultClerkEnabled            = false
+	DefaultLocalMode               = false
 	DefaultSystemUserName          = "System"
 	DefaultSystemUserEmail         = "system@local"
 	DefaultSandboxVCPUs            = 1
@@ -173,6 +177,7 @@ const (
 	DefaultSandboxDebugBootConsole = false
 	DefaultOverlayImage            = "overlay.qcow2"
 	DefaultSandboxHostname         = "voidrun"
+	DefaultSandboxDiskFormat       = "qcow2" // "qcow2" | "qcow2-flat" | "raw"
 	// Health monitor defaults
 	DefaultHealthEnabled          = true
 	DefaultHealthIntervalSec      = 60
@@ -262,6 +267,7 @@ func New() *Config {
 			ClerkPublishableKey: getEnv("CLERK_PUBLISHABLE_KEY", DefaultClerkPublishableKey),
 			ClerkJWKSURL:        getEnv("CLERK_JWKS_URL", DefaultClerkJWKSURL),
 			ClerkEnabled:        getEnvBool("CLERK_ENABLED", DefaultClerkEnabled),
+			LocalMode:           getEnvBool("LOCAL_MODE", DefaultLocalMode),
 		},
 		SystemUser: SystemUserConfig{
 			Name:  getEnv("SYSTEM_USER_NAME", DefaultSystemUserName),
@@ -277,6 +283,7 @@ func New() *Config {
 			DebugBootConsole:    getEnvBool("SANDBOX_DEBUG_BOOT_CONSOLE", DefaultSandboxDebugBootConsole),
 			DefaultOverlayImage: getEnv("SANDBOX_DEFAULT_OVERLAY_IMAGE", DefaultOverlayImage),
 			DefaultHostname:     getEnv("SANDBOX_DEFAULT_HOSTNAME", DefaultSandboxHostname),
+			DiskFormat:          getEnv("SANDBOX_DISK_FORMAT", DefaultSandboxDiskFormat),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),

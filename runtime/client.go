@@ -236,6 +236,11 @@ func GetOverlayPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/overlay.qcow2", InstancesRoot, sbxID)
 }
 
+// GetRawOverlayPath returns the path to the raw overlay image for a sandbox.
+func GetRawOverlayPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/overlay.raw", InstancesRoot, sbxID)
+}
+
 // GetEventPath returns the path to the CLH event file for a sandbox.
 func GetEventPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/vm.evt", InstancesRoot, sbxID)
