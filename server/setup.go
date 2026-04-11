@@ -116,6 +116,7 @@ type Handlers struct {
 	PTY      *handler.PTYHandler
 	Commands *handler.CommandsHandler
 	Version  *handler.VersionHandler
+	MCP      *handler.MCPHandler
 }
 
 func InitHandlers(services *Services) *Handlers {
@@ -129,6 +130,7 @@ func InitHandlers(services *Services) *Handlers {
 		PTY:      handler.NewPTYHandler(services.Dialer, services.PTYSession, services.Sandbox),
 		Commands: handler.NewCommandsHandler(services.Commands, services.Sandbox),
 		Version:  handler.NewVersionHandler(),
+		MCP:      handler.NewMCPHandler(services.Sandbox, services.Exec, services.FS, services.Commands),
 	}
 }
 
@@ -139,6 +141,12 @@ type Middlewares struct {
 
 // InitMiddlewares builds middleware handler references for reuse.
 func InitMiddlewares(cfg *config.Config, s *Services) *Middlewares {
+	if cfg.Auth.LocalMode {
+		return &Middlewares{
+			Auth: middleware.LocalModeMiddleware(cfg.SystemUser.OrgID.Hex(), cfg.SystemUser.ID.Hex()),
+		}
+	}
+
 	return &Middlewares{
 		Auth: middleware.AuthMiddleware(cfg, s.APIKey, s.User, s.Clerk, s.AuthCache),
 	}
@@ -147,14 +155,32 @@ func InitMiddlewares(cfg *config.Config, s *Services) *Middlewares {
 // PopulateInitialData seeds system users/images
 func PopulateInitialData(cfg *config.Config, repos *Repositories) error {
 	userRepo := repos.User
-	systemUserID := util.GenerateObjectID()
-	cfg.SystemUser.ID = systemUserID
+	seedSystemUserID := util.GenerateObjectID()
 	if err := userRepo.EnsureSystemUser(model.User{
-		ID:    systemUserID,
+		ID:    seedSystemUserID,
 		Name:  cfg.SystemUser.Name,
 		Email: cfg.SystemUser.Email,
 	}); err != nil {
 		return err
+	}
+
+	systemUser, err := userRepo.FindByEmail(context.Background(), cfg.SystemUser.Email)
+	if err != nil {
+		return err
+	}
+	if systemUser == nil {
+		return fmt.Errorf("system user not found after initialization")
+	}
+	systemUserID := systemUser.ID
+	cfg.SystemUser.ID = systemUserID
+
+	if cfg.Auth.LocalMode {
+		orgSvc := service.NewOrgService(repos.Org)
+		localOrg, err := orgSvc.EnsureDefaultOrg(context.Background(), systemUserID, "Local")
+		if err != nil {
+			return fmt.Errorf("ensure local org: %w", err)
+		}
+		cfg.SystemUser.OrgID = localOrg.ID
 	}
 
 	// Create default system images (using concrete repo)

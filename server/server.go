@@ -52,11 +52,12 @@ func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Ser
 	repos := InitRepositories(cfg, db)
 	services := InitServices(cfg, repos, metricsManager)
 	handlers := InitHandlers(services)
-	middlewares := InitMiddlewares(cfg, services)
 
 	if err := PopulateInitialData(cfg, repos); err != nil {
 		return nil, fmt.Errorf("failed to populate initial data: %w", err)
 	}
+
+	middlewares := InitMiddlewares(cfg, services)
 
 	router := setupRouter(cfg, handlers, services, middlewares, extraProtectedMiddlewares...)
 
@@ -111,6 +112,10 @@ func (s *Server) Run() error {
 	s.startHealthMonitor()
 	s.resumeEventWatchers()
 	s.startLifecycleManager()
+
+	if s.cfg.Auth.LocalMode {
+		fmt.Println("[WARN] LOCAL_MODE enabled: authentication is bypassed")
+	}
 
 	ver := util.Get()
 	versionLine := fmt.Sprintf("%s", ver.Version)
@@ -198,8 +203,15 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, 
 		r.GET(cfg.Metrics.Path, gin.WrapH(s.Metrics.Handler()))
 	}
 
-	// Static files
-	r.Static("/ui", "./static")
+	if cfg.Auth.LocalMode {
+		// Static assets (CSS, JS, etc.)
+		r.Static("/ui/assets", "./static")
+
+		// Serve index.html as a static file
+		r.GET("/ui", func(c *gin.Context) {
+			c.File("./static/index.html")
+		})
+	}
 
 	api := r.Group("/api")
 
@@ -298,6 +310,9 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, 
 	{
 		user.GET("/me", h.User.GetMe)
 	}
+
+	// MCP (Model Context Protocol) endpoint — single route handles all MCP methods
+	protected.Any("/mcp", h.MCP.Handle)
 
 	return r
 }

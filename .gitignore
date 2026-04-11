@@ -34,3 +34,5 @@ api-client/
 build-api-client.sh
 *.log
 test-frontend
+.history
+.local

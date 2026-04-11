@@ -179,7 +179,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		os.RemoveAll(runtime.GetInstanceDir(spec.ID))
 	}
 
-	overlay, err := runtime.PrepareInstance(ctx, *s.cfg, spec)
+	overlay, err := runtime.PrepareStorage(ctx, *s.cfg, spec)
 	if err != nil {
 		return nil, fmt.Errorf("storage init failed: %w", err)
 	}
@@ -189,7 +189,6 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
-
 	if err := runtime.Create(*s.cfg, spec, overlay); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
