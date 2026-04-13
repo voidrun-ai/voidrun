@@ -130,6 +130,10 @@ func (s *ExecService) ExecuteCommand(sbxID, cmd string, args []string, timeout i
 
 // ExecSync executes a command synchronously via agent /exec endpoint and returns the result
 func (s *ExecService) ExecSync(ctx context.Context, sbxID string, command string, timeout int, env map[string]string, cwd string) (*http.Response, error) {
+	// Apply timeout to context
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	_ = cancel // Caller might close connection, but we can't defer cancel here because we return the response body
+
 	payload := map[string]interface{}{
 		"cmd":     command,
 		"timeout": timeout,
@@ -151,6 +155,10 @@ func (s *ExecService) ExecSync(ctx context.Context, sbxID string, command string
 
 // ExecStreamSSE executes a command and streams SSE output from the agent /exec-stream endpoint.
 func (s *ExecService) ExecStreamSSE(ctx context.Context, sbxID string, command string, timeout int, env map[string]string, cwd string, writer io.Writer, flush func()) error {
+	// Apply timeout to context
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
 	payload := map[string]interface{}{
 		"cmd":     command,
 		"timeout": timeout,

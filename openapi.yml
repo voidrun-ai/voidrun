@@ -356,7 +356,7 @@ components:
           type: integer
           default: 30
           example: 30
-          description: Timeout in seconds (ignored if background=true)
+          description: Timeout in seconds
         env:
           type: object
           additionalProperties:
@@ -366,10 +366,6 @@ components:
         cwd:
           type: string
           example: /root
-        background:
-          type: boolean
-          default: false
-          description: If true, starts process in background and returns PID immediately
 
     SessionExecRequest:
       type: object
@@ -1373,7 +1369,7 @@ paths:
       tags:
         - Execution
       summary: Execute command (synchronous)
-      description: Execute a command in the sandbox and wait for the result
+      description: Execute a command in the sandbox and wait for the result. For a non-blocking start with a PID, use `POST /sandboxes/{id}/commands/run`.
       operationId: execCommand
       security:
         - ApiKeyAuth: []

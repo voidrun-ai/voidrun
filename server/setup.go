@@ -124,7 +124,7 @@ func InitHandlers(services *Services) *Handlers {
 		User:     handler.NewUserHandler(services.User, services.Org),
 		Sandbox:  handler.NewSandboxHandler(services.Sandbox),
 		Image:    handler.NewImageHandler(services.Image),
-		Exec:     handler.NewExecHandler(services.Exec, services.Session, services.Sandbox, services.Commands),
+		Exec:     handler.NewExecHandler(services.Exec, services.Session, services.Sandbox),
 		FS:       handler.NewFSHandler(services.FS, services.Sandbox, services.Dialer),
 		Org:      handler.NewOrgHandler(services.Org, services.APIKey, services.User),
 		PTY:      handler.NewPTYHandler(services.Dialer, services.PTYSession, services.Sandbox),

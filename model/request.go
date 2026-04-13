@@ -19,12 +19,11 @@ type CreateSandboxRequest struct {
 
 // ExecRequest represents a command execution request
 type ExecRequest struct {
-	Command    string            `json:"command"`
-	Args       []string          `json:"args"`
-	Timeout    int               `json:"timeout"`
-	Env        map[string]string `json:"env,omitempty"`
-	Cwd        string            `json:"cwd,omitempty"`
-	Background bool              `json:"background,omitempty"` // If true, starts as background process and returns PID
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Timeout int               `json:"timeout"`
+	Env     map[string]string `json:"env,omitempty"`
+	Cwd     string            `json:"cwd,omitempty"`
 }
 
 // SessionExecRequest represents a PTY session action forwarded to the agent
