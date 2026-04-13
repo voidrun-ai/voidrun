@@ -18,19 +18,17 @@ const (
 
 // ExecHandler handles command execution HTTP requests
 type ExecHandler struct {
-	execService     *service.ExecService
-	sessionService  *service.SessionExecService
-	sandboxService  *service.SandboxService
-	commandsService *service.CommandsService
+	execService    *service.ExecService
+	sessionService *service.SessionExecService
+	sandboxService *service.SandboxService
 }
 
 // NewExecHandler creates a new exec handler
-func NewExecHandler(execService *service.ExecService, sessionService *service.SessionExecService, sandboxService *service.SandboxService, commandsService *service.CommandsService) *ExecHandler {
+func NewExecHandler(execService *service.ExecService, sessionService *service.SessionExecService, sandboxService *service.SandboxService) *ExecHandler {
 	return &ExecHandler{
-		execService:     execService,
-		sessionService:  sessionService,
-		sandboxService:  sandboxService,
-		commandsService: commandsService,
+		execService:    execService,
+		sessionService: sessionService,
+		sandboxService: sandboxService,
 	}
 }
 
@@ -57,26 +55,6 @@ func (h *ExecHandler) Exec(c *gin.Context) {
 	}
 	if len(req.Command) > maxCommandLength {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command exceeds maximum length", ""))
-		return
-	}
-
-	// If background flag is set, delegate to commands service
-	if req.Background {
-		runResp, err := h.commandsService.Run(id, model.CommandRunRequest{
-			Command: req.Command,
-			Env:     req.Env,
-			Cwd:     req.Cwd,
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to start background process", err.Error()))
-			return
-		}
-		// Return wrapped response to match SDK expectations
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "success",
-			"message": "ok",
-			"data":    runResp,
-		})
 		return
 	}
 

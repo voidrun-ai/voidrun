@@ -30,7 +30,7 @@ func InitSandboxHTTPClient() *http.Client {
 		WriteBufferSize:    64 * 1024,
 		ReadBufferSize:     64 * 1024,
 		// Header timeout for large transfers
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: 3600 * time.Second,
 	}
 
 	sandboxHTTPClient = &http.Client{
