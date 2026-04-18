@@ -103,6 +103,7 @@ func PrepareInstance(ctx context.Context, cfg config.Config, spec model.SandboxS
 
 	return overlayPath, nil
 }
+
 // PrepareInstanceFlat creates a standalone qcow2 copy without backing files.
 // Use this on WSL2 or when Cloud Hypervisor's static binary doesn't support backing files.
 func PrepareInstanceFlat(ctx context.Context, cfg config.Config, spec model.SandboxSpec) (string, error) {

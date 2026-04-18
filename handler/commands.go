@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"voidrun/config"
 	"voidrun/model"
 	"voidrun/service"
 	"voidrun/util"
@@ -45,6 +46,11 @@ func (h *CommandsHandler) Run(c *gin.Context) {
 	req.Command = strings.TrimSpace(req.Command)
 	if req.Command == "" {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command is required", ""))
+		return
+	}
+
+	if len(req.Command) > config.MaxCommandLength {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command exceeds maximum length", ""))
 		return
 	}
 
