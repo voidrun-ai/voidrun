@@ -48,6 +48,10 @@ func NewCommandsService(cfg *config.Config) *CommandsService {
 
 // Run starts a background process
 func (s *CommandsService) Run(sbxInstance string, req model.CommandRunRequest) (*model.CommandRunResponse, error) {
+	if len(req.Command) > config.MaxCommandLength {
+		return nil, fmt.Errorf("command exceeds maximum length of %d characters", config.MaxCommandLength)
+	}
+
 	// Create payload for agent
 	payload := map[string]interface{}{
 		"command": req.Command,
