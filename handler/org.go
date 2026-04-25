@@ -41,19 +41,17 @@ func NewOrgHandler(orgSvc *service.OrgService, apiSvc *service.APIKeyService, us
 	return &OrgHandler{apiKeyService: apiSvc, orgService: orgSvc, userService: userSvc}
 }
 
-// GetCurrentOrg returns org info for the authenticated API key (GET /api/orgs/me)
-func (h *OrgHandler) GetCurrentOrg(c *gin.Context) {
+// GetCurrentOrg returns org info for the authenticated user (GET /api/orgs/me)
+func (h *OrgHandler) GetCurrentOrg(c *gin.Context) error {
 	orgHex := c.GetString("orgID")
 	log.Printf("[OrgHandler] GetCurrentOrg called with orgID: %s\n", orgHex)
 	if orgHex == "" {
-		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("missing org context", ""))
-		return
+		return util.ErrUnauthorized("missing org context")
 	}
 
 	orgID, err := primitive.ObjectIDFromHex(orgHex)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("invalid org id", err.Error()))
-		return
+		return util.ErrBadRequest("invalid org id", err.Error())
 	}
 
 	var userID primitive.ObjectID
@@ -65,8 +63,7 @@ func (h *OrgHandler) GetCurrentOrg(c *gin.Context) {
 
 	allOrgs, err := h.orgService.GetCurrentOrg(c.Request.Context(), orgID, userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 
 	orgList := make([]model.OrgResponse, len(allOrgs))
@@ -79,35 +76,29 @@ func (h *OrgHandler) GetCurrentOrg(c *gin.Context) {
 		Orgs:        orgList,
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("org", resp))
+	return nil
 }
 
 // GetOrgUsers returns users for an organization (GET /api/orgs/users)
-func (h *OrgHandler) GetOrgUsers(c *gin.Context) {
-
+func (h *OrgHandler) GetOrgUsers(c *gin.Context) error {
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	org, err := h.orgService.GetByID(c.Request.Context(), orgID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 	if org == nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse("org not found", ""))
-		return
+		return util.ErrNotFound("org not found")
 	}
 
-	// Get users by member IDs
 	users, err := h.userService.GetByOrg(c.Request.Context(), org.Members)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 
-	// Transform users to safe public format
 	publicUsers := make([]gin.H, len(users))
 	for i, u := range users {
 		publicUsers[i] = gin.H{
@@ -120,105 +111,95 @@ func (h *OrgHandler) GetOrgUsers(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("users", publicUsers))
+	return nil
 }
 
 // GenerateAPIKey creates a new API key for an org (POST /api/orgs/apikeys)
-func (h *OrgHandler) GenerateAPIKey(c *gin.Context) {
+func (h *OrgHandler) GenerateAPIKey(c *gin.Context) error {
 	var req struct {
 		KeyName string `json:"keyName" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrBadRequest(err.Error())
 	}
 
-	// Validate key name
 	req.KeyName = strings.TrimSpace(req.KeyName)
 	if req.KeyName == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Key name cannot be empty", ""))
-		return
+		return util.ErrBadRequest("Key name cannot be empty")
 	}
 	if len(req.KeyName) > maxKeyNameLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Key name exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("Key name exceeds maximum length")
 	}
 
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	userID, err := util.GetUserIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	resp, err := h.apiKeyService.GenerateKey(c.Request.Context(), orgID, userID, req.KeyName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 
 	c.JSON(http.StatusCreated, resp)
+	return nil
 }
 
 // ListAPIKeys returns all API keys for an org (GET /api/orgs/apikeys)
-func (h *OrgHandler) ListAPIKeys(c *gin.Context) {
+func (h *OrgHandler) ListAPIKeys(c *gin.Context) error {
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	keys, err := h.apiKeyService.ListByOrg(c.Request.Context(), orgID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 
 	c.JSON(http.StatusOK, keys)
+	return nil
 }
 
 // DeleteAPIKey revokes an API key (DELETE /api/orgs/:orgId/apikeys/:keyId)
-func (h *OrgHandler) DeleteAPIKey(c *gin.Context) {
+func (h *OrgHandler) DeleteAPIKey(c *gin.Context) error {
 	keyID := c.Param("keyId")
 
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	if err := h.apiKeyService.RevokeKeyByOrg(c.Request.Context(), orgID, keyID); err != nil {
 		if errors.Is(err, service.ErrAPIKeyNotFound) {
-			c.JSON(http.StatusNotFound, model.NewErrorResponse("API key not found", ""))
-			return
+			return util.ErrNotFound("API key not found")
 		}
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("API key revoked", nil))
+	return nil
 }
 
 // ActivateAPIKey toggles activation status (POST /api/orgs/:orgId/apikeys/:keyId/activate)
-func (h *OrgHandler) ActivateAPIKey(c *gin.Context) {
+func (h *OrgHandler) ActivateAPIKey(c *gin.Context) error {
 	keyID := c.Param("keyId")
 
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	var req struct {
 		IsActive bool `json:"isActive"`
 	}
 	if err = c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrBadRequest(err.Error())
 	}
 
 	if req.IsActive {
@@ -226,14 +207,11 @@ func (h *OrgHandler) ActivateAPIKey(c *gin.Context) {
 	} else {
 		err = h.apiKeyService.DeactivateKeyByOrg(c.Request.Context(), orgID, keyID)
 	}
-
 	if err != nil {
 		if errors.Is(err, service.ErrAPIKeyNotFound) {
-			c.JSON(http.StatusNotFound, model.NewErrorResponse("API key not found", ""))
-			return
+			return util.ErrNotFound("API key not found")
 		}
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 
 	msg := "API key deactivated"
@@ -241,25 +219,24 @@ func (h *OrgHandler) ActivateAPIKey(c *gin.Context) {
 		msg = "API key activated"
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse(msg, nil))
+	return nil
 }
 
 // TouchAPIKey marks a key as used (PATCH /api/orgs/:orgId/apikeys/:keyId/touch)
-func (h *OrgHandler) TouchAPIKey(c *gin.Context) {
+func (h *OrgHandler) TouchAPIKey(c *gin.Context) error {
 	keyID := c.Param("keyId")
 	orgID := c.GetString("orgID")
 
 	if err := validateObjectID(keyID); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid key ID format", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid key ID format", err.Error())
 	}
 
 	if err := h.apiKeyService.TouchKeyByOrg(c.Request.Context(), orgID, keyID, time.Now()); err != nil {
 		if errors.Is(err, service.ErrAPIKeyNotFound) {
-			c.JSON(http.StatusNotFound, model.NewErrorResponse("API key not found", ""))
-			return
+			return util.ErrNotFound("API key not found")
 		}
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("API key touched", nil))
+	return nil
 }

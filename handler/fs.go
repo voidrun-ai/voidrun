@@ -42,11 +42,9 @@ func validatePath(path string) error {
 
 // sanitizeFilename removes dangerous characters from filenames for Content-Disposition
 func sanitizeFilename(name string) string {
-	// Remove path separators and null bytes
 	name = strings.ReplaceAll(name, "/", "_")
 	name = strings.ReplaceAll(name, "\\", "_")
 	name = strings.ReplaceAll(name, "\x00", "")
-	// Remove quotes to prevent header injection
 	name = strings.ReplaceAll(name, "\"", "")
 	name = strings.ReplaceAll(name, "'", "")
 	return name
@@ -66,39 +64,7 @@ var bufPool = sync.Pool{
 		return &b
 	},
 }
-
-func HandleJSONResponse(c *gin.Context, resp *http.Response) {
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to read sandbox response", err.Error()))
-		return
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	status := resp.StatusCode
-
-	// Prefer pass-through of JSON without decoding; wrap in our standard envelope using RawMessage
-	if strings.Contains(contentType, "application/json") {
-		raw := json.RawMessage(bodyBytes)
-		if status >= 400 {
-			c.JSON(status, model.NewErrorResponse("Sandbox error", string(bodyBytes)))
-		} else {
-			c.JSON(status, model.NewSuccessResponse("ok", raw))
-		}
-		return
-	}
-
-	bodyStr := strings.TrimSpace(string(bodyBytes))
-	if status >= 400 {
-		c.JSON(status, model.NewErrorResponse("Sandbox error", bodyStr))
-		return
-	}
-
-	c.JSON(status, model.NewSuccessResponse(bodyStr, nil))
-}
-
+ 
 // NewFSHandler creates a new filesystem handler
 func NewFSHandler(fsService *service.FSService, sandboxService *service.SandboxService, dialer *service.VsockWSDialer) *FSHandler {
 	return &FSHandler{
@@ -116,63 +82,50 @@ func (h *FSHandler) streamCopy(dst io.Writer, src io.Reader) (int64, error) {
 }
 
 // ListFiles handles GET /sandboxes/:id/fs?path=/path/to/dir
-func (h *FSHandler) ListFiles(c *gin.Context) {
+func (h *FSHandler) ListFiles(c *gin.Context) error {
 	id := c.Param("id")
-
 	path := c.DefaultQuery("path", "/root")
 
 	if err := validatePath(path); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid path", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid path", err.Error())
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.ListFiles(c.Request.Context(), id, path)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to list files", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to list files", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // DownloadFile handles GET /sandboxes/:id/fs/download?path=/path/to/file
-func (h *FSHandler) DownloadFile(c *gin.Context) {
+func (h *FSHandler) DownloadFile(c *gin.Context) error {
 	id := c.Param("id")
 	filePath := c.Query("path")
 	if filePath == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path is required", ""))
-		return
+		return util.ErrBadRequest("path is required")
 	}
-
 	if err := validatePath(filePath); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid path", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid path", err.Error())
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.DownloadFile(c.Request.Context(), id, filePath)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to download file", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to download file", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		c.Status(resp.StatusCode)
 		h.streamCopy(c.Writer, resp.Body)
-		return
+		return nil
 	}
 
-	// Set download headers
 	if cl := resp.Header.Get("Content-Length"); cl != "" {
 		c.Header("Content-Length", cl)
 	}
@@ -180,62 +133,43 @@ func (h *FSHandler) DownloadFile(c *gin.Context) {
 	safeFilename := sanitizeFilename(filepath.Base(filePath))
 	c.Header("Content-Disposition", "attachment; filename=\""+safeFilename+"\"")
 	c.Status(http.StatusOK)
-
 	io.Copy(c.Writer, resp.Body)
+	return nil
 }
 
 // UploadFile handles POST /sandboxes/:id/fs/upload?path=/path/to/file
-func (h *FSHandler) UploadFile(c *gin.Context) {
+func (h *FSHandler) UploadFile(c *gin.Context) error {
 	id := c.Param("id")
 	targetPath := c.Query("path")
-
 	if targetPath == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path is required", ""))
-		return
+		return util.ErrBadRequest("path is required")
 	}
-
 	if err := validatePath(targetPath); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid path", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid path", err.Error())
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	var bodyReader io.Reader
 	var contentLength string
 	var contentType string
 
-	// Handle multipart form-data (Postman, browser forms)
 	if strings.HasPrefix(c.ContentType(), "multipart/form-data") {
 		const maxSize = 5 // 5 MB
-
-		// Reject large uploads early
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize<<20)
 
 		fileHeader, err := c.FormFile("file")
 		if err != nil {
 			if strings.Contains(err.Error(), "request body too large") {
-				c.JSON(http.StatusRequestEntityTooLarge, model.NewErrorResponse(
-					fmt.Sprintf("File too large. Maximum %dMB for multipart uploads. Use binary upload for larger files.", maxSize),
-					"",
-				))
-				return
+				return util.ErrTooLarge(fmt.Sprintf("File too large. Maximum %dMB for multipart uploads. Use binary upload for larger files.", maxSize))
 			}
-
-			c.JSON(http.StatusBadRequest, model.NewErrorResponse(
-				"No file found in multipart upload. Expected field name 'file'",
-				err.Error(),
-			))
-			return
+			return util.ErrBadRequest("No file found in multipart upload. Expected field name 'file'", err.Error())
 		}
 
 		file, err := fileHeader.Open()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to open uploaded file", err.Error()))
-			return
+			return util.ErrInternal("Failed to open uploaded file", err)
 		}
 		defer file.Close()
 
@@ -245,188 +179,144 @@ func (h *FSHandler) UploadFile(c *gin.Context) {
 		if contentType == "" {
 			contentType = "application/octet-stream"
 		}
-
 		log.Printf("[FS] Multipart upload: %s, size: %s, type: %s", fileHeader.Filename, contentLength, contentType)
 	} else {
-		// Raw binary upload (fetch, XHR, curl --data-binary)
 		bodyReader = c.Request.Body
 		contentLength = c.Request.Header.Get("Content-Length")
 		contentType = c.Request.Header.Get("Content-Type")
-
 		log.Printf("[FS] Binary upload: path: %s, size: %s, type: %s", targetPath, contentLength, contentType)
 	}
 
-	resp, err := h.fsService.UploadFile(
-		c.Request.Context(),
-		id,
-		targetPath,
-		bodyReader,
-		contentLength,
-		contentType,
-	)
+	resp, err := h.fsService.UploadFile(c.Request.Context(), id, targetPath, bodyReader, contentLength, contentType)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Upload failed", err.Error()))
-		return
+		return util.ErrBadGateway("Upload failed", err)
 	}
 	defer resp.Body.Close()
 
 	c.Status(resp.StatusCode)
 	h.streamCopy(c.Writer, resp.Body)
+	return nil
 }
 
 // DeleteFile handles DELETE /sandboxes/:id/fs?path=/path/to/file
-func (h *FSHandler) DeleteFile(c *gin.Context) {
+func (h *FSHandler) DeleteFile(c *gin.Context) error {
 	id := c.Param("id")
 	filePath := c.Query("path")
 	if filePath == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path is required", ""))
-		return
+		return util.ErrBadRequest("path is required")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.DeleteFile(c.Request.Context(), id, filePath)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to delete file", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to delete file", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // CreateDirectory handles POST /sandboxes/:id/fs/mkdir?path=/path/to/dir
-func (h *FSHandler) CreateDirectory(c *gin.Context) {
+func (h *FSHandler) CreateDirectory(c *gin.Context) error {
 	id := c.Param("id")
 	dirPath := c.Query("path")
 	if dirPath == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path is required", ""))
-		return
+		return util.ErrBadRequest("path is required")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.CreateDirectory(c.Request.Context(), id, dirPath)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to create directory", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to create directory", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // MoveFile handles POST /sandboxes/:id/fs/move?from=/path/from&to=/path/to
-func (h *FSHandler) MoveFile(c *gin.Context) {
+func (h *FSHandler) MoveFile(c *gin.Context) error {
 	id := c.Param("id")
 	sourcePath := c.Query("from")
 	destPath := c.Query("to")
-
 	if sourcePath == "" || destPath == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("from and to query params are required", ""))
-		return
+		return util.ErrBadRequest("from and to query params are required")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.MoveFile(c.Request.Context(), id, sourcePath, destPath)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to move file", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to move file", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // CreateFile handles POST /sandboxes/:id/files/create?path=/path/to/file
-func (h *FSHandler) CreateFile(c *gin.Context) {
+func (h *FSHandler) CreateFile(c *gin.Context) error {
 	id := c.Param("id")
 	filePath := c.Query("path")
 	if filePath == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path is required", ""))
-		return
+		return util.ErrBadRequest("path is required")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.CreateFile(c.Request.Context(), id, filePath)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to create file", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to create file", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // StatFile handles GET /sandboxes/:id/fs/stat?path=/path/to/file
-func (h *FSHandler) StatFile(c *gin.Context) {
+func (h *FSHandler) StatFile(c *gin.Context) error {
 	id := c.Param("id")
 	filePath := c.Query("path")
 	if filePath == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path is required", ""))
-		return
+		return util.ErrBadRequest("path is required")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.StatFile(c.Request.Context(), id, filePath)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to get file info", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to get file info", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // CopyFile handles POST /sandboxes/:id/files/copy?from=...&to=...
-func (h *FSHandler) CopyFile(c *gin.Context) {
+func (h *FSHandler) CopyFile(c *gin.Context) error {
 	id := c.Param("id")
 	from := c.Query("from")
 	to := c.Query("to")
 	if from == "" || to == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("from and to required", ""))
-		return
+		return util.ErrBadRequest("from and to required")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.CopyFile(c.Request.Context(), id, from, to)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to copy file", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to copy file", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // HeadTail handles GET /sandboxes/:id/files/head-tail?path=...&lines=10&head=true
-func (h *FSHandler) HeadTail(c *gin.Context) {
+func (h *FSHandler) HeadTail(c *gin.Context) error {
 	id := c.Param("id")
 	path := c.Query("path")
 	if path == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path required", ""))
-		return
+		return util.ErrBadRequest("path required")
 	}
-
 	if err := validatePath(path); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid path", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid path", err.Error())
 	}
 
 	lines := 10
@@ -439,81 +329,64 @@ func (h *FSHandler) HeadTail(c *gin.Context) {
 			}
 		}
 	}
-
 	isHead := c.DefaultQuery("head", "true") == "true"
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.HeadTail(c.Request.Context(), id, path, lines, isHead)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to read file", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to read file", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // ChangePermissions handles POST /sandboxes/:id/files/chmod?path=...&mode=755
-func (h *FSHandler) ChangePermissions(c *gin.Context) {
+func (h *FSHandler) ChangePermissions(c *gin.Context) error {
 	id := c.Param("id")
 	path := c.Query("path")
 	mode := c.Query("mode")
 	if path == "" || mode == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path and mode required", ""))
-		return
+		return util.ErrBadRequest("path and mode required")
 	}
-
 	if err := validatePath(path); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid path", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid path", err.Error())
 	}
-
 	if len(mode) > maxModeLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("mode exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("mode exceeds maximum length")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.ChangePermissions(c.Request.Context(), id, path, mode)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to change permissions", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to change permissions", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // DiskUsage handles GET /sandboxes/:id/files/du?path=...
-func (h *FSHandler) DiskUsage(c *gin.Context) {
+func (h *FSHandler) DiskUsage(c *gin.Context) error {
 	id := c.Param("id")
 	path := c.Query("path")
 	if path == "" {
 		path = "/root"
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.DiskUsage(c.Request.Context(), id, path)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to get disk usage", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to get disk usage", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // SearchFiles handles GET /sandboxes/:id/files/search?path=...&pattern=...
-func (h *FSHandler) SearchFiles(c *gin.Context) {
+func (h *FSHandler) SearchFiles(c *gin.Context) error {
 	id := c.Param("id")
 	path := c.Query("path")
 	pattern := c.Query("pattern")
@@ -521,87 +394,68 @@ func (h *FSHandler) SearchFiles(c *gin.Context) {
 		path = "/root"
 	}
 	if pattern == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("pattern required", ""))
-		return
+		return util.ErrBadRequest("pattern required")
 	}
-
 	if err := validatePath(path); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid path", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid path", err.Error())
 	}
-
 	if len(pattern) > maxPatternLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("pattern exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("pattern exceeds maximum length")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.SearchFiles(c.Request.Context(), id, path, pattern)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to search files", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to search files", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // CompressFile handles POST /sandboxes/:id/files/compress?path=...&format=tar.gz
-func (h *FSHandler) CompressFile(c *gin.Context) {
+func (h *FSHandler) CompressFile(c *gin.Context) error {
 	id := c.Param("id")
 	path := c.Query("path")
 	format := c.Query("format")
 	if path == "" || format == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("path and format required", ""))
-		return
+		return util.ErrBadRequest("path and format required")
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.CompressFile(c.Request.Context(), id, path, format)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to compress file", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to compress file", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // ExtractArchive handles POST /sandboxes/:id/files/extract?archive=...&dest=...
-func (h *FSHandler) ExtractArchive(c *gin.Context) {
+func (h *FSHandler) ExtractArchive(c *gin.Context) error {
 	id := c.Param("id")
 	archive := c.Query("archive")
 	dest := c.Query("dest")
 	if archive == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("archive required", ""))
-		return
+		return util.ErrBadRequest("archive required")
 	}
 	if dest == "" {
 		dest = filepath.Dir(archive)
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	resp, err := h.fsService.ExtractArchive(c.Request.Context(), id, archive, dest)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to extract archive", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to extract archive", err)
 	}
-
-	HandleJSONResponse(c, resp)
+	return HandleJSONResponse(c, resp)
 }
 
 // StartWatch handles POST /sandboxes/:id/files/watch/start
-func (h *FSHandler) StartWatch(c *gin.Context) {
+func (h *FSHandler) StartWatch(c *gin.Context) error {
 	id := c.Param("id")
 
 	var req struct {
@@ -609,15 +463,11 @@ func (h *FSHandler) StartWatch(c *gin.Context) {
 		Recursive    bool   `json:"recursive"`
 		IgnoreHidden *bool  `json:"ignoreHidden"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid request body", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid request body", err.Error())
 	}
-
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	ignoreHidden := true
@@ -627,8 +477,7 @@ func (h *FSHandler) StartWatch(c *gin.Context) {
 
 	resp, err := h.fsService.StartWatch(c.Request.Context(), id, req.Path, req.Recursive, ignoreHidden)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Failed to start watch", err.Error()))
-		return
+		return util.ErrBadGateway("Failed to start watch", err)
 	}
 	defer resp.Body.Close()
 
@@ -637,70 +486,56 @@ func (h *FSHandler) StartWatch(c *gin.Context) {
 		Error     string `json:"error"`
 		SessionID string `json:"sessionId"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&agentResp); err != nil {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Invalid sandbox response", err.Error()))
-		return
+		return util.ErrBadGateway("Invalid sandbox response", err)
 	}
-
 	if !agentResp.Success {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Sandbox error", agentResp.Error))
-		return
+		return util.ErrBadGateway("Sandbox error: "+agentResp.Error, nil)
 	}
-
 	if agentResp.SessionID == "" {
-		c.JSON(http.StatusBadGateway, model.NewErrorResponse("Sandbox error", "missing sessionId"))
-		return
+		return util.ErrBadGateway("Sandbox error: missing sessionId", nil)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("watch started", map[string]interface{}{
 		"sessionId": agentResp.SessionID,
 	}))
+	return nil
 }
 
-// StreamWatchEvents handles WebSocket streaming of file watch events
-func (h *FSHandler) StreamWatchEvents(c *gin.Context) {
+// StreamWatchEvents handles WebSocket streaming of file watch events.
+// WebSocket safety: returns nil after upgrade — see Handle() doc comment.
+func (h *FSHandler) StreamWatchEvents(c *gin.Context) error {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
 	if sessionID == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("sessionId is required", ""))
-		return
+		return util.ErrBadRequest("sessionId is required")
+	}
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
-	}
-
-	// Upgrade client connection to WebSocket
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true // TODO: Implement proper origin checking
-		},
+		CheckOrigin: func(r *http.Request) bool { return true },
 	}
-
 	clientConn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("[Watch] Failed to upgrade client connection: %v", err)
-		return
+		return nil // upgrader already wrote error response
 	}
 	defer clientConn.Close()
 
-	// Connect to agent's WebSocket stream
 	agentURL := fmt.Sprintf("ws://%s/watch/stream?sessionId=%s", id, sessionID)
-
 	agentConn, _, err := h.dialer.DialContext(c.Request.Context(), agentURL, nil)
 	if err != nil {
 		log.Printf("[Watch] Failed to connect to agent: %v", err)
 		clientConn.WriteJSON(map[string]string{"error": "Failed to connect to watch session"})
-		return
+		return nil
 	}
 	defer agentConn.Close()
 
 	log.Printf("[Watch] Streaming events from session %s to client", sessionID)
 
-	// Bidirectional relay
 	var wg sync.WaitGroup
 	wg.Add(2)
 
@@ -723,7 +558,7 @@ func (h *FSHandler) StreamWatchEvents(c *gin.Context) {
 		}
 	}()
 
-	// Client -> Agent (for ping/pong to detect disconnect)
+	// Client -> Agent (ping/pong to detect disconnect)
 	go func() {
 		defer wg.Done()
 		for {
@@ -735,21 +570,5 @@ func (h *FSHandler) StreamWatchEvents(c *gin.Context) {
 
 	wg.Wait()
 	log.Printf("[Watch] Stream closed for session %s", sessionID)
-}
-
-func (h *FSHandler) isSandboxRunning(c *gin.Context, sandboxId string) error {
-	orgID, err := util.GetOrgIDFromContext(c)
-	if err != nil {
-		return err
-	}
-
-	err = h.sandboxService.EnsureRunning(c.Request.Context(), orgID, sandboxId)
-	if err != nil {
-		return err
-	}
-
-	// Touch activity for auto-pause tracking (async, fire-and-forget)
-	go h.sandboxService.TouchActivity(c.Request.Context(), orgID, sandboxId)
-
 	return nil
 }
