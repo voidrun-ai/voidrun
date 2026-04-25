@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"voidrun/service"
+	"voidrun/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -35,33 +36,25 @@ func NewUserHandler(userService *service.UserService, orgService *service.OrgSer
 }
 
 // GetMe returns the current user's details and their organizations
-func (h *UserHandler) GetMe(c *gin.Context) {
+func (h *UserHandler) GetMe(c *gin.Context) error {
 	userID := c.GetString("userID")
 	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
+		return util.ErrUnauthorized("unauthorized")
 	}
 
-	// Get user by ID
 	user, err := h.userService.GetByID(c.Request.Context(), userID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get user"})
-		return
+		return util.ErrInternal("failed to get user", err)
 	}
-
 	if user == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-		return
+		return util.ErrNotFound("user not found")
 	}
 
-	// Get all orgs the user is a member of
 	orgs, err := h.orgService.ListByMemberID(c.Request.Context(), user.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get user organizations"})
-		return
+		return util.ErrInternal("failed to get user organizations", err)
 	}
 
-	// Convert orgs to OrgInfo
 	orgInfos := make([]OrgInfo, len(orgs))
 	for i, org := range orgs {
 		orgInfos[i] = OrgInfo{
@@ -70,14 +63,13 @@ func (h *UserHandler) GetMe(c *gin.Context) {
 		}
 	}
 
-	response := MeResponse{
+	c.JSON(http.StatusOK, MeResponse{
 		ID:        user.ID.Hex(),
 		Name:      user.Name,
 		Email:     user.Email,
 		ImageURL:  user.ImageURL,
 		CreatedAt: user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		Orgs:      orgInfos,
-	}
-
-	c.JSON(http.StatusOK, response)
+	})
+	return nil
 }

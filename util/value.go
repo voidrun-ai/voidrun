@@ -1,31 +1,32 @@
 package util
 
 import (
-	"errors"
-	"net/http"
-
-	"voidrun/model"
-
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-var missingOrgError = errors.New("missing org context")
 
 func GetOrgIDFromContext(c *gin.Context) (primitive.ObjectID, error) {
 	orgIDHex := c.GetString("orgID")
 	if orgIDHex == "" {
-		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("missing org context", ""))
-		return primitive.NilObjectID, missingOrgError
+		return primitive.NilObjectID, ErrUnauthorized("missing org context")
 	}
-	return ParseObjectID(orgIDHex)
+	id, err := ParseObjectID(orgIDHex)
+	if err != nil {
+		return primitive.NilObjectID, ErrBadRequest("invalid org id format", err.Error())
+	}
+	return id, nil
 }
 
 func GetUserIDFromContext(c *gin.Context) (primitive.ObjectID, error) {
 	userIDHex := c.GetString("userID")
 	if userIDHex == "" {
-		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("missing user context", ""))
-		return primitive.NilObjectID, errors.New("missing user context")
+		return primitive.NilObjectID, ErrUnauthorized("missing user context")
 	}
-	return ParseObjectID(userIDHex)
+	id, err := ParseObjectID(userIDHex)
+	if err != nil {
+		return primitive.NilObjectID, ErrBadRequest("invalid user id format", err.Error())
+	}
+	return id, nil
 }
+

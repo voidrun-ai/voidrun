@@ -37,17 +37,15 @@ func NewImageHandler(imageService *service.ImageService) *ImageHandler {
 }
 
 // List handles GET /images
-func (h *ImageHandler) List(c *gin.Context) {
+func (h *ImageHandler) List(c *gin.Context) error {
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	images, err := h.imageService.ListByOrg(c.Request.Context(), orgID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 
 	resp := make([]model.ImageResponse, len(images))
@@ -55,66 +53,60 @@ func (h *ImageHandler) List(c *gin.Context) {
 		resp[i] = model.NewImageResponse(img)
 	}
 	c.JSON(http.StatusOK, resp)
+	return nil
 }
 
 // Get handles GET /images/:id
-func (h *ImageHandler) Get(c *gin.Context) {
+func (h *ImageHandler) Get(c *gin.Context) error {
 	id := c.Param("id")
+
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	image, err := h.imageService.GetByOrg(c.Request.Context(), orgID, id)
 	if err != nil {
 		if errors.Is(err, service.ErrImageNotFound) {
-			c.JSON(http.StatusNotFound, model.NewErrorResponse("Image not found", ""))
-			return
+			return util.ErrNotFound("Image not found")
 		}
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to fetch image", err.Error()))
-		return
+		return util.ErrInternal("Failed to fetch image", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewImageResponse(image))
+	return nil
 }
 
 // Create handles POST /images
-func (h *ImageHandler) Create(c *gin.Context) {
+func (h *ImageHandler) Create(c *gin.Context) error {
 	var img model.Image
 	if err := c.ShouldBindJSON(&img); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrBadRequest(err.Error())
 	}
 
-	// Validate image fields
 	if img.Name == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Image name is required", ""))
-		return
+		return util.ErrBadRequest("Image name is required")
 	}
 	if len(img.Name) > maxImageNameLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Image name exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("Image name exceeds maximum length")
 	}
 	if img.Tag != "" && len(img.Tag) > maxImageTagLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Image tag exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("Image tag exceeds maximum length")
 	}
-	// Sanitize name (remove dangerous characters)
+
 	img.Name = strings.TrimSpace(img.Name)
 	if img.Tag != "" {
 		img.Tag = strings.TrimSpace(img.Tag)
 	}
+
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	userID, err := util.GetUserIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	img.CreatedBy = userID
@@ -123,62 +115,57 @@ func (h *ImageHandler) Create(c *gin.Context) {
 
 	created, err := h.imageService.Create(c.Request.Context(), &img)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
 
 	c.JSON(http.StatusCreated, model.NewSuccessResponse("Image created", created))
+	return nil
 }
 
 // Delete handles DELETE /images/:id
-func (h *ImageHandler) Delete(c *gin.Context) {
+func (h *ImageHandler) Delete(c *gin.Context) error {
 	id := c.Param("id")
+
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	if err := h.imageService.DeleteByOrg(c.Request.Context(), orgID, id); err != nil {
 		if errors.Is(err, service.ErrImageNotFound) {
-			c.JSON(http.StatusNotFound, model.NewErrorResponse("Image not found", ""))
-			return
+			return util.ErrNotFound("Image not found")
 		}
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Delete failed", err.Error()))
-		return
+		return util.ErrInternal("Delete failed", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Image deleted", nil))
+	return nil
 }
 
 // GetByName handles GET /images/name/:name
-func (h *ImageHandler) GetByName(c *gin.Context) {
+func (h *ImageHandler) GetByName(c *gin.Context) error {
 	name := c.Param("name")
 
 	if name == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Image name is required", ""))
-		return
+		return util.ErrBadRequest("Image name is required")
 	}
 	if len(name) > maxImageNameLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Image name exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("Image name exceeds maximum length")
 	}
 
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return err
 	}
 
 	image, err := h.imageService.GetLatestByNameForOrg(name, orgID)
 	if err != nil {
 		if errors.Is(err, service.ErrImageNotFound) {
-			c.JSON(http.StatusNotFound, model.NewErrorResponse("Image not found", ""))
-			return
+			return util.ErrNotFound("Image not found")
 		}
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to fetch image", err.Error()))
-		return
+		return util.ErrInternal("Failed to fetch image", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewImageResponse(image))
+	return nil
 }

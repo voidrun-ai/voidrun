@@ -31,7 +31,7 @@ func NewMCPHandler(
 // Handle is a Gin handler that delegates to the MCP StreamableHTTPServer.
 // It bridges auth info from Gin's context into the *http.Request context
 // so that WithHTTPContextFunc can pick it up.
-func (h *MCPHandler) Handle(c *gin.Context) {
+func (h *MCPHandler) Handle(c *gin.Context) error {
 	// Extract auth info set by middleware.AuthMiddleware via c.Set("orgID", ...)
 	orgIDHex := c.GetString("orgID")
 	userIDHex := c.GetString("userID")
@@ -55,4 +55,5 @@ func (h *MCPHandler) Handle(c *gin.Context) {
 
 	// Delegate to the MCP StreamableHTTPServer (implements http.Handler)
 	h.httpServer.ServeHTTP(c.Writer, req)
+	return nil
 }

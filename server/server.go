@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"voidrun/config"
+	"voidrun/handler"
 	"voidrun/metrics"
 	"voidrun/runtime"
 	"voidrun/util"
@@ -216,7 +217,7 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, 
 	api := r.Group("/api")
 
 	// Public metadata routes
-	api.GET("/version", h.Version.Get)
+	api.GET("/version", handler.Handle(h.Version.Get))
 
 	// Protected routes require API key or JWT auth
 	protected := api.Group("")
@@ -228,91 +229,91 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, 
 	// Sandbox routes
 	sandboxes := protected.Group("/sandboxes")
 	{
-		sandboxes.GET("", h.Sandbox.List)
-		sandboxes.POST("", h.Sandbox.Create)
+		sandboxes.GET("", handler.Handle(h.Sandbox.List))
+		sandboxes.POST("", handler.Handle(h.Sandbox.Create))
 
 		sandboxByID := sandboxes.Group("/:id")
-		sandboxByID.GET("", h.Sandbox.Get)
-		sandboxByID.DELETE("", h.Sandbox.Delete)
-		sandboxByID.POST("/start", h.Sandbox.Start)
-		sandboxByID.POST("/stop", h.Sandbox.Stop)
-		sandboxByID.POST("/pause", h.Sandbox.Pause)
-		sandboxByID.POST("/resume", h.Sandbox.Resume)
-		sandboxByID.POST("/exec", h.Exec.Exec)
-		sandboxByID.POST("/exec-stream", h.Exec.ExecStream)
-		sandboxByID.POST("/session-exec", h.Exec.SessionExec)
-		sandboxByID.POST("/session-exec-stream", h.Exec.SessionExecStream)
+		sandboxByID.GET("", handler.Handle(h.Sandbox.Get))
+		sandboxByID.DELETE("", handler.Handle(h.Sandbox.Delete))
+		sandboxByID.POST("/start", handler.Handle(h.Sandbox.Start))
+		sandboxByID.POST("/stop", handler.Handle(h.Sandbox.Stop))
+		sandboxByID.POST("/pause", handler.Handle(h.Sandbox.Pause))
+		sandboxByID.POST("/resume", handler.Handle(h.Sandbox.Resume))
+		sandboxByID.POST("/exec", handler.Handle(h.Exec.Exec))
+		sandboxByID.POST("/exec-stream", handler.Handle(h.Exec.ExecStream))
+		sandboxByID.POST("/session-exec", handler.Handle(h.Exec.SessionExec))
+		sandboxByID.POST("/session-exec-stream", handler.Handle(h.Exec.SessionExecStream))
 
 		// Commands (Process Management)
-		sandboxByID.POST("/commands/run", h.Commands.Run)
-		sandboxByID.GET("/commands/list", h.Commands.List)
-		sandboxByID.POST("/commands/kill", h.Commands.Kill)
-		sandboxByID.POST("/commands/attach", h.Commands.Attach)
-		sandboxByID.POST("/commands/wait", h.Commands.Wait)
+		sandboxByID.POST("/commands/run", handler.Handle(h.Commands.Run))
+		sandboxByID.GET("/commands/list", handler.Handle(h.Commands.List))
+		sandboxByID.POST("/commands/kill", handler.Handle(h.Commands.Kill))
+		sandboxByID.POST("/commands/attach", handler.Handle(h.Commands.Attach))
+		sandboxByID.POST("/commands/wait", handler.Handle(h.Commands.Wait))
 
 		// PTY Session Management
-		sandboxByID.GET("/pty", h.PTY.Proxy)
-		sandboxByID.POST("/pty/sessions", h.PTY.CreateSession)
-		sandboxByID.GET("/pty/sessions", h.PTY.ListSessions)
-		sandboxByID.GET("/pty/sessions/:sessionId", h.PTY.ConnectSession)
-		sandboxByID.DELETE("/pty/sessions/:sessionId", h.PTY.DeleteSession)
-		sandboxByID.POST("/pty/sessions/:sessionId/execute", h.PTY.ExecuteCommand)
-		sandboxByID.GET("/pty/sessions/:sessionId/buffer", h.PTY.GetBuffer)
-		sandboxByID.POST("/pty/sessions/:sessionId/resize", h.PTY.ResizeTerminal)
+		sandboxByID.GET("/pty", handler.Handle(h.PTY.Proxy))
+		sandboxByID.POST("/pty/sessions", handler.Handle(h.PTY.CreateSession))
+		sandboxByID.GET("/pty/sessions", handler.Handle(h.PTY.ListSessions))
+		sandboxByID.GET("/pty/sessions/:sessionId", handler.Handle(h.PTY.ConnectSession))
+		sandboxByID.DELETE("/pty/sessions/:sessionId", handler.Handle(h.PTY.DeleteSession))
+		sandboxByID.POST("/pty/sessions/:sessionId/execute", handler.Handle(h.PTY.ExecuteCommand))
+		sandboxByID.GET("/pty/sessions/:sessionId/buffer", handler.Handle(h.PTY.GetBuffer))
+		sandboxByID.POST("/pty/sessions/:sessionId/resize", handler.Handle(h.PTY.ResizeTerminal))
 
-		sandboxByID.GET("/files", h.FS.ListFiles)
-		sandboxByID.GET("/files/download", h.FS.DownloadFile)
-		sandboxByID.POST("/files/upload", h.FS.UploadFile)
-		sandboxByID.POST("/files/mkdir", h.FS.CreateDirectory)
-		sandboxByID.POST("/files/create", h.FS.CreateFile)
-		sandboxByID.POST("/files/copy", h.FS.CopyFile)
-		sandboxByID.GET("/files/head-tail", h.FS.HeadTail)
-		sandboxByID.POST("/files/chmod", h.FS.ChangePermissions)
-		sandboxByID.GET("/files/du", h.FS.DiskUsage)
-		sandboxByID.GET("/files/search", h.FS.SearchFiles)
-		sandboxByID.POST("/files/compress", h.FS.CompressFile)
-		sandboxByID.POST("/files/extract", h.FS.ExtractArchive)
-		sandboxByID.DELETE("/files", h.FS.DeleteFile)
-		sandboxByID.POST("/files/move", h.FS.MoveFile)
-		sandboxByID.GET("/files/stat", h.FS.StatFile)
+		sandboxByID.GET("/files", handler.Handle(h.FS.ListFiles))
+		sandboxByID.GET("/files/download", handler.Handle(h.FS.DownloadFile))
+		sandboxByID.POST("/files/upload", handler.Handle(h.FS.UploadFile))
+		sandboxByID.POST("/files/mkdir", handler.Handle(h.FS.CreateDirectory))
+		sandboxByID.POST("/files/create", handler.Handle(h.FS.CreateFile))
+		sandboxByID.POST("/files/copy", handler.Handle(h.FS.CopyFile))
+		sandboxByID.GET("/files/head-tail", handler.Handle(h.FS.HeadTail))
+		sandboxByID.POST("/files/chmod", handler.Handle(h.FS.ChangePermissions))
+		sandboxByID.GET("/files/du", handler.Handle(h.FS.DiskUsage))
+		sandboxByID.GET("/files/search", handler.Handle(h.FS.SearchFiles))
+		sandboxByID.POST("/files/compress", handler.Handle(h.FS.CompressFile))
+		sandboxByID.POST("/files/extract", handler.Handle(h.FS.ExtractArchive))
+		sandboxByID.DELETE("/files", handler.Handle(h.FS.DeleteFile))
+		sandboxByID.POST("/files/move", handler.Handle(h.FS.MoveFile))
+		sandboxByID.GET("/files/stat", handler.Handle(h.FS.StatFile))
 
 		// File watch routes
-		sandboxByID.POST("/files/watch", h.FS.StartWatch)
-		sandboxByID.GET("/files/watch/:sessionId/stream", h.FS.StreamWatchEvents)
+		sandboxByID.POST("/files/watch", handler.Handle(h.FS.StartWatch))
+		sandboxByID.GET("/files/watch/:sessionId/stream", handler.Handle(h.FS.StreamWatchEvents))
 	}
 
 	// Image routes
 	images := protected.Group("/images")
 	{
-		images.GET("", h.Image.List)
-		// images.POST("", h.Image.Create)
-		images.GET("/:id", h.Image.Get)
-		// images.DELETE("/:id", h.Image.Delete)
-		images.GET("/name/:name", h.Image.GetByName)
+		images.GET("", handler.Handle(h.Image.List))
+		// images.POST("", handler.Handle(h.Image.Create))
+		images.GET("/:id", handler.Handle(h.Image.Get))
+		// images.DELETE("/:id", handler.Handle(h.Image.Delete))
+		images.GET("/name/:name", handler.Handle(h.Image.GetByName))
 	}
 
 	// Org routes with auth middleware (API Key required)
 	org := protected.Group("/orgs")
 	{
-		org.GET("/users", h.Org.GetOrgUsers)
+		org.GET("/users", handler.Handle(h.Org.GetOrgUsers))
 
 		// API key routes under org
 		apiKeys := org.Group("/apikeys")
-		apiKeys.GET("", h.Org.ListAPIKeys)
-		apiKeys.POST("", h.Org.GenerateAPIKey)
-		apiKeys.DELETE("/:keyId", h.Org.DeleteAPIKey)
-		apiKeys.POST("/:keyId/activate", h.Org.ActivateAPIKey)
-		apiKeys.PATCH("/:keyId/touch", h.Org.TouchAPIKey)
+		apiKeys.GET("", handler.Handle(h.Org.ListAPIKeys))
+		apiKeys.POST("", handler.Handle(h.Org.GenerateAPIKey))
+		apiKeys.DELETE("/:keyId", handler.Handle(h.Org.DeleteAPIKey))
+		apiKeys.POST("/:keyId/activate", handler.Handle(h.Org.ActivateAPIKey))
+		apiKeys.PATCH("/:keyId/touch", handler.Handle(h.Org.TouchAPIKey))
 	}
 
 	// User routes
 	user := protected.Group("/users")
 	{
-		user.GET("/me", h.User.GetMe)
+		user.GET("/me", handler.Handle(h.User.GetMe))
 	}
 
 	// MCP (Model Context Protocol) endpoint — single route handles all MCP methods
-	protected.Any("/mcp", h.MCP.Handle)
+	protected.Any("/mcp", handler.Handle(h.MCP.Handle))
 
 	return r
 }
