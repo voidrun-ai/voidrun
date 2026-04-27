@@ -18,6 +18,7 @@ func NewServer(
 	execSvc *service.ExecService,
 	fsSvc *service.FSService,
 	cmdsSvc *service.CommandsService,
+	imageSvc *service.ImageService,
 ) *server.StreamableHTTPServer {
 	ver := util.Get()
 
@@ -25,6 +26,7 @@ func NewServer(
 		"voidrun",
 		ver.Version,
 		server.WithToolCapabilities(true),
+		server.WithResourceCapabilities(false, true),
 		server.WithInstructions("VoidRun MCP Server — manage cloud sandbox VMs, execute commands, and manipulate files inside sandboxes."),
 	)
 
@@ -52,6 +54,17 @@ func NewServer(
 	mcpServer.AddTool(toolRunBackgroundCommand(), h.HandleRunBackgroundCommand)
 	mcpServer.AddTool(toolListProcesses(), h.HandleListProcesses)
 	mcpServer.AddTool(toolKillProcess(), h.HandleKillProcess)
+
+	// Register MCP resources — static and templated
+	rh := &resourceHandlers{
+		sandboxSvc: sandboxSvc,
+		imageSvc:   imageSvc,
+		fsSvc:      fsSvc,
+	}
+	mcpServer.AddResource(resourceSandboxesList(), rh.handleSandboxesList)
+	mcpServer.AddResource(resourceImagesList(), rh.handleImagesList)
+	mcpServer.AddResourceTemplate(templateSandboxStatus(), rh.handleSandboxStatus)
+	mcpServer.AddResourceTemplate(templateSandboxFiles(), rh.handleSandboxFile)
 
 	// Create the StreamableHTTP server with context bridging
 	httpServer := server.NewStreamableHTTPServer(mcpServer,

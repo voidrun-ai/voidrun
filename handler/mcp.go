@@ -22,9 +22,10 @@ func NewMCPHandler(
 	execSvc *service.ExecService,
 	fsSvc *service.FSService,
 	cmdsSvc *service.CommandsService,
+	imageSvc *service.ImageService,
 ) *MCPHandler {
 	return &MCPHandler{
-		httpServer: mcppkg.NewServer(sandboxSvc, execSvc, fsSvc, cmdsSvc),
+		httpServer: mcppkg.NewServer(sandboxSvc, execSvc, fsSvc, cmdsSvc, imageSvc),
 	}
 }
 
