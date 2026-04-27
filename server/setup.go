@@ -130,7 +130,7 @@ func InitHandlers(services *Services) *Handlers {
 		PTY:      handler.NewPTYHandler(services.Dialer, services.PTYSession, services.Sandbox),
 		Commands: handler.NewCommandsHandler(services.Commands, services.Sandbox),
 		Version:  handler.NewVersionHandler(),
-		MCP:      handler.NewMCPHandler(services.Sandbox, services.Exec, services.FS, services.Commands),
+		MCP:      handler.NewMCPHandler(services.Sandbox, services.Exec, services.FS, services.Commands, services.Image),
 	}
 }
 
