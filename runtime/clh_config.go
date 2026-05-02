@@ -84,6 +84,8 @@ type DiskConfig struct {
 	ID             string `json:"id,omitempty"`
 	DisableIO      bool   `json:"disable_io_uring,omitempty"`
 	PciSegment     int    `json:"pci_segment,omitempty"`
+	BackingFiles   bool   `json:"backing_files,omitempty"`
+	ImageType      string `json:"image_type,omitempty"`
 }
 
 // NetConfig defines network configuration

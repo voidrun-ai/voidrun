@@ -189,7 +189,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
-	if err := runtime.Create(*s.cfg, spec, overlay); err != nil {
+	if err := runtime.CreateCLI(*s.cfg, spec, overlay); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)

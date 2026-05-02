@@ -80,9 +80,10 @@ func HotplugDisk(ctx context.Context, socketPath, diskPath, diskID string, reado
 	client := NewCLHClient(socketPath)
 
 	disk := &DiskConfig{
-		Path:     diskPath,
-		Readonly: readonly,
-		ID:       diskID,
+		Path:         diskPath,
+		Readonly:     readonly,
+		ID:           diskID,
+		BackingFiles: true,
 	}
 
 	return client.VmAddDisk(ctx, disk)

@@ -155,16 +155,22 @@ func (c *APIClient) IsSocketAvailable() bool {
 	return err == nil
 }
 
-// WaitForSocket waits for the socket to become available
+// WaitForSocket waits for the socket to become available and dialable
 func (c *APIClient) WaitForSocket(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		// First check if file exists (fast)
 		if c.IsSocketAvailable() {
-			return nil
+			// Then try to dial to ensure it's actually listening
+			conn, err := net.DialTimeout("unix", c.socketPath, 100*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				return nil
+			}
 		}
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
-	return fmt.Errorf("socket timeout after %v", timeout)
+	return fmt.Errorf("socket timeout after %v (could not connect to %s)", timeout, c.socketPath)
 }
 
 func (c *APIClient) GetStateWithContext(ctx context.Context) (string, error) {

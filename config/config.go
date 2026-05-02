@@ -109,6 +109,8 @@ type SandboxConfig struct {
 	DefaultOverlayImage string
 	DefaultHostname     string
 	DiskFormat          string // "qcow2" (backing file), "qcow2-flat" (standalone copy), "raw" (reflink)
+	Seccomp             bool
+	Landlock            bool
 }
 
 // Health monitor configuration
@@ -178,6 +180,8 @@ const (
 	DefaultOverlayImage            = "overlay.qcow2"
 	DefaultSandboxHostname         = "voidrun"
 	DefaultSandboxDiskFormat       = "qcow2" // "qcow2" | "qcow2-flat" | "raw"
+	DefaultSandboxSeccomp          = true
+	DefaultSandboxLandlock         = true
 	// Health monitor defaults
 	DefaultHealthEnabled          = true
 	DefaultHealthIntervalSec      = 60
@@ -284,6 +288,8 @@ func New() *Config {
 			DefaultOverlayImage: getEnv("SANDBOX_DEFAULT_OVERLAY_IMAGE", DefaultOverlayImage),
 			DefaultHostname:     getEnv("SANDBOX_DEFAULT_HOSTNAME", DefaultSandboxHostname),
 			DiskFormat:          getEnv("SANDBOX_DISK_FORMAT", DefaultSandboxDiskFormat),
+			Seccomp:             getEnvBool("SANDBOX_SECCOMP", DefaultSandboxSeccomp),
+			Landlock:            getEnvBool("SANDBOX_LANDLOCK", DefaultSandboxLandlock),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),
