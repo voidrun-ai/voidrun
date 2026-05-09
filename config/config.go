@@ -21,6 +21,7 @@ type PathsConfig struct {
 	InstancesDir  string
 	KernelPath    string
 	InitrdPath    string
+	ProxyCADir    string // Directory for persisting the proxy CA cert/key across restarts
 }
 
 // Network configuration
@@ -31,6 +32,8 @@ type NetworkConfig struct {
 	SubnetPrefix string
 	TapPrefix    string
 	Nameservers  []string
+	ProxyPort    int    // Port the Go forward proxy listens on (default 3128)
+	ProxyEnabled bool   // Set PROXY_ENABLED=false to skip proxy startup and iptables intercept
 }
 
 // MongoDB configuration
@@ -151,12 +154,15 @@ const (
 	DefaultInstancesDir  = "/var/lib/voidrun/instances"
 	DefaultKernelPath    = "/var/lib/voidrun/base-images/vmlinux"
 	DefaultInitrdPath    = ""
+	DefaultProxyCADir    = "/var/lib/voidrun/proxy"
 	DefaultBridgeName    = "vmbr0"
 	DefaultTapPrefix     = "ttap-"
 	DefaultGatewayIP     = "192.168.100.1/22"
 	DefaultNetworkCIDR   = "192.168.100.0/22"
 	// DefaultSubnetPrefix            = "192.168.100."
 	DefaultNameservers = "8.8.8.8,1.1.1.1"
+	DefaultProxyPort   = 3128
+	DefaultProxyEnabled = true
 	DefaultMongoURI    = "mongodb://localhost:27017/vr-db?authSource=admin"
 	DefaultMongoDB     = "vr-db"
 	DefaultJWTSecret   = "change-me-in-production"
@@ -239,14 +245,17 @@ func New() *Config {
 			InstancesDir:  getEnv("INSTANCES_DIR", DefaultInstancesDir),
 			KernelPath:    getEnv("KERNEL_PATH", DefaultKernelPath),
 			InitrdPath:    getEnv("INITRD_PATH", DefaultInitrdPath),
+			ProxyCADir:    getEnv("PROXY_CA_DIR", DefaultProxyCADir),
 		},
 		Network: NetworkConfig{
 			BridgeName:  getEnv("BRIDGE_NAME", DefaultBridgeName),
 			GatewayIP:   getEnv("GATEWAY_IP", DefaultGatewayIP),
 			NetworkCIDR: getEnv("NETWORK_CIDR", DefaultNetworkCIDR),
 			// SubnetPrefix: getEnv("SUBNET_PREFIX", DefaultSubnetPrefix),
-			TapPrefix:   getEnv("TAP_PREFIX", DefaultTapPrefix),
-			Nameservers: getEnvCSV("DNS_NAMESERVERS", DefaultNameservers),
+			TapPrefix:    getEnv("TAP_PREFIX", DefaultTapPrefix),
+			Nameservers:  getEnvCSV("DNS_NAMESERVERS", DefaultNameservers),
+			ProxyPort:    getEnvInt("PROXY_PORT", DefaultProxyPort),
+			ProxyEnabled: getEnvBool("PROXY_ENABLED", DefaultProxyEnabled),
 		},
 		Mongo: MongoConfig{
 			URI:      getEnv("MONGO_URI", DefaultMongoURI),

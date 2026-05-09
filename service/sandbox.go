@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,33 @@ import (
 )
 
 var ErrSandboxNotFound = errors.New("sandbox not found")
+
+// generateSecretPlaceholder creates a cryptographically random placeholder token.
+// Format: "vr_secret_" + 32 random hex chars (128-bit entropy)
+func generateSecretPlaceholder() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return "vr_secret_" + hex.EncodeToString(b)
+}
+
+// buildSecretConfigs converts API SecretRequests into SecretConfigs with generated placeholders.
+func buildSecretConfigs(secrets []model.SecretRequest) []model.SecretConfig {
+	if len(secrets) == 0 {
+		return nil
+	}
+	configs := make([]model.SecretConfig, len(secrets))
+	for i, s := range secrets {
+		configs[i] = model.SecretConfig{
+			Name:        s.Name,
+			FromEnvVar:  s.From,
+			Hosts:       s.Hosts,
+			Placeholder: generateSecretPlaceholder(),
+		}
+	}
+	return configs
+}
 
 // SandboxService handles sandbox business logic
 type SandboxService struct {
@@ -220,6 +249,24 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		}()
 	}
 
+	// Process secrets: generate placeholders and inject them as env vars in the guest.
+	// Real values never enter the VM — only placeholder tokens are sent.
+	var secretConfigs []model.SecretConfig
+	if len(req.Secrets) > 0 {
+		secretConfigs = buildSecretConfigs(req.Secrets)
+		// Send placeholder tokens as env vars to the guest agent
+		placeholderEnvs := make(map[string]string, len(secretConfigs))
+		for _, sc := range secretConfigs {
+			placeholderEnvs[sc.Name] = sc.Placeholder
+		}
+		go func() {
+			log.Printf("   [Agent] Injecting secret placeholders on %s (async)...\n", spec.ID)
+			if err := setAgentEnvVars(spec.ID, placeholderEnvs); err != nil {
+				fmt.Printf("[WARN] Failed to set secret placeholders on agent: %v\n", err)
+			}
+		}()
+	}
+
 	go func() {
 		log.Printf("   [Agent] Configuring network on %s (async)...\n", spec.ID)
 		if cfgErr := configureAgentNetwork(spec.ID, &netCfg); cfgErr != nil {
@@ -253,6 +300,12 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		Status:         "running",
 		CreatedAt:      now,
 		CreatedBy:      req.UserID,
+		Secrets:        secretConfigs,
+		NetworkPolicy: &model.NetworkPolicy{
+			AllowedDomains: []string{},
+			BlockedDomains: []string{},
+			InjectHeaders:  map[string]string{},
+		},
 	}
 
 	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), sandbox.OrgID.Hex())

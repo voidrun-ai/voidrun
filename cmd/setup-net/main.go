@@ -1,11 +1,16 @@
+//go:build linux
+
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"voidrun/config"
@@ -13,6 +18,11 @@ import (
 
 func main() {
 	flag.Parse()
+
+	// Fix #5: Fail fast if not running as root (CAP_NET_ADMIN required).
+	if os.Geteuid() != 0 {
+		log.Fatal("[Net] must be run as root (needs CAP_NET_ADMIN for bridge/iptables)")
+	}
 
 	// Load configuration from environment
 	cfg := config.New()
@@ -23,10 +33,12 @@ func main() {
 	gatewayIP := cfg.Network.GetCleanGateway()
 	gatewayWithMask := cfg.Network.GatewayIP
 	subnet := cfg.Network.NetworkCIDR
+	proxyPort := cfg.Network.ProxyPort
 
-	fmt.Printf("   [Bridge] %s\n", bridge)
-	fmt.Printf("   [Gateway] %s\n", gatewayWithMask)
-	fmt.Printf("   [Subnet] %s\n", subnet)
+	fmt.Printf("   [Bridge]     %s\n", bridge)
+	fmt.Printf("   [Gateway]    %s\n", gatewayWithMask)
+	fmt.Printf("   [Subnet]     %s\n", subnet)
+	fmt.Printf("   [ProxyPort]  %d (enabled=%v)\n", proxyPort, cfg.Network.ProxyEnabled)
 
 	// 1. Create bridge if it doesn't exist
 	if !bridgeExists(bridge) {
@@ -73,41 +85,105 @@ func main() {
 
 	// 6. Add NAT Masquerade rule
 	fmt.Println("   + Enabling NAT (Masquerade)...")
-	masqueradeRule := fmt.Sprintf("-s %s ! -d %s -j MASQUERADE", subnetCIDR, subnetCIDR)
-	if !iptablesRuleExists("nat", "POSTROUTING", masqueradeRule) {
-		if err := run("iptables", "-t", "nat", "-I", "POSTROUTING", "1", "-s", subnetCIDR, "!", "-d", subnetCIDR, "-j", "MASQUERADE"); err != nil {
+	if !iptablesRuleExists("nat", "POSTROUTING", "-s", subnetCIDR, "!", "-d", subnetCIDR, "-j", "MASQUERADE") {
+		if err := ipt("-t", "nat", "-I", "POSTROUTING", "1", "-s", subnetCIDR, "!", "-d", subnetCIDR, "-j", "MASQUERADE"); err != nil {
 			log.Printf("Warning: Could not add NAT rule: %v", err)
 		}
 	}
 
 	// 7. Forwarding Rules - Outbound
 	fmt.Printf("   + Allow Outbound: %s -> %s\n", bridge, wanIface)
-	outboundRule := fmt.Sprintf("-i %s -o %s -j ACCEPT", bridge, wanIface)
-	if !iptablesRuleExists("filter", "FORWARD", outboundRule) {
-		if err := run("iptables", "-I", "FORWARD", "1", "-i", bridge, "-o", wanIface, "-j", "ACCEPT"); err != nil {
+	if !iptablesRuleExists("filter", "FORWARD", "-i", bridge, "-o", wanIface, "-j", "ACCEPT") {
+		if err := ipt("-I", "FORWARD", "1", "-i", bridge, "-o", wanIface, "-j", "ACCEPT"); err != nil {
 			log.Printf("Warning: Could not add outbound rule: %v", err)
 		}
 	}
 
 	// 8. Forwarding Rules - Inbound (Established)
 	fmt.Printf("   + Allow Inbound (Established): %s -> %s\n", wanIface, bridge)
-	inboundRule := fmt.Sprintf("-i %s -o %s -m state --state RELATED,ESTABLISHED -j ACCEPT", wanIface, bridge)
-	if !iptablesRuleExists("filter", "FORWARD", inboundRule) {
-		if err := run("iptables", "-I", "FORWARD", "1", "-i", wanIface, "-o", bridge, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+	if !iptablesRuleExists("filter", "FORWARD", "-i", wanIface, "-o", bridge, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT") {
+		if err := ipt("-I", "FORWARD", "1", "-i", wanIface, "-o", bridge, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
 			log.Printf("Warning: Could not add inbound rule: %v", err)
 		}
+	}
+
+	// 9. Redirect VM HTTP (port 80) through the Go forward proxy.
+	// Transparently intercepts outbound HTTP from VMs; VMs need no proxy config.
+	// Skip this rule when PROXY_ENABLED=false so traffic routes normally without the proxy.
+	proxyPortStr := strconv.Itoa(proxyPort)
+	redirectArgs := []string{"-i", bridge, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", proxyPortStr}
+	if cfg.Network.ProxyEnabled {
+		fmt.Printf("   + Redirect VM HTTP (port 80) → localhost:%d via proxy...\n", proxyPort)
+		// Flush any stale REDIRECT rules first (e.g. port changed from 8080→8081).
+		removeAllProxyRedirects(bridge)
+		if !iptablesRuleExists("nat", "PREROUTING", redirectArgs...) {
+			if err := ipt(append([]string{"-t", "nat", "-I", "PREROUTING", "1"}, redirectArgs...)...); err != nil {
+				log.Printf("Warning: Could not add proxy redirect rule: %v", err)
+			}
+		}
+	} else {
+		// Fix #6: Remove ANY existing port-80 REDIRECT on this bridge, regardless of
+		// the --to-port value. This handles the case where the proxy port was changed
+		// in the config between enabling and disabling the proxy.
+		fmt.Println("   ~ Skipping proxy redirect (PROXY_ENABLED=false) — removing stale rules...")
+		removeAllProxyRedirects(bridge)
 	}
 
 	fmt.Println("[Net] Host Network Configured Successfully.")
 }
 
-// run executes a command and returns error if it fails
+// run executes a command and returns an error containing stderr for diagnostics.
 func run(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return fmt.Errorf("%s %v: %w: %s", name, args, err, msg)
+		}
 		return fmt.Errorf("%s %v: %w", name, args, err)
 	}
 	return nil
+}
+
+// ipt runs an iptables command with -w (wait for xtables lock) to avoid
+// "Another app is currently holding the xtables lock" crashes.
+func ipt(args ...string) error {
+	return run("iptables", append([]string{"-w"}, args...)...)
+}
+
+// iptablesRuleExists checks if an iptables rule already exists.
+// Takes table, chain, and rule args as a proper string slice — no string
+// concatenation or strings.Fields splitting.
+func iptablesRuleExists(table, chain string, ruleArgs ...string) bool {
+	args := append([]string{"-w", "-t", table, "-C", chain}, ruleArgs...)
+	cmd := exec.Command("iptables", args...)
+	return cmd.Run() == nil
+}
+
+// removeAllProxyRedirects deletes every PREROUTING REDIRECT rule on this bridge
+// for dport 80, regardless of the --to-port value. This handles stale rules left
+// behind after a proxy port change.
+func removeAllProxyRedirects(bridge string) {
+	cmd := exec.Command("iptables", "-w", "-t", "nat", "-S", "PREROUTING")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		// Match lines like: -A PREROUTING -i vmbr0 -p tcp -m tcp --dport 80 -j REDIRECT --to-ports 3128
+		if !strings.Contains(line, bridge) || !strings.Contains(line, "--dport 80") || !strings.Contains(line, "REDIRECT") {
+			continue
+		}
+		// Convert "-A PREROUTING ..." to "-D PREROUTING ..." for deletion
+		delRule := strings.Replace(line, "-A PREROUTING", "-D PREROUTING", 1)
+		delArgs := strings.Fields(delRule)
+		if len(delArgs) > 0 {
+			fmt.Printf("   - Removing stale rule: %s\n", line)
+			_ = ipt(append([]string{"-t", "nat"}, delArgs...)...)
+		}
+	}
 }
 
 // bridgeExists checks if a bridge interface exists
@@ -116,36 +192,55 @@ func bridgeExists(bridge string) bool {
 	return cmd.Run() == nil
 }
 
-// hasIP checks if an IP is already assigned to an interface
+// hasIP checks if an IP is already assigned to an interface.
+// Uses exact IPv4 comparison to avoid false positives from substring matches
+// (e.g. "192.168.100.1" matching within "192.168.100.10").
 func hasIP(iface, ip string) bool {
 	cmd := exec.Command("ip", "addr", "show", iface)
 	output, err := cmd.Output()
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(output), ip)
+	want := net.ParseIP(ip)
+	if want == nil || want.To4() == nil {
+		return false
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "inet ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		addr := strings.Split(fields[1], "/")[0]
+		if got := net.ParseIP(addr); got != nil && got.To4() != nil && got.Equal(want) {
+			return true
+		}
+	}
+	return false
 }
 
-// detectWAN finds the default WAN interface
+// detectWAN finds the default WAN interface by parsing `ip route show default`
+// in pure Go — no dependency on bash or awk.
 func detectWAN() (string, error) {
-	cmd := exec.Command("bash", "-c", "ip route show default | awk '/default/ {print $5; exit}'")
+	cmd := exec.Command("ip", "route", "show", "default")
 	output, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("ip route show default: %w", err)
 	}
-	wanIface := strings.TrimSpace(string(output))
-	if wanIface == "" {
-		return "", fmt.Errorf("no default route found")
+	// Output: "default via 10.0.0.1 dev eth0 proto ..."
+	// The interface name follows "dev".
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if f == "dev" && i+1 < len(fields) {
+				return fields[i+1], nil
+			}
+		}
 	}
-	return wanIface, nil
-}
-
-// iptablesRuleExists checks if an iptables rule already exists
-func iptablesRuleExists(table, chain, rule string) bool {
-	// Build the iptables check command
-	parts := strings.Fields(fmt.Sprintf("-t %s -C %s %s", table, chain, rule))
-	cmd := exec.Command("iptables", parts...)
-	return cmd.Run() == nil
+	return "", fmt.Errorf("no default route found")
 }
 
 // extractSubnet extracts just the subnet from CIDR notation

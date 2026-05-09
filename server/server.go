@@ -3,12 +3,15 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"voidrun/config"
 	"voidrun/handler"
 	"voidrun/metrics"
+	"voidrun/proxy"
 	"voidrun/runtime"
+	"voidrun/service"
 	"voidrun/util"
 
 	"github.com/gin-contrib/cors"
@@ -29,6 +32,8 @@ type Server struct {
 	db          *mongo.Database
 	repos       *Repositories
 	middlewares *Middlewares
+	policyCache *service.PolicyCache
+	proxyServer *proxy.Server
 }
 
 // New creates a new server instance
@@ -49,6 +54,7 @@ func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Ser
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 	db := mongoClient.Database(cfg.Mongo.Database)
+	policyCache := service.NewPolicyCache(db.Collection("sandboxes"))
 
 	repos := InitRepositories(cfg, db)
 	services := InitServices(cfg, repos, metricsManager)
@@ -62,6 +68,18 @@ func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Ser
 
 	router := setupRouter(cfg, handlers, services, middlewares, extraProtectedMiddlewares...)
 
+	// Initialize the forward proxy server (skip if PROXY_ENABLED=false)
+	var proxyServer *proxy.Server
+	if cfg.Network.ProxyEnabled {
+		proxyAddr := fmt.Sprintf(":%d", cfg.Network.ProxyPort)
+		proxyServer, err = proxy.NewServer(proxyAddr, cfg.Paths.ProxyCADir, policyCache)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize proxy: %w", err)
+		}
+	} else {
+		log.Println("[proxy] PROXY_ENABLED=false — proxy server disabled, VM outbound traffic is unfiltered")
+	}
+
 	return &Server{
 		cfg:         cfg,
 		router:      router,
@@ -73,6 +91,8 @@ func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Ser
 		db:          db,
 		repos:       repos,
 		middlewares: middlewares,
+		policyCache: policyCache,
+		proxyServer: proxyServer,
 	}, nil
 }
 
@@ -113,6 +133,17 @@ func (s *Server) Run() error {
 	s.startHealthMonitor()
 	s.resumeEventWatchers()
 	s.startLifecycleManager()
+
+	// Start forward proxy in background goroutine; treat unexpected exit as fatal.
+	if s.proxyServer != nil {
+		proxyCtx, proxyCancel := context.WithCancel(context.Background())
+		defer proxyCancel()
+		go func() {
+			if err := s.proxyServer.Start(proxyCtx); err != nil {
+				log.Fatalf("[proxy] server stopped unexpectedly: %v — VM outbound traffic is now unfiltered, shutting down", err)
+			}
+		}()
+	}
 
 	if s.cfg.Auth.LocalMode {
 		fmt.Println("[WARN] LOCAL_MODE enabled: authentication is bypassed")

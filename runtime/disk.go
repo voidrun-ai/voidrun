@@ -114,6 +114,11 @@ func PrepareInstanceFlat(ctx context.Context, cfg config.Config, spec model.Sand
 	}
 
 	baseName := spec.Type + "-base.qcow2"
+	if idx := strings.Index(spec.Type, ":"); idx != -1 {
+		name := spec.Type[:idx]
+		tag := spec.Type[idx+1:]
+		baseName = fmt.Sprintf("%s-%s.qcow2", name, tag)
+	}
 	basePath := filepath.Join(cfg.Paths.BaseImagesDir, baseName)
 
 	instanceDir := GetInstanceDir(spec.ID)
@@ -177,11 +182,17 @@ func PrepareInstanceRaw(ctx context.Context, cfg config.Config, spec model.Sandb
 
 	// Check for the raw base image; auto-convert from qcow2 if missing
 	rawBaseName := spec.Type + "-base.raw"
+	qcow2BaseName := spec.Type + "-base.qcow2"
+	if idx := strings.Index(spec.Type, ":"); idx != -1 {
+		name := spec.Type[:idx]
+		tag := spec.Type[idx+1:]
+		rawBaseName = fmt.Sprintf("%s-%s.raw", name, tag)
+		qcow2BaseName = fmt.Sprintf("%s-%s.qcow2", name, tag)
+	}
 	rawBasePath := filepath.Join(cfg.Paths.BaseImagesDir, rawBaseName)
 
 	if _, err := os.Stat(rawBasePath); os.IsNotExist(err) {
 		// Try to find the qcow2 source and convert it
-		qcow2BaseName := spec.Type + "-base.qcow2"
 		qcow2BasePath := filepath.Join(cfg.Paths.BaseImagesDir, qcow2BaseName)
 
 		if _, err := os.Stat(qcow2BasePath); os.IsNotExist(err) {

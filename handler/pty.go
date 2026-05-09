@@ -46,6 +46,12 @@ func (h *PTYHandler) Proxy(c *gin.Context) error {
 	}
 	defer clientConn.Close()
 
+	// Track active connection for this sandbox
+	if connTracker != nil {
+		connTracker.Acquire(sbxInstance)
+		defer connTracker.Release(sbxInstance)
+	}
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 

@@ -15,10 +15,11 @@ import (
 
 // LifecycleManager runs periodic scans to auto-pause, auto-stop, and auto-delete sandboxes.
 type LifecycleManager struct {
-	repo    repository.ISandboxRepository
-	cfg     config.AutoLifecycleConfig
-	monitor *runtime.EventMonitor
-	metrics *metrics.Manager
+	repo        repository.ISandboxRepository
+	cfg         config.AutoLifecycleConfig
+	monitor     *runtime.EventMonitor
+	metrics     *metrics.Manager
+	connTracker *ConnTracker
 }
 
 // NewLifecycleManager creates a new lifecycle manager.
@@ -27,12 +28,14 @@ func NewLifecycleManager(
 	repo repository.ISandboxRepository,
 	monitor *runtime.EventMonitor,
 	metricsManager *metrics.Manager,
+	connTracker *ConnTracker,
 ) *LifecycleManager {
 	return &LifecycleManager{
-		repo:    repo,
-		cfg:     cfg,
-		monitor: monitor,
-		metrics: metricsManager,
+		repo:        repo,
+		cfg:         cfg,
+		monitor:     monitor,
+		metrics:     metricsManager,
+		connTracker: connTracker,
 	}
 }
 
@@ -104,6 +107,14 @@ func (m *LifecycleManager) autoPause(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
+
+		// Skip sandboxes with active connections
+		if m.connTracker != nil && !m.connTracker.IsIdle(id) {
+			log.Printf("[lifecycle] skipping auto-pause for %s (%s): %d active connections",
+				sb.Name, id, m.connTracker.ActiveCount(id))
+			continue
+		}
+
 		if err := runtime.Pause(id); err != nil {
 			log.Printf("[lifecycle] auto-pause runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue

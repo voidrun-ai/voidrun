@@ -3,8 +3,10 @@ package runtime
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"voidrun/util"
 
 	"github.com/vishvananda/netlink"
@@ -37,7 +39,11 @@ func CreateRandomTap(macAddr string, tapPrefix string) (string, error) {
 		}
 
 		if err := netlink.LinkAdd(tap); err != nil {
-			continue
+			// Only retry on EEXIST (name collision); fail immediately on any other error
+			if errors.Is(err, syscall.EEXIST) {
+				continue
+			}
+			return "", fmt.Errorf("failed to create tap %q: %w", tapName, err)
 		}
 
 		// Configure MAC while standalone and DOWN
@@ -60,7 +66,7 @@ func CreateRandomTap(macAddr string, tapPrefix string) (string, error) {
 		// RETURN NOW. Do not attach to bridge yet.
 		return tapName, nil
 	}
-	return "", fmt.Errorf("failed to generate unique tap")
+	return "", fmt.Errorf("failed to generate unique tap after 5 attempts (name collision each time; prefix=%q)", tapPrefix)
 }
 
 // EnableTap connects the TAP to the bridge and brings it UP.

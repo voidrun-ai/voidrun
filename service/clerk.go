@@ -78,7 +78,7 @@ func (s *ClerkService) ValidateToken(ctx context.Context, token string) (*ClerkC
 		return nil, errors.New("clerk authentication is not enabled")
 	}
 
-	log.Printf("[ClerkService] Validating token: %s\n", token) // Log only the first 20 chars for security
+	log.Printf("[ClerkService] Validating token: %s\n", token[:20]) // Log only the first 20 chars for security
 
 	// Verify the session token using Clerk SDK
 	var sessionClaims *clerk.SessionClaims

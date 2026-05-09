@@ -63,6 +63,7 @@ type Services struct {
 	AuthCache        *service.AuthCache
 	Monitor          *runtime.EventMonitor
 	LifecycleManager *service.LifecycleManager
+	ConnTracker      *service.ConnTracker
 }
 
 func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metrics.Manager) *Services {
@@ -85,6 +86,9 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		monitor.SetRootContext(context.Background())
 	}
 
+	// Initialize connection tracker for auto-pause awareness
+	connTracker := service.NewConnTracker()
+
 	return &Services{
 		User:             service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
 		Sandbox:          service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor),
@@ -101,7 +105,8 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		Clerk:            clerkSvc,
 		AuthCache:        authCache,
 		Monitor:          monitor,
-		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager),
+		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager, connTracker),
+		ConnTracker:      connTracker,
 	}
 }
 
@@ -120,6 +125,9 @@ type Handlers struct {
 }
 
 func InitHandlers(services *Services) *Handlers {
+	// Wire the connection tracker into the handler package
+	handler.SetConnTracker(services.ConnTracker)
+
 	return &Handlers{
 		User:     handler.NewUserHandler(services.User, services.Org),
 		Sandbox:  handler.NewSandboxHandler(services.Sandbox),

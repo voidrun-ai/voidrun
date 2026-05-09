@@ -128,13 +128,22 @@ mkdir -p ~/voidrun-data/mongo ~/voidrun-data/logs
 
 ---
 
-## 6. Symlink Go for sudo
+## 6. Grant Network Capabilities to the Binary
 
-The VoidRun server needs `sudo` for TAP network interfaces, and `sudo` resets PATH:
+The VoidRun server needs `CAP_NET_ADMIN` and `CAP_NET_RAW` to create TAP interfaces. Use `setcap` to grant these to the binary instead of running as root:
 
 ```bash
-sudo ln -sf ~/go/bin/go /usr/local/bin/go
+# Build first, then set capabilities
+cd /path/to/voidrun
+go build -o voidrun ./cmd/server/main.go
+sudo setcap cap_net_admin,cap_net_raw+ep ./voidrun
+
+# Verify
+getcap ./voidrun
+# Expected: ./voidrun cap_net_admin,cap_net_raw=ep
 ```
+
+> **Note:** `setcap` is reset every time you rebuild the binary. Always re-run `sudo setcap` after rebuilding.
 
 ---
 
@@ -286,19 +295,28 @@ CLERK_PUBLISHABLE_KEY=pk_test_your_publishable_key_here
 
 ## 10. Build & Run the Server
 
-### Development Mode (with hot-reload on code changes)
+### Development Mode
 
 ```bash
 cd /path/to/voidrun
-sudo go run cmd/server/main.go
+sudo env PATH=$PATH go run ./cmd/server/main.go
 ```
+
+> `sudo env PATH=$PATH` preserves your user's `PATH` so `go` is found. No build or `setcap` step needed each time.
 
 ### Production Build
 
 ```bash
 cd /path/to/voidrun
 go build -o voidrun ./cmd/server/main.go
-sudo ./voidrun
+sudo setcap cap_net_admin,cap_net_raw+ep ./voidrun
+./voidrun
+```
+
+Or as a one-liner script:
+
+```bash
+go build -o voidrun ./cmd/server/main.go && sudo setcap cap_net_admin,cap_net_raw+ep ./voidrun && ./voidrun
 ```
 
 You should see:
@@ -318,13 +336,6 @@ curl http://localhost:9999/api/version
 
 ## Troubleshooting
 
-### `sudo: go: command not found`
-
-Symlink Go into a sudo-visible path:
-```bash
-sudo ln -sf /home/$USER/go/bin/go /usr/local/bin/go
-```
-
 ### `qemu-img: error while loading shared libraries: liburing.so.2`
 
 Install the libraries system-wide:
@@ -341,12 +352,16 @@ Bridge creation requires root:
 sudo env PATH=$PATH:/usr/sbin go run cmd/setup-net/main.go
 ```
 
-### `failed to generate unique tap`
+### `failed to generate unique tap` / `TUNSETIFF operation not permitted`
 
-TAP interface creation requires root. Run the server with `sudo`:
+TAP interface creation requires `CAP_NET_ADMIN`. Grant it to the binary:
 ```bash
-sudo go run cmd/server/main.go
+go build -o voidrun ./cmd/server/main.go
+sudo setcap cap_net_admin,cap_net_raw+ep ./voidrun
+./voidrun
 ```
+
+> **Note:** These capabilities are stripped on every rebuild — re-run `sudo setcap` after each `go build`.
 
 ### `Backing file support is disabled`
 
@@ -386,7 +401,7 @@ cd ~/voidrun
 sudo env PATH=$PATH:/usr/sbin go run cmd/setup-net/main.go
 
 # 3. Run the server
-sudo go run cmd/server/main.go
+sudo env PATH=$PATH go run ./cmd/server/main.go
 ```
 
 The server will be available at `http://localhost:9999`.

@@ -2,6 +2,13 @@ package model
 
 import "go.mongodb.org/mongo-driver/bson/primitive"
 
+// SecretRequest defines a secret to inject via the proxy at sandbox creation time.
+type SecretRequest struct {
+	Name string   `json:"name" binding:"required"` // env var name in guest
+	From string   `json:"from" binding:"required"` // host env var to read value from
+	Hosts []string `json:"hosts" binding:"required,min=1"` // domains where substitution is allowed
+}
+
 // CreateSandboxRequest represents the request to create a new sandbox
 type CreateSandboxRequest struct {
 	Name         string             `json:"name" binding:"required"`
@@ -12,6 +19,7 @@ type CreateSandboxRequest struct {
 	UserID       primitive.ObjectID `json:"userId,omitempty"`
 	Sync         *bool              `json:"sync"`
 	EnvVars      map[string]string  `json:"envVars,omitempty"`
+	Secrets      []SecretRequest    `json:"secrets,omitempty"`
 	AutoSleep    *bool              `json:"autoSleep,omitempty"`
 	Region       string             `json:"region,omitempty"`
 	RefID        string             `json:"refId,omitempty"`
