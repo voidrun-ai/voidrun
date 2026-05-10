@@ -23,6 +23,7 @@ type IImageRepository interface {
 
 	GetLatestByNameForOrg(name string, orgID primitive.ObjectID) (*model.Image, error)
 	EnsureSystemImage(img model.Image) error
+	DeactivateStaleSystemImages(ctx context.Context, validImages []model.Image) error
 }
 
 // ImageRepository manages images in MongoDB
@@ -77,7 +78,8 @@ func (r *ImageRepository) GetLatestByNameForOrg(name string, orgID primitive.Obj
 
 	var img *model.Image
 	filter := bson.M{
-		"name": name,
+		"name":   name,
+		"active": true,
 		"$or": []bson.M{
 			{"orgId": orgID},
 			{"system": true},
@@ -137,7 +139,8 @@ func (r *ImageRepository) DeleteByIDAndOrg(ctx context.Context, id, orgID primit
 	return res.DeletedCount > 0, nil
 }
 
-// EnsureSystemImage upserts a system image
+// EnsureSystemImage upserts a system image.
+// It updates the Active status, SizeGB and Description if the image already exists.
 func (r *ImageRepository) EnsureSystemImage(img model.Image) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -146,9 +149,74 @@ func (r *ImageRepository) EnsureSystemImage(img model.Image) error {
 	img.CreatedAt = time.Now()
 
 	filter := bson.M{"name": img.Name, "tag": img.Tag, "system": true}
-	update := bson.M{"$setOnInsert": img}
+	update := bson.M{
+		"$set": bson.M{
+			"active":      img.Active,
+			"sizeGb":      img.SizeGB,
+			"description": img.Description,
+			"updatedAt":   time.Now(),
+		},
+		"$setOnInsert": bson.M{
+			"_id":       primitive.NewObjectID(),
+			"name":      img.Name,
+			"tag":       img.Tag,
+			"system":    true,
+			"createdAt": img.CreatedAt,
+		},
+	}
 	_, err := r.collection.UpdateOne(ctx, filter, update, options.Update().SetUpsert(true))
 	return err
+}
+
+// DeactivateStaleSystemImages deactivates any system images that are not in the validImages list.
+// It also ensures the Active status matches for images that ARE in the list.
+func (r *ImageRepository) DeactivateStaleSystemImages(ctx context.Context, validImages []model.Image) error {
+	// 1. Build a list of valid (name, tag) pairs that should remain active or exist
+	type imgKey struct {
+		Name string
+		Tag  string
+	}
+	validMap := make(map[imgKey]bool)
+	activeKeys := make(map[imgKey]bool)
+
+	for _, img := range validImages {
+		key := imgKey{img.Name, img.Tag}
+		validMap[key] = true
+		if img.Active {
+			activeKeys[key] = true
+		}
+	}
+
+	// 2. Update Active status for all images in the list
+	for _, img := range validImages {
+		filter := bson.M{"name": img.Name, "tag": img.Tag, "system": true}
+		update := bson.M{"$set": bson.M{"active": img.Active}}
+		_, err := r.collection.UpdateMany(ctx, filter, update)
+		if err != nil {
+			return err
+		}
+	}
+
+	// 3. Deactivate any system image NOT in the valid list
+	// This handles cases where images were removed from the upstream source
+	cursor, err := r.collection.Find(ctx, bson.M{"system": true})
+	if err != nil {
+		return err
+	}
+	defer cursor.Close(ctx)
+
+	for cursor.Next(ctx) {
+		var img model.Image
+		if err := cursor.Decode(&img); err != nil {
+			continue
+		}
+		key := imgKey{img.Name, img.Tag}
+		if !validMap[key] && img.Active {
+			_, _ = r.collection.UpdateOne(ctx, bson.M{"_id": img.ID}, bson.M{"$set": bson.M{"active": false}})
+		}
+	}
+
+	return nil
 }
 
 // Exists checks if an image exists

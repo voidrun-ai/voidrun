@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
+	"strings"
 	"sync"
 	"time"
 	"voidrun/config"
@@ -18,18 +18,18 @@ import (
 
 var (
 	baseImageSizeCache sync.Map
-	// Regex to ensure IDs only contain safe characters (alphanumeric, hyphens, underscores)
-	safePathRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 )
 
 func PrepareInstance(ctx context.Context, cfg config.Config, spec model.SandboxSpec) (string, error) {
 	defer util.Track("PrepareInstance (Total)")()
 
-	if !safePathRegex.MatchString(spec.ID) {
-		return "", fmt.Errorf("invalid characters in spec ID: %q", spec.ID)
+	log.Printf("[DEBUG] Preparing instance %s with spec: %+v", spec.ID, spec)
+	baseName := ""
+	if idx := strings.Index(spec.Type, ":"); idx != -1 {
+		name := spec.Type[:idx]
+		tag := spec.Type[idx+1:]
+		baseName = fmt.Sprintf("%s-%s.qcow2", name, tag)
 	}
-
-	baseName := spec.Type + "-base.qcow2"
 	basePath := filepath.Join(cfg.Paths.BaseImagesDir, baseName)
 
 	// Use centralized path helpers
@@ -61,17 +61,33 @@ func PrepareInstance(ctx context.Context, cfg config.Config, spec model.SandboxS
 
 	// log.Printf("[DEBUG] Creating overlay: %s -> %s (Size: %s)", basePath, overlayPath, sizeArg)
 
-	cmd := exec.CommandContext(cmdCtx, "qemu-img", "create",
-		"-f", "qcow2",
-		"-b", basePath,
-		"-F", "qcow2",
-		overlayPath,
-		sizeArg,
-	)
+	// Force qcow2-flat for debugging
+	if cfg.Sandbox.DiskFormat == "qcow2-flat" {
+		log.Printf("[DEBUG] Cloning QCOW2 flat image: %s -> %s", basePath, overlayPath)
+		cpCmd := exec.CommandContext(cmdCtx, "cp", "--reflink=always", basePath, overlayPath)
+		if output, err := cpCmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("cp reflink failed: %v. Output: %s", err, string(output))
+		}
+		if spec.DiskMB > baseMB {
+			log.Printf("[DEBUG] Resizing overlay to: %s", sizeArg)
+			resizeCmd := exec.CommandContext(cmdCtx, "qemu-img", "resize", overlayPath, sizeArg)
+			if output, err := resizeCmd.CombinedOutput(); err != nil {
+				return "", fmt.Errorf("qemu-img resize failed: %v. Output: %s", err, string(output))
+			}
+		}
+	} else {
+		cmd := exec.CommandContext(cmdCtx, "qemu-img", "create",
+			"-f", "qcow2",
+			"-b", basePath,
+			"-F", "qcow2",
+			overlayPath,
+			sizeArg,
+		)
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("qemu-img create failed: %v. Output: %s", err, string(output))
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("qemu-img create failed: %v. Output: %s", err, string(output))
+		}
 	}
 
 	return overlayPath, nil
@@ -80,12 +96,13 @@ func PrepareInstance(ctx context.Context, cfg config.Config, spec model.SandboxS
 func PrepareInstanceRaw(ctx context.Context, cfg config.Config, spec model.SandboxSpec) (string, error) {
 	defer util.Track("PrepareInstance (Total)")()
 
-	if !safePathRegex.MatchString(spec.ID) {
-		return "", fmt.Errorf("invalid characters in spec ID: %q", spec.ID)
-	}
-
 	// 1. IMPORTANT: We now expect a .raw base image instead of .qcow2
 	baseName := spec.Type + "-base.raw"
+	if idx := strings.Index(spec.Type, ":"); idx != -1 {
+		name := spec.Type[:idx]
+		tag := spec.Type[idx+1:]
+		baseName = fmt.Sprintf("%s-%s.raw", name, tag)
+	}
 	basePath := filepath.Join(cfg.Paths.BaseImagesDir, baseName)
 
 	instanceDir := GetInstanceDir(spec.ID)
