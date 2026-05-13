@@ -147,9 +147,17 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		req.Image = s.cfg.Sandbox.DefaultImage
 	}
 
+	imageName := req.Image
+	if !strings.Contains(imageName, ":") {
+		img, err := s.imageRepo.GetLatestByNameForOrg(imageName, req.OrgID)
+		if err == nil && img != nil && img.Tag != "" {
+			imageName = fmt.Sprintf("%s:%s", img.Name, img.Tag)
+		}
+	}
+
 	spec := model.SandboxSpec{
 		ID:        instanceID,
-		Type:      req.Image,
+		Type:      imageName,
 		CPUs:      cpu,
 		MemoryMB:  mem,
 		DiskMB:    diskMB,
@@ -174,7 +182,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		return nil, fmt.Errorf("storage init failed: %w", err)
 	}
 
-	if err := runtime.Create(*s.cfg, spec, overlay); err != nil {
+	if err := runtime.CreateCLI(*s.cfg, spec, overlay); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
