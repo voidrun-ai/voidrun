@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,8 @@ import (
 
 var (
 	baseImageSizeCache sync.Map
+	// safePathRegex matches a single filesystem path segment for sandbox IDs (aligned with service.ValidateSandboxID).
+	safePathRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 )
 
 // PrepareStorage dispatches to the correct disk preparation strategy based on config.

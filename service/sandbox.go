@@ -186,12 +186,6 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
 
-	// Prepare storage (pass config by value, not pointer)
-	overlay, err := runtime.PrepareInstance(ctx, *s.cfg, spec)
-	if err != nil {
-		return nil, fmt.Errorf("storage init failed: %w", err)
-	}
-
 	if err := runtime.CreateCLI(*s.cfg, spec, overlay); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
