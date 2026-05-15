@@ -18,122 +18,89 @@ const (
 
 // ExecHandler handles command execution HTTP requests
 type ExecHandler struct {
-	execService     *service.ExecService
-	sessionService  *service.SessionExecService
-	sandboxService  *service.SandboxService
-	commandsService *service.CommandsService
+	execService    *service.ExecService
+	sessionService *service.SessionExecService
+	sandboxService *service.SandboxService
 }
 
 // NewExecHandler creates a new exec handler
-func NewExecHandler(execService *service.ExecService, sessionService *service.SessionExecService, sandboxService *service.SandboxService, commandsService *service.CommandsService) *ExecHandler {
+func NewExecHandler(execService *service.ExecService, sessionService *service.SessionExecService, sandboxService *service.SandboxService) *ExecHandler {
 	return &ExecHandler{
-		execService:     execService,
-		sessionService:  sessionService,
-		sandboxService:  sandboxService,
-		commandsService: commandsService,
+		execService:    execService,
+		sessionService: sessionService,
+		sandboxService: sandboxService,
 	}
 }
 
 // Exec handles POST /sandboxes/:id/exec
-func (h *ExecHandler) Exec(c *gin.Context) {
+func (h *ExecHandler) Exec(c *gin.Context) error {
 	id := c.Param("id")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	var req model.ExecRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid request", ""))
-		return
+		return util.ErrBadRequest("Invalid request")
 	}
 
-	// Validate command
 	req.Command = strings.TrimSpace(req.Command)
 	if req.Command == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command is required", ""))
-		return
+		return util.ErrBadRequest("Command is required")
 	}
 	if len(req.Command) > maxCommandLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("Command exceeds maximum length")
 	}
 
-	// If background flag is set, delegate to commands service
-	if req.Background {
-		runResp, err := h.commandsService.Run(id, model.CommandRunRequest{
-			Command: req.Command,
-			Env:     req.Env,
-			Cwd:     req.Cwd,
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to start background process", err.Error()))
-			return
-		}
-		// Return wrapped response to match SDK expectations
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "success",
-			"message": "ok",
-			"data":    runResp,
-		})
-		return
-	}
-
-	// Validate timeout
 	timeout := req.Timeout
 	if timeout <= 0 {
-		timeout = 30 // Default 30 seconds
+		timeout = 30
 	}
 	if timeout > 300 {
-		timeout = 300 // Max 5 minutes
+		timeout = 300
 	}
 
-	// Execute command synchronously via agent /exec endpoint
 	resp, err := h.execService.ExecSync(c.Request.Context(), id, req.Command, timeout, req.Env, req.Cwd)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Command execution failed", err.Error()))
-		return
+		return util.ErrInternal("Command execution failed", err)
 	}
 
 	HandleJSONResponse(c, resp)
+	return nil
 }
 
 // SessionExec handles POST /sandboxes/:id/session-exec
-func (h *ExecHandler) SessionExec(c *gin.Context) {
+func (h *ExecHandler) SessionExec(c *gin.Context) error {
 	id := c.Param("id")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	var req model.SessionExecRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid request", ""))
-		return
+		return util.ErrBadRequest("Invalid request")
 	}
 
 	agentResp, err := h.sessionService.Send(id, req)
 	if err != nil {
-		status := http.StatusBadRequest
 		if agentResp == nil {
-			status = http.StatusInternalServerError
+			return util.ErrInternal(err.Error(), nil)
 		}
-		c.JSON(status, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrBadRequest(err.Error())
 	}
 
 	c.JSON(http.StatusOK, agentResp)
+	return nil
 }
 
 // SessionExecStream handles POST /sandboxes/:id/session-exec-stream (streaming)
-func (h *ExecHandler) SessionExecStream(c *gin.Context) {
+func (h *ExecHandler) SessionExecStream(c *gin.Context) error {
 	id := c.Param("id")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	var payload struct {
@@ -141,100 +108,70 @@ func (h *ExecHandler) SessionExecStream(c *gin.Context) {
 		Command   string `json:"command"`
 	}
 	if err := c.BindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid request", ""))
-		return
+		return util.ErrBadRequest("Invalid request")
 	}
 
-	// Validate session ID and command
 	payload.SessionID = strings.TrimSpace(payload.SessionID)
 	if payload.SessionID == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Session ID is required", ""))
-		return
+		return util.ErrBadRequest("Session ID is required")
 	}
 	if len(payload.SessionID) > maxSessionIDLen {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Session ID exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("Session ID exceeds maximum length")
 	}
 	payload.Command = strings.TrimSpace(payload.Command)
 	if payload.Command == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command is required", ""))
-		return
+		return util.ErrBadRequest("Command is required")
 	}
 	if len(payload.Command) > maxCommandLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("Command exceeds maximum length")
 	}
 
-	// Set streaming headers
+	// Set streaming headers — from this point WriteError will no-op
 	c.Header("Content-Type", "application/x-ndjson")
 	c.Header("Transfer-Encoding", "chunked")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Cache-Control", "no-cache")
 
 	if err := h.sessionService.StreamExec(id, payload.SessionID, payload.Command, c.Writer, func() { c.Writer.Flush() }); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
+	return nil
 }
 
 // ExecStream handles POST /sandboxes/:id/exec-stream for streaming command output as SSE
-func (h *ExecHandler) ExecStream(c *gin.Context) {
+func (h *ExecHandler) ExecStream(c *gin.Context) error {
 	id := c.Param("id")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
 	var req model.ExecRequest
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid request", ""))
-		return
+		return util.ErrBadRequest("Invalid request")
 	}
 
-	// Validate command
 	req.Command = strings.TrimSpace(req.Command)
 	if req.Command == "" {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command is required", ""))
-		return
+		return util.ErrBadRequest("Command is required")
 	}
 	if len(req.Command) > maxCommandLength {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Command exceeds maximum length", ""))
-		return
+		return util.ErrBadRequest("Command exceeds maximum length")
 	}
 
-	// Parse and validate request
 	_, _, timeout, err := h.execService.ParseAndValidateRequest(req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrBadRequest(err.Error())
 	}
 
-	// Set SSE headers
+	// Set SSE headers — from this point WriteError will no-op
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 
 	if err := h.execService.ExecStreamSSE(c.Request.Context(), id, req.Command, timeout, req.Env, req.Cwd, c.Writer, func() { c.Writer.Flush() }); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error(), ""))
-		return
+		return util.ErrInternal(err.Error(), nil)
 	}
-}
-
-func (h *ExecHandler) isSandboxRunning(c *gin.Context, sandboxId string) error {
-	orgID, err := util.GetOrgIDFromContext(c)
-	if err != nil {
-		return err
-	}
-
-	err = h.sandboxService.EnsureRunning(c.Request.Context(), orgID, sandboxId)
-	if err != nil {
-		return err
-	}
-
-	// Touch activity for auto-pause tracking (async, fire-and-forget)
-	go h.sandboxService.TouchActivity(c.Request.Context(), orgID, sandboxId)
-
 	return nil
 }

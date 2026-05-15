@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"voidrun/config"
 	"voidrun/model"
@@ -47,6 +48,10 @@ func NewCommandsService(cfg *config.Config) *CommandsService {
 
 // Run starts a background process
 func (s *CommandsService) Run(sbxInstance string, req model.CommandRunRequest) (*model.CommandRunResponse, error) {
+	if len(req.Command) > config.MaxCommandLength {
+		return nil, fmt.Errorf("command exceeds maximum length of %d characters", config.MaxCommandLength)
+	}
+
 	// Create payload for agent
 	payload := map[string]interface{}{
 		"command": req.Command,
@@ -61,7 +66,10 @@ func (s *CommandsService) Run(sbxInstance string, req model.CommandRunRequest) (
 	}
 
 	// Send to agent via HTTP
-	resp, err := AgentCommand(context.Background(), nil, sbxInstance, bytes.NewReader(body), "/run", http.MethodPost)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(req.Timeout+30)*time.Second)
+	defer cancel()
+
+	resp, err := AgentCommand(ctx, nil, sbxInstance, bytes.NewReader(body), "/run", http.MethodPost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to communicate with agent: %w", err)
 	}
@@ -83,7 +91,10 @@ func (s *CommandsService) Run(sbxInstance string, req model.CommandRunRequest) (
 // List returns all running processes
 func (s *CommandsService) List(sbxInstance string) (*model.CommandListResponse, error) {
 	// Send request to agent
-	resp, err := AgentCommand(context.Background(), nil, sbxInstance, nil, "/processes", http.MethodGet)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := AgentCommand(ctx, nil, sbxInstance, nil, "/processes", http.MethodGet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to communicate with agent: %w", err)
 	}
@@ -113,7 +124,10 @@ func (s *CommandsService) Kill(sbxInstance string, pid int) (*model.CommandKillR
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	resp, err := AgentCommand(context.Background(), nil, sbxInstance, bytes.NewReader(body), "/kill", http.MethodPost)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := AgentCommand(ctx, nil, sbxInstance, bytes.NewReader(body), "/kill", http.MethodPost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to communicate with agent: %w", err)
 	}
@@ -143,7 +157,10 @@ func (s *CommandsService) Attach(sbxInstance string, pid int, writer io.Writer, 
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	resp, err := AgentCommand(context.Background(), nil, sbxInstance, bytes.NewReader(body), "/attach", http.MethodPost)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := AgentCommand(ctx, nil, sbxInstance, bytes.NewReader(body), "/attach", http.MethodPost)
 	if err != nil {
 		return fmt.Errorf("failed to communicate with agent: %w", err)
 	}
@@ -174,7 +191,12 @@ func (s *CommandsService) Wait(sbxInstance string, pid int) (*model.CommandWaitR
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	resp, err := AgentCommand(context.Background(), nil, sbxInstance, bytes.NewReader(body), "/wait", http.MethodPost)
+	// Wait can be long-running, but agent /wait should return when done.
+	// We'll use a very long timeout here (1 hour) to avoid premature host-side cutoff.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
+	defer cancel()
+
+	resp, err := AgentCommand(ctx, nil, sbxInstance, bytes.NewReader(body), "/wait", http.MethodPost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to communicate with agent: %w", err)
 	}

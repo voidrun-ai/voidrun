@@ -88,6 +88,46 @@ curl http://localhost:8080/api/sandboxes \
 
 The full OpenAPI spec is in [openapi.yml](openapi.yml).
 
+## Model Context Protocol (MCP)
+
+The API exposes a **Streamable HTTP** MCP endpoint at **`POST /api/mcp`** (same auth as the REST API: **`X-API-Key`** or Bearer JWT + **`X-Org-ID`**). Tool handlers manage sandboxes, exec, and files in ```14:54:voidrun/mcp/server.go```.
+
+### Use VoidRun MCP as a tool in Cursor
+
+1. Start the API (Docker Compose on **8080**, or local `go run` and set **`SERVER_PORT`** if not using 8080).
+2. Export a valid API key in the environment Cursor inherits (desktop launchers often do not load shell rc files):
+
+   ```bash
+   export VOIDRUN_API_KEY="hf_your_key_here"
+   ```
+
+3. Project config lives at **[`.cursor/mcp.json`](../.cursor/mcp.json)** in this repo. Edit the **`url`** if your server is not at `http://127.0.0.1:8080/api/mcp` (for example `http://127.0.0.1:33944/api/mcp` for the default local port).
+4. Reload MCP in Cursor (**Settings → MCP**) and confirm **voidrun** connects. Check **Output → MCP** if initialization fails.
+
+Secrets should stay in **`${env:VOIDRUN_API_KEY}`**; do not commit real keys. For **Clerk JWT** instead of an API key, Cursor’s static **`headers`** map is awkward for short-lived tokens; prefer an API key for this integration.
+
+### Other ways to test MCP
+
+1. **MCP Inspector (recommended)** — Official UI and CLI for Streamable HTTP. Requires Node **^22.7.5** per [modelcontextprotocol/inspector](https://github.com/modelcontextprotocol/inspector).
+
+   - **UI:** `npx @modelcontextprotocol/inspector` → open **http://localhost:6274**, choose transport **streamable-http**, set server URL to your **`/api/mcp`** endpoint (query shortcut: `?transport=streamable-http&serverUrl=http://127.0.0.1:8080/api/mcp`). Configure auth so **`X-API-Key`** is sent (use the sidebar auth / header options; Inspector documents Bearer for SSE, but **CLI** below supports arbitrary headers).
+   - **CLI (scriptable / CI-friendly):**
+
+     ```bash
+     npx @modelcontextprotocol/inspector --cli http://127.0.0.1:8080/api/mcp \
+       --transport http \
+       --header "X-API-Key: hf_your_key_here" \
+       --method tools/list
+     ```
+
+     Use **`--method tools/call`** with **`--tool-name`** / **`--tool-arg`** to exercise a specific tool.
+
+2. **Raw HTTP** — Any client that can send **`Content-Type: application/json`** JSON-RPC to **`POST /api/mcp`**, plus **`X-API-Key`**, then reuse **`Mcp-Session-Id`** from the **`initialize`** response on later POSTs (see [mark3labs/mcp-go](https://github.com/mark3labs/mcp-go) **`streamable_http_test.go`** for request shapes).
+
+3. **API platforms** — **Bruno**, **Insomnia**, or **Postman**: run **`initialize`**, capture **`Mcp-Session-Id`**, then **`tools/list`** / **`tools/call`** in separate requests with the same header.
+
+4. **Automated tests in-repo** — There is no dedicated **`voidrun/mcp/*_test.go`** yet; you can add an integration test that builds the Gin router (or uses **`httptest`**) and posts the same JSON-RPC sequence, or call the Inspector CLI from a shell script in CI.
+
 ## Package Layout (Public)
 
 All previously `internal/*` and `pkg/*` packages are now top-level public packages for extension use-cases (for example from `voidrun-ee`):

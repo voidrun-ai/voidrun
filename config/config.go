@@ -59,6 +59,7 @@ type SystemUserConfig struct {
 	ID    primitive.ObjectID
 	Name  string
 	Email string
+	OrgID primitive.ObjectID
 }
 
 // AutoLifecycleConfig controls automatic sandbox lifecycle transitions
@@ -171,6 +172,7 @@ const (
 	DefaultClerkPublishableKey     = ""
 	DefaultClerkJWKSURL            = ""
 	DefaultClerkEnabled            = false
+	DefaultLocalMode               = false
 	DefaultSystemUserName          = "System"
 	DefaultSystemUserEmail         = "system@local"
 	DefaultSandboxVCPUs            = 1

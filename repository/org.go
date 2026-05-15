@@ -16,6 +16,7 @@ import (
 // IOrgRepository defines organization persistence
 type IOrgRepository interface {
 	Create(ctx context.Context, org *model.Org) (*model.Org, error)
+	FindByName(ctx context.Context, name string) (*model.Org, error)
 	FindByOwner(ctx context.Context, ownerID primitive.ObjectID) (*model.Org, error)
 	FindByID(ctx context.Context, id primitive.ObjectID) (*model.Org, error)
 	FindByMember(ctx context.Context, memberID primitive.ObjectID) ([]*model.Org, error)
@@ -50,6 +51,18 @@ func (r *OrgRepository) Create(ctx context.Context, org *model.Org) (*model.Org,
 func (r *OrgRepository) FindByOwner(ctx context.Context, ownerID primitive.ObjectID) (*model.Org, error) {
 	var org *model.Org
 	err := r.collection.FindOne(ctx, bson.M{"ownerId": ownerID}).Decode(&org)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return org, nil
+}
+
+func (r *OrgRepository) FindByName(ctx context.Context, name string) (*model.Org, error) {
+	var org *model.Org
+	err := r.collection.FindOne(ctx, bson.M{"name": name}).Decode(&org)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil

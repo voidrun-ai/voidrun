@@ -124,8 +124,13 @@ func NewAuthCache(cfg *config.Config) (*AuthCache, error) {
 	}, nil
 }
 
+// key returns a stable Redis cache suffix: last 32 bytes when len(plaintext) > 32,
+// otherwise the full string (avoids slice panic on short keys like dev-mode).
 func key(plaintext string) string {
-	return plaintext[len(plaintext)-32:] // use last 32 chars
+	if len(plaintext) <= 32 {
+		return plaintext
+	}
+	return plaintext[len(plaintext)-32:]
 }
 
 // GetAPIKey retrieves cached auth data for an API key

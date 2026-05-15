@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -32,13 +33,16 @@ func NewPTYHandler(dialer *service.VsockWSDialer, sessionService *service.PTYSes
 
 var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
-// Proxy handles the ephemeral PTY WebSocket connection (existing functionality)
-func (h *PTYHandler) Proxy(c *gin.Context) {
+// Proxy handles the ephemeral PTY WebSocket connection.
+// WebSocket safety: once Upgrade() is called the response is owned by the WS
+// protocol — return nil after that point, errors before are surfaced as JSON.
+func (h *PTYHandler) Proxy(c *gin.Context) error {
 	sbxInstance := c.Param("id")
 
 	clientConn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		return
+		// Upgrader already wrote an HTTP error response; WriteError will no-op.
+		return nil
 	}
 	defer clientConn.Close()
 
@@ -47,328 +51,204 @@ func (h *PTYHandler) Proxy(c *gin.Context) {
 
 	agentConn, _, err := h.dialer.DialContext(ctx, "ws://"+sbxInstance+"/pty", nil)
 	if err != nil {
-		return
+		return nil // client is already upgraded; nothing useful to write
 	}
 	defer agentConn.Close()
 
-	// Use WaitGroup to ensure both goroutines complete before closing
-	var wg sync.WaitGroup
-
-	// Create a cancellation channel for graceful shutdown
-	shutdownChan := make(chan struct{})
-	var shutdownOnce sync.Once
-	closeShutdown := func() {
-		shutdownOnce.Do(func() {
-			close(shutdownChan)
-		})
-	}
-
-	// Client -> Agent (Input)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-shutdownChan:
-				return
-			default:
-			}
-
-			clientConn.SetReadDeadline(time.Time{})
-			mt, msg, err := clientConn.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
-					// Log unexpected close errors
-					_ = err
-				}
-				closeShutdown() // Signal other goroutine to exit
-				return
-			}
-
-			// Send to agent with timeout
-			agentConn.SetWriteDeadline(time.Time{})
-			if err = agentConn.WriteMessage(mt, msg); err != nil {
-				closeShutdown()
-				return
-			}
-		}
-	}()
-
-	// Agent -> Client (Output)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-shutdownChan:
-				return
-			default:
-			}
-
-			agentConn.SetReadDeadline(time.Time{})
-			mt, msg, err := agentConn.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
-					_ = err
-				}
-				closeShutdown() // Signal other goroutine to exit
-				return
-			}
-
-			// Send to client with timeout
-			clientConn.SetWriteDeadline(time.Time{})
-			if err = clientConn.WriteMessage(mt, msg); err != nil {
-				closeShutdown()
-				return
-			}
-		}
-	}()
-
-	// Wait for both goroutines to complete
-	wg.Wait()
+	proxyWebSocket(clientConn, agentConn)
+	return nil
 }
 
 // CreateSession handles POST /sandboxes/:id/pty/sessions
-func (h *PTYHandler) CreateSession(c *gin.Context) {
+func (h *PTYHandler) CreateSession(c *gin.Context) error {
 	id := c.Param("id")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
-	// Call agent to create session
 	session, err := h.sessionService.CreateSession(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to create session", err.Error()))
-		return
+		return util.ErrInternal("Failed to create session", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Session created", session))
+	return nil
 }
 
 // ListSessions handles GET /sandboxes/:id/pty/sessions
-func (h *PTYHandler) ListSessions(c *gin.Context) {
+func (h *PTYHandler) ListSessions(c *gin.Context) error {
 	id := c.Param("id")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
 
-	// Call agent to list sessions
 	sessions, err := h.sessionService.ListSessions(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to list sessions", err.Error()))
-		return
+		return util.ErrInternal("Failed to list sessions", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sessions retrieved", sessions))
+	return nil
 }
 
-// ConnectSession handles WebSocket connection to a persistent session
-func (h *PTYHandler) ConnectSession(c *gin.Context) {
+// ConnectSession handles WebSocket connection to a persistent session.
+// Same WebSocket safety note as Proxy.
+func (h *PTYHandler) ConnectSession(c *gin.Context) error {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
-	// Upgrade client connection to WebSocket
+
 	clientConn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		return
+		return nil // upgrader wrote error
 	}
 	defer clientConn.Close()
 
-	// Connect to agent's session WebSocket
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
 	agentURL := fmt.Sprintf("ws://%s/pty/sessions/%s", id, sessionID)
 	agentConn, _, err := h.dialer.DialContext(ctx, agentURL, nil)
 	if err != nil {
-		return
+		return nil // already upgraded; nothing to write
 	}
 	defer agentConn.Close()
 
-	// Proxy bidirectionally
-	var wg sync.WaitGroup
-	shutdownChan := make(chan struct{})
-	var shutdownOnce sync.Once
-	closeShutdown := func() {
-		shutdownOnce.Do(func() {
-			close(shutdownChan)
-		})
-	}
-
-	// Client -> Agent (Input)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-shutdownChan:
-				return
-			default:
-			}
-
-			clientConn.SetReadDeadline(time.Time{})
-			mt, msg, err := clientConn.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
-					_ = err
-				}
-				closeShutdown()
-				return
-			}
-
-			agentConn.SetWriteDeadline(time.Time{})
-			if err = agentConn.WriteMessage(mt, msg); err != nil {
-				closeShutdown()
-				return
-			}
-		}
-	}()
-
-	// Agent -> Client (Output)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-shutdownChan:
-				return
-			default:
-			}
-
-			agentConn.SetReadDeadline(time.Time{})
-			mt, msg, err := agentConn.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
-					_ = err
-				}
-				closeShutdown()
-				return
-			}
-
-			clientConn.SetWriteDeadline(time.Time{})
-			if err = clientConn.WriteMessage(mt, msg); err != nil {
-				closeShutdown()
-				return
-			}
-		}
-	}()
-
-	wg.Wait()
+	proxyWebSocket(clientConn, agentConn)
+	return nil
 }
 
 // DeleteSession handles DELETE /sandboxes/:id/pty/sessions/:sessionId
-func (h *PTYHandler) DeleteSession(c *gin.Context) {
+func (h *PTYHandler) DeleteSession(c *gin.Context) error {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
-	// Call agent to delete session
+
 	if err := h.sessionService.DeleteSession(c.Request.Context(), id, sessionID); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to delete session", err.Error()))
-		return
+		return util.ErrInternal("Failed to delete session", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Session deleted", nil))
+	return nil
 }
 
 // ExecuteCommand handles POST /sandboxes/:id/pty/sessions/:sessionId/execute
-func (h *PTYHandler) ExecuteCommand(c *gin.Context) {
+func (h *PTYHandler) ExecuteCommand(c *gin.Context) error {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
-	// Parse request body
+
 	var req struct {
 		Command string `json:"command" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid request", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid request", err.Error())
 	}
 
-	// Call agent to execute command
 	if err := h.sessionService.ExecuteCommand(c.Request.Context(), id, sessionID, req.Command); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to execute command", err.Error()))
-		return
+		return util.ErrInternal("Failed to execute command", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Command sent", nil))
+	return nil
 }
 
 // GetBuffer handles GET /sandboxes/:id/pty/sessions/:sessionId/buffer
-func (h *PTYHandler) GetBuffer(c *gin.Context) {
+func (h *PTYHandler) GetBuffer(c *gin.Context) error {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
-	// Call agent to get buffer
+
 	buffer, err := h.sessionService.GetBuffer(c.Request.Context(), id, sessionID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to get buffer", err.Error()))
-		return
+		return util.ErrInternal("Failed to get buffer", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Buffer retrieved", buffer))
+	return nil
 }
 
 // ResizeTerminal handles POST /sandboxes/:id/pty/sessions/:sessionId/resize
-func (h *PTYHandler) ResizeTerminal(c *gin.Context) {
+func (h *PTYHandler) ResizeTerminal(c *gin.Context) error {
 	id := c.Param("id")
 	sessionID := c.Param("sessionId")
 
-	if err := h.isSandboxRunning(c, id); err != nil {
-		c.JSON(http.StatusNotFound, model.NewErrorResponse(err.Error(), ""))
-		return
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
 	}
-	// Parse request body
+
 	var req struct {
 		Rows uint16 `json:"rows" binding:"required"`
 		Cols uint16 `json:"cols" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid request", err.Error()))
-		return
+		return util.ErrBadRequest("Invalid request", err.Error())
 	}
 
-	// Call agent to resize terminal
 	if err := h.sessionService.ResizeTerminal(c.Request.Context(), id, sessionID, req.Rows, req.Cols); err != nil {
-		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("Failed to resize terminal", err.Error()))
-		return
+		return util.ErrInternal("Failed to resize terminal", err)
 	}
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Terminal resized", nil))
+	return nil
 }
 
-func (h *PTYHandler) isSandboxRunning(c *gin.Context, sandboxId string) error {
-	orgID, err := util.GetOrgIDFromContext(c)
-	if err != nil {
-		return err
+// ---------------------------------------------------------------------------
+// proxyWebSocket — shared bidirectional relay for Proxy and ConnectSession
+// ---------------------------------------------------------------------------
+
+// proxyWebSocket relays messages bidirectionally between client and agent
+// WebSocket connections until either side closes.
+func proxyWebSocket(client, agent *websocket.Conn) {
+	shutdownChan := make(chan struct{})
+	var shutdownOnce sync.Once
+	closeShutdown := func() {
+		shutdownOnce.Do(func() { close(shutdownChan) })
 	}
 
-	err = h.sandboxService.EnsureRunning(c.Request.Context(), orgID, sandboxId)
-	if err != nil {
-		return err
+	var wg sync.WaitGroup
+
+	relay := func(src, dst *websocket.Conn, label string) {
+		defer wg.Done()
+		for {
+			select {
+			case <-shutdownChan:
+				return
+			default:
+			}
+			src.SetReadDeadline(time.Time{})
+			mt, msg, err := src.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
+					log.Printf("[PTY] %s connection closed unexpectedly: %v", label, err)
+				}
+				closeShutdown()
+				return
+			}
+			dst.SetWriteDeadline(time.Time{})
+			if err = dst.WriteMessage(mt, msg); err != nil {
+				closeShutdown()
+				return
+			}
+		}
 	}
 
-	// Touch activity for auto-pause tracking (async, fire-and-forget)
-	go h.sandboxService.TouchActivity(c.Request.Context(), orgID, sandboxId)
-
-	return nil
+	wg.Add(2)
+	go relay(client, agent, "client→agent")
+	go relay(agent, client, "agent→client")
+	wg.Wait()
 }
