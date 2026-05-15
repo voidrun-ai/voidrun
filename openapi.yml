@@ -3086,7 +3086,7 @@ paths:
       tags:
         - Images
       summary: List images
-      description: Get all available base images
+      description: Get active base images visible to the organization (inactive or superseded images are omitted)
       operationId: listImages
       security:
         - ApiKeyAuth: []

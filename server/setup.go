@@ -189,6 +189,7 @@ func PopulateInitialData(cfg *config.Config, repos *Repositories) error {
 			ID:        primitive.NewObjectID(),
 			Name:      "alpine",
 			Tag:       "latest",
+			Active:    true,
 			CreatedBy: systemUserID,
 		}); err != nil {
 			return err
@@ -197,6 +198,7 @@ func PopulateInitialData(cfg *config.Config, repos *Repositories) error {
 			ID:        primitive.NewObjectID(),
 			Name:      "debian",
 			Tag:       "latest",
+			Active:    true,
 			CreatedBy: systemUserID,
 		}); err != nil {
 			return err

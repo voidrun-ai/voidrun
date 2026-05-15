@@ -28,13 +28,10 @@ func NewImageService(cfg *config.Config, repo repository.IImageRepository) *Imag
 	return &ImageService{repo: repo, cfg: cfg}
 }
 
-// ListByOrg returns system images and images owned by the org.
+// ListByOrg returns active system images and active images owned by the org.
 func (s *ImageService) ListByOrg(ctx context.Context, orgID primitive.ObjectID) ([]*model.Image, error) {
 	filter := bson.M{
-		"$or": []bson.M{
-			{"orgId": orgID},
-			{"system": true, "active": true},
-		},
+		"active": true,
 	}
 
 	opts := options.FindOptions{}

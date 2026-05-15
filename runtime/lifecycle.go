@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -56,7 +57,6 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	vsockPath := GetVsockPath(spec.ID)
 
 	// 3. Start "Empty" Cloud Hypervisor Process
-	clhPath, _ := exec.LookPath("cloud-hypervisor")
 	eventPath := GetEventPath(spec.ID)
 	args := []string{
 		"--api-socket", socketPath,
@@ -65,7 +65,7 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	}
 
 	fmt.Printf(">> [Native] Spawning empty CLH process (API Mode)...\n")
-	cmd := exec.Command(clhPath, args...)
+	cmd := exec.Command(cfg.CHBinary, args...)
 
 	// Redirect IO
 	logFile, _ := os.Create(logPath)
@@ -173,6 +173,173 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 		return fmt.Errorf("vm.boot failed: %w", err)
 	}
 
+	if err := EnableTap(cfg.Network.BridgeName, tapName); err != nil {
+		Stop(spec.ID)
+		return fmt.Errorf("network attach failed (bridge: %s, tap: %s): %v", cfg.Network.BridgeName, tapName, err)
+	}
+
+	fmt.Printf("   [+] VM Active! PID: %d, Tap: %s\n", pid, tapName)
+	return nil
+}
+
+func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+	defer util.Track("Sandbox Start (Total CLI)")()
+
+	overlayPath, _ = filepath.Abs(overlayPath)
+
+	// Use centralized path helpers
+	socketPath := GetSocketPath(spec.ID)
+	logPath := GetLogPath(spec.ID)
+	pidPath := GetPIDPath(spec.ID)
+	vsockPath := GetVsockPath(spec.ID)
+	eventPath := GetEventPath(spec.ID)
+
+	tapName := spec.TapName
+	macAddr := spec.MacAddress
+	log.Printf("   [CreateCLI] spec.TapName=%q, spec.MacAddress=%q\n", tapName, macAddr)
+
+	// 1. Map Configurations to CLI Strings
+	cmdLine := strings.TrimSpace(cfg.Sandbox.KernelCmdline)
+
+	consoleMode := "off"
+	if cfg.Sandbox.DebugBootConsole {
+		consoleMode = "tty"
+	}
+
+	imageType := "qcow2"
+	backingFiles := "on"
+	if cfg.Sandbox.DiskFormat == "raw" {
+		imageType = "raw"
+		backingFiles = "off"
+	} else if cfg.Sandbox.DiskFormat == "qcow2-flat" {
+		imageType = "qcow2"
+		backingFiles = "off"
+	}
+
+	// 2. Build the Base CLI Arguments
+	args := []string{
+		"--api-socket", socketPath, // Still useful for monitoring/poweroff
+		"--log-file", logPath,
+		"--event-monitor", "path=" + eventPath,
+		"--kernel", cfg.Paths.KernelPath,
+		"--cmdline", cmdLine,
+		"--cpus", fmt.Sprintf("boot=%d,max=%d", spec.CPUs, spec.CPUs),
+		"--memory", fmt.Sprintf("size=%dM,shared=on,mergeable=on", spec.MemoryMB),
+		"--disk", fmt.Sprintf("path=%s,backing_files=%s,image_type=%s", overlayPath, backingFiles, imageType),
+		"--net", fmt.Sprintf("tap=%s,mac=%s", tapName, macAddr),
+		"--vsock", fmt.Sprintf("cid=%d,socket=%s", getCidFromIP(spec.IPAddress), vsockPath),
+		"--rng", "src=/dev/urandom",
+		"--serial", consoleMode,
+		"--console", consoleMode,
+	}
+
+	if cfg.Paths.InitrdPath != "" {
+		initrdPath, _ := filepath.Abs(cfg.Paths.InitrdPath)
+		args = append(args, "--initramfs", initrdPath)
+	}
+
+	// 3. Build Dynamic Landlock Rules
+	if cfg.Sandbox.Seccomp {
+		args = append(args, "--seccomp", "true")
+		args = append(args, "--landlock")
+
+		absKernel, _ := filepath.Abs(cfg.Paths.KernelPath)
+		absBaseDir, _ := filepath.Abs(cfg.Paths.BaseImagesDir)
+		absInstanceDir, _ := filepath.Abs(filepath.Dir(overlayPath))
+
+		// Derive backing file path the same way disk.go does
+		baseName := spec.Type + "-base.qcow2"
+		if idx := strings.Index(spec.Type, ":"); idx != -1 {
+			name := spec.Type[:idx]
+			tag := spec.Type[idx+1:]
+			baseName = fmt.Sprintf("%s-%s.qcow2", name, tag)
+		}
+		absBackingFile, _ := filepath.Abs(filepath.Join(absBaseDir, baseName))
+
+		var llRules []string
+
+		// Use a map to collect unique rules, then we'll sort them
+		// Key: path, Value: access string ("r" or "rw")
+		rulesMap := make(map[string]string)
+
+		// Kernel image (read file)
+		rulesMap[absKernel] = "r"
+		// Log file (write)
+		rulesMap[logPath] = "rw"
+		// Entire instance directory: overlay.qcow2, vm.sock, vsock.sock, vm.evt
+		rulesMap[absInstanceDir] = "rw"
+		// RNG
+		rulesMap["/dev/urandom"] = "r"
+		// TUN/TAP and sysfs
+		rulesMap["/dev/net/tun"] = "rw"
+		rulesMap["/sys"] = "r"
+
+		if cfg.Paths.InitrdPath != "" {
+			absInitrd, _ := filepath.Abs(cfg.Paths.InitrdPath)
+			rulesMap[absInitrd] = "r"
+		}
+
+		if backingFiles == "on" {
+			// Landlock path traversal requires every ancestor directory to have ReadDir.
+			absDataDir, _ := filepath.Abs(filepath.Dir(absBaseDir))
+			rulesMap[absDataDir] = "r"
+			rulesMap[absBaseDir] = "r"
+			rulesMap[absBackingFile] = "r"
+		}
+
+		// Sort rules by path length (shortest first) to ensure broader rules
+		// are added before narrower ones. This avoids a Landlock bug where
+		// adding a specific file rule before a broad directory rule causes
+		// siblings of the specific file to be denied access.
+		var paths []string
+		for p := range rulesMap {
+			paths = append(paths, p)
+		}
+		sort.Slice(paths, func(i, j int) bool {
+			return len(paths[i]) < len(paths[j])
+		})
+
+		for _, p := range paths {
+			llRules = append(llRules, fmt.Sprintf("path=%s,access=%s", p, rulesMap[p]))
+		}
+
+		args = append(args, "--landlock-rules")
+		args = append(args, llRules...)
+
+	}
+
+	log.Println(args)
+
+	// 4. Start Cloud Hypervisor Process
+	fmt.Printf(">> [Native] Spawning full CLH process (CLI Mode)...\n")
+	cmd := exec.Command(cfg.CHBinary, args...)
+
+	logFile, _ := os.Create(logPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // Daemonize
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("process start failed: %v", err)
+	}
+
+	pid := cmd.Process.Pid
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
+		cmd.Process.Kill()
+		return err
+	}
+	cmd.Process.Release()
+
+	// 5. Wait for Socket (Acts as a Readiness Probe)
+	// Because we passed the full config, CH creates the socket and boots immediately.
+	client := NewAPIClient(socketPath)
+	if err := client.WaitForSocket(2 * time.Second); err != nil {
+		logs, _ := os.ReadFile(logPath)
+		Stop(spec.ID)
+		return fmt.Errorf("VM crashed on start. Logs:\n%s", string(logs))
+	}
+
+	// 6. Network Attach
 	if err := EnableTap(cfg.Network.BridgeName, tapName); err != nil {
 		Stop(spec.ID)
 		return fmt.Errorf("network attach failed (bridge: %s, tap: %s): %v", cfg.Network.BridgeName, tapName, err)

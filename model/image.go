@@ -12,10 +12,10 @@ type Image struct {
 	Name      string             `json:"name" bson:"name"`
 	Tag       string             `json:"tag" bson:"tag"`
 	System    bool               `json:"system" bson:"system"`
-	SizeGB    int64              `json:"sizeGB" bson:"sizeGB"`
-	Active    bool               `json:"active" bson:"active"`
 	OrgID       primitive.ObjectID `json:"orgId" bson:"orgId"`
+	SizeGB      int64              `json:"sizeGb" bson:"sizeGb"`
+	Active      bool               `json:"active" bson:"active"`
 	Description string             `json:"description" bson:"description"`
 	CreatedAt   time.Time          `json:"createdAt" bson:"createdAt"`
-	CreatedBy primitive.ObjectID `json:"createdBy" bson:"createdBy"`
+	CreatedBy   primitive.ObjectID `json:"createdBy" bson:"createdBy"`
 }

@@ -149,21 +149,17 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		req.Image = s.cfg.Sandbox.DefaultImage
 	}
 
-	// Resolve image name/tag to actual image record
-	resolvedImg, err := s.imageRepo.ResolveImage(ctx, req.OrgID, req.Image)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve image %q: %w", req.Image, err)
-	}
-	// Update request to use the specific name:tag resolved
-	req.Image = fmt.Sprintf("%s:%s", resolvedImg.Name, resolvedImg.Tag)
-
-	if resolvedImg.SizeGB > 0 {
-		diskMB = int(resolvedImg.SizeGB * 1024)
+	imageName := req.Image
+	if !strings.Contains(imageName, ":") {
+		img, err := s.imageRepo.GetLatestByNameForOrg(imageName, req.OrgID)
+		if err == nil && img != nil && img.Tag != "" {
+			imageName = fmt.Sprintf("%s:%s", img.Name, img.Tag)
+		}
 	}
 
 	spec := model.SandboxSpec{
 		ID:        instanceID,
-		Type:      req.Image,
+		Type:      imageName,
 		CPUs:      cpu,
 		MemoryMB:  mem,
 		DiskMB:    diskMB,
@@ -189,7 +185,14 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
-	if err := runtime.Create(*s.cfg, spec, overlay); err != nil {
+
+	// Prepare storage (pass config by value, not pointer)
+	overlay, err := runtime.PrepareInstance(ctx, *s.cfg, spec)
+	if err != nil {
+		return nil, fmt.Errorf("storage init failed: %w", err)
+	}
+
+	if err := runtime.CreateCLI(*s.cfg, spec, overlay); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)

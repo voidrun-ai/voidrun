@@ -1,8 +1,11 @@
 package config
 
 import (
+	"fmt"
+	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -21,6 +24,7 @@ type PathsConfig struct {
 	InstancesDir  string
 	KernelPath    string
 	InitrdPath    string
+	CHPath        string // cloud-hypervisor binary (CH_PATH)
 }
 
 // Network configuration
@@ -71,6 +75,7 @@ type AutoLifecycleConfig struct {
 type Config struct {
 	Server                ServerConfig
 	Paths                 PathsConfig
+	CHBinary              string // absolute cloud-hypervisor binary; set by ResolveDerivedPaths
 	Network               NetworkConfig
 	Mongo                 MongoConfig
 	Redis                 RedisConfig
@@ -108,7 +113,8 @@ type SandboxConfig struct {
 	DebugBootConsole    bool
 	DefaultOverlayImage string
 	DefaultHostname     string
-	DiskFormat          string // "qcow2" (backing file), "qcow2-flat" (standalone copy), "raw" (reflink)
+	DiskFormat          string
+	Seccomp             bool
 }
 
 // Health monitor configuration
@@ -151,6 +157,7 @@ const (
 	DefaultInstancesDir  = "/var/lib/voidrun/instances"
 	DefaultKernelPath    = "/var/lib/voidrun/base-images/vmlinux"
 	DefaultInitrdPath    = ""
+	DefaultCHPath        = "/usr/local/bin/cloud-hypervisor"
 	DefaultBridgeName    = "vmbr0"
 	DefaultTapPrefix     = "ttap-"
 	DefaultGatewayIP     = "192.168.100.1/22"
@@ -177,7 +184,9 @@ const (
 	DefaultSandboxDebugBootConsole = false
 	DefaultOverlayImage            = "overlay.qcow2"
 	DefaultSandboxHostname         = "voidrun"
-	DefaultSandboxDiskFormat       = "qcow2" // "qcow2" | "qcow2-flat" | "raw"
+	DefaultAuthLocalMode           = false
+	DefaultSandboxDiskFormat       = "qcow2"
+	DefaultSandboxSeccomp          = true
 	// Health monitor defaults
 	DefaultHealthEnabled          = true
 	DefaultHealthIntervalSec      = 60
@@ -229,7 +238,7 @@ const (
 
 // New returns a new Config with default values
 func New() *Config {
-	return &Config{
+	c := &Config{
 		Server: ServerConfig{
 			Port: getEnv("SERVER_PORT", DefaultServerPort),
 			Host: getEnv("SERVER_HOST", DefaultServerHost),
@@ -239,6 +248,7 @@ func New() *Config {
 			InstancesDir:  getEnv("INSTANCES_DIR", DefaultInstancesDir),
 			KernelPath:    getEnv("KERNEL_PATH", DefaultKernelPath),
 			InitrdPath:    getEnv("INITRD_PATH", DefaultInitrdPath),
+			CHPath:        getEnv("CH_PATH", DefaultCHPath),
 		},
 		Network: NetworkConfig{
 			BridgeName:  getEnv("BRIDGE_NAME", DefaultBridgeName),
@@ -267,7 +277,7 @@ func New() *Config {
 			ClerkPublishableKey: getEnv("CLERK_PUBLISHABLE_KEY", DefaultClerkPublishableKey),
 			ClerkJWKSURL:        getEnv("CLERK_JWKS_URL", DefaultClerkJWKSURL),
 			ClerkEnabled:        getEnvBool("CLERK_ENABLED", DefaultClerkEnabled),
-			LocalMode:           getEnvBool("LOCAL_MODE", DefaultLocalMode),
+			LocalMode:           getEnvBool("AUTH_LOCAL_MODE", DefaultAuthLocalMode),
 		},
 		SystemUser: SystemUserConfig{
 			Name:  getEnv("SYSTEM_USER_NAME", DefaultSystemUserName),
@@ -284,6 +294,7 @@ func New() *Config {
 			DefaultOverlayImage: getEnv("SANDBOX_DEFAULT_OVERLAY_IMAGE", DefaultOverlayImage),
 			DefaultHostname:     getEnv("SANDBOX_DEFAULT_HOSTNAME", DefaultSandboxHostname),
 			DiskFormat:          getEnv("SANDBOX_DISK_FORMAT", DefaultSandboxDiskFormat),
+			Seccomp:             getEnvBool("SANDBOX_SECCOMP", DefaultSandboxSeccomp),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),
@@ -319,6 +330,13 @@ func New() *Config {
 		APIKeyCacheTTLSeconds: getEnvInt("API_KEY_CACHE_TTL_SECONDS", DefaultAPIKeyCacheTTLSeconds),
 		ClerkCacheTTLSeconds:  getEnvInt("CLERK_CACHE_TTL_SECONDS", DefaultClerkCacheTTLSeconds),
 	}
+
+	chPath, err := resolveCHBinaryPath(c.Paths.CHPath)
+	if err != nil {
+		log.Fatalln("Error resolving CH binary path:", err)
+	}
+	c.CHBinary = chPath
+	return c
 }
 
 // Address returns the server address string
@@ -401,4 +419,19 @@ func (n *NetworkConfig) GetCleanGateway() string {
 	}
 	// Return as is if no slash or error
 	return n.GatewayIP
+}
+
+func resolveCHBinaryPath(chPath string) (string, error) {
+	p := strings.TrimSpace(chPath)
+	if p == "" {
+		return "", fmt.Errorf("CH binary path is empty (set CH_PATH)")
+	}
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p), nil
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("CH binary path: %w", err)
+	}
+	return filepath.Clean(abs), nil
 }
