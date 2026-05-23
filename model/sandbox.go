@@ -27,6 +27,7 @@ type Sandbox struct {
 	Region           string             `bson:"region,omitempty" json:"region,omitempty"`
 	RefID            string             `bson:"refId,omitempty" json:"refId,omitempty"`
 	TapName          string             `bson:"tapName,omitempty" json:"-"`
+	NetNSName        string             `bson:"netnsName,omitempty" json:"-"`
 	TapDeleted       bool               `bson:"tapDeleted,omitempty" json:"-"`
 	BillingCompleted bool               `bson:"billingCompleted,omitempty" json:"-"`
 }
@@ -41,4 +42,5 @@ type SandboxSpec struct {
 	EnvVars    map[string]string `json:"env_vars"`
 	TapName    string            `json:"tap_name"`
 	MacAddress string            `json:"mac_address"`
+	NetNSName  string            `json:"netns_name"`
 }

@@ -162,7 +162,7 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
 
-		if err := runtime.Delete(id, sb.TapName); err != nil {
+		if err := runtime.Delete(id, sb.TapName, sb.NetNSName); err != nil {
 			log.Printf("[lifecycle] auto-delete runtime failed for %s (%s): %v", sb.Name, id, err)
 			// Continue with cleanup anyway — the VM may already be gone
 		}

@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strings"
 
+	"voidrun/config"
 	"voidrun/model"
 	"voidrun/service"
+	"voidrun/util"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -144,6 +146,38 @@ func optionalNumber(req mcp.CallToolRequest, key string, defaultVal int) int {
 	}
 }
 
+func optionalBoolPtr(req mcp.CallToolRequest, key string) *bool {
+	v, ok := req.GetArguments()[key]
+	if !ok || v == nil {
+		return nil
+	}
+	if b, ok := v.(bool); ok {
+		return &b
+	}
+	return nil
+}
+
+func optionalStringMap(req mcp.CallToolRequest, key string) map[string]string {
+	v, ok := req.GetArguments()[key]
+	if !ok || v == nil {
+		return nil
+	}
+	raw, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, val := range raw {
+		if s, ok := val.(string); ok {
+			out[k] = s
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // requiredNumber extracts a required numeric argument.
 func requiredNumber(req mcp.CallToolRequest, key string) (int, error) {
 	v, ok := req.GetArguments()[key]
@@ -184,17 +218,32 @@ func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	image := optionalString(req, "image", "alpine")
+	image := optionalString(req, "image", "code")
 	cpu := optionalNumber(req, "cpu", 1)
-	mem := optionalNumber(req, "memory", 1024)
+	mem := optionalNumber(req, "mem", config.DefaultSandboxMemoryMB)
+
+	sync := optionalBoolPtr(req, "sync")
+	autoSleep := optionalBoolPtr(req, "autoSleep")
+	envVars := optionalStringMap(req, "envVars")
+	region := optionalString(req, "region", "")
+	refID := optionalString(req, "refId", "")
+
+	if err := util.ValidateCreateSandboxRequest(name, cpu, mem); err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
 
 	createReq := model.CreateSandboxRequest{
-		Name:  name,
-		Image: image,
-		CPU:   cpu,
-		Mem:   mem,
-		OrgID: orgID,
-		UserID: userID,
+		Name:      name,
+		Image:     image,
+		CPU:       cpu,
+		Mem:       mem,
+		OrgID:     orgID,
+		UserID:    userID,
+		Sync:      sync,
+		EnvVars:   envVars,
+		AutoSleep: autoSleep,
+		Region:    region,
+		RefID:     refID,
 	}
 
 	sandbox, err := h.SandboxService.Create(ctx, createReq)

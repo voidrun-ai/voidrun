@@ -65,6 +65,7 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 			"refId":          1,
 			"tapName":        1,
 			"tapDeleted":     1,
+			"netnsName":      1,
 		},
 	}
 }
@@ -169,7 +170,10 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	// Rollback function for cleanup on failure
 	cleanup := func() {
 		fmt.Printf("   [!] Rollback: Deleting failed instance %s\n", spec.ID)
-		if spec.TapName != "" {
+		// If NetNS was already created, tear it down atomically
+		if spec.NetNSName != "" {
+			_ = runtime.DeleteSandboxNetNS(spec.NetNSName)
+		} else if spec.TapName != "" {
 			_ = runtime.DeleteTap(spec.TapName)
 		}
 		os.RemoveAll(runtime.GetInstanceDir(spec.ID))
@@ -246,6 +250,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		Region:         req.Region,
 		RefID:          req.RefID,
 		TapName:        spec.TapName,
+		NetNSName:      spec.NetNSName,
 		LastActivityAt: &now,
 		Status:         "running",
 		CreatedAt:      now,
@@ -292,7 +297,7 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 		s.metrics.UnregisterSandbox(id)
 	}
 
-	if err := runtime.Delete(id, sandbox.TapName); err != nil {
+	if err := runtime.Delete(id, sandbox.TapName, sandbox.NetNSName); err != nil {
 		fmt.Printf("[WARN] Failed to delete sandbox %s: %v\n", id, err)
 	}
 
@@ -350,17 +355,20 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		}
 
 		tap := strings.TrimSpace(sandbox.TapName)
-		if tap == "" {
+		nsName := strings.TrimSpace(sandbox.NetNSName)
+		if tap == "" || nsName == "" {
+			// No existing netns — create a fresh one
 			if err := runtime.ConfigureNetwork(*s.cfg, &spec); err != nil {
 				return fmt.Errorf("cold start network setup failed: %w", err)
 			}
-			if ok, err := s.repo.UpdateTapNameByIDAndOrg(ctx, sandbox.ID, orgID, spec.TapName); err != nil {
-				log.Printf("[WARN] failed to persist new tap name for %s: %v\n", id, err)
+			if ok, err := s.repo.UpdateNetNSByIDAndOrg(ctx, sandbox.ID, orgID, spec.TapName, spec.NetNSName); err != nil {
+				log.Printf("[WARN] failed to persist netns info for %s: %v\n", id, err)
 			} else if !ok {
-				log.Printf("[WARN] tap name update matched no document for %s\n", id)
+				log.Printf("[WARN] netns update matched no document for %s\n", id)
 			}
 		} else {
 			spec.TapName = tap
+			spec.NetNSName = nsName
 			spec.MacAddress = runtime.GenerateMAC(sandbox.IP)
 		}
 

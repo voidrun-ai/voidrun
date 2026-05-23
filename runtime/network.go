@@ -4,89 +4,209 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
-	"voidrun/util"
+	"os/exec"
+	"strings"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 )
 
 const maxIfaceNameLen = 15
 
-// CreateRandomTap creates the interface and sets MAC, BUT DOES NOT ATTACH TO BRIDGE yet.
-// This prevents EBUSY errors when Cloud Hypervisor tries to configure it.
-func CreateRandomTap(macAddr string, tapPrefix string) (string, error) {
-	defer util.Track("CreateRandomTap (Total)")()
-	// Validate that TAP prefix leaves room for 6-hex suffix (total ≤ 15)
-	if len(tapPrefix)+6 > maxIfaceNameLen {
-		return "", fmt.Errorf("tap prefix too long: len=%d; must be ≤ %d (prefix + 6 hex ≤ 15)", len(tapPrefix), maxIfaceNameLen-6)
+// CreateSandboxNetNS creates a fully isolated network namespace for a sandbox.
+// It wires it to the host bridge via a veth pair and applies strict firewall rules.
+// Returns (nsName, tapName, error). tapName is always "tap0" inside the netns.
+func CreateSandboxNetNS(bridgeName, macAddr, netPrefix string) (nsName, tapName string, err error) {
+	// Calculate how many random hex bytes we can fit.
+	// Interface name budget: maxIfaceNameLen (15). Separator "-vh-" is 4 chars.
+	// So random hex can use at most maxIfaceNameLen - 4 - len(netPrefix) characters.
+	randHexLen := maxIfaceNameLen - 4 - len(netPrefix)
+	randBytes := randHexLen / 2
+	if randBytes < 1 {
+		randBytes = 1
 	}
+
+	var lastErr error
 	for i := 0; i < 5; i++ {
-		bytes := make([]byte, 3)
-		if _, err := rand.Read(bytes); err != nil {
-			return "", err
-		}
-		tapName := tapPrefix + hex.EncodeToString(bytes)
-
-		if len(tapName) > maxIfaceNameLen {
-			return "", fmt.Errorf("tap name too long: len=%d; max=%d; reduce TAP_PREFIX", len(tapName), maxIfaceNameLen)
+		randPart, err := randomHex(randBytes)
+		if err != nil {
+			return "", "", err
 		}
 
-		tap := &netlink.Tuntap{
-			LinkAttrs: netlink.LinkAttrs{Name: tapName},
-			Mode:      netlink.TUNTAP_MODE_TAP,
-		}
+		ns := netPrefix + "-ns-" + randPart
+		hostVeth := netPrefix + "-vh-" + randPart
+		nsVeth := netPrefix + "-vn-" + randPart
 
-		if err := netlink.LinkAdd(tap); err != nil {
+		if setupErr := setupNetNS(ns, hostVeth, nsVeth, bridgeName, macAddr); setupErr != nil {
+			lastErr = setupErr
 			continue
 		}
-
-		// Configure MAC while standalone and DOWN
-		tapLink, err := netlink.LinkByName(tapName)
-		if err != nil {
-			return "", err
-		}
-
-		hwAddr, err := net.ParseMAC(macAddr)
-		if err != nil {
-			netlink.LinkDel(tapLink)
-			return "", fmt.Errorf("bad mac: %v", err)
-		}
-
-		if err := netlink.LinkSetHardwareAddr(tapLink, hwAddr); err != nil {
-			netlink.LinkDel(tapLink)
-			return "", fmt.Errorf("failed to set mac: %v", err)
-		}
-
-		// RETURN NOW. Do not attach to bridge yet.
-		return tapName, nil
+		return ns, "tap0", nil
 	}
-	return "", fmt.Errorf("failed to generate unique tap")
+	return "", "", fmt.Errorf("failed to create sandbox netns after 5 attempts, last error: %w", lastErr)
 }
 
-// EnableTap connects the TAP to the bridge and brings it UP.
-// Call this AFTER Cloud Hypervisor has started.
-func EnableTap(bridgeName string, tapName string) error {
-	tapLink, err := netlink.LinkByName(tapName)
-	if err != nil {
-		return err
+// setupNetNS performs all the steps to create a fully wired and firewalled netns.
+func setupNetNS(nsName, hostVeth, nsVeth, bridgeName, macAddr string) error {
+	var ok bool
+	// Cleanup guard: on any failure, tear down everything we created so far.
+	defer func() {
+		if !ok {
+			teardownNetNS(nsName, hostVeth)
+		}
+	}()
+
+	// 1. Create the network namespace
+	if err := exec.Command("ip", "netns", "add", nsName).Run(); err != nil {
+		return fmt.Errorf("ip netns add %s: %w", nsName, err)
 	}
 
+	// 2. Create veth pair in the host namespace (direct netlink syscall, no fork)
+	vethLink := &netlink.Veth{
+		LinkAttrs: netlink.LinkAttrs{Name: hostVeth},
+		PeerName:  nsVeth,
+	}
+	if err := netlink.LinkAdd(vethLink); err != nil {
+		return fmt.Errorf("create veth pair: %w", err)
+	}
+
+	// 3. Get the netns handle by name, then move nsVeth into it
+	nsHandle, err := netns.GetFromName(nsName)
+	if err != nil {
+		return fmt.Errorf("open netns handle %s: %w", nsName, err)
+	}
+	defer nsHandle.Close()
+
+	nsVethLink, err := netlink.LinkByName(nsVeth)
+	if err != nil {
+		return fmt.Errorf("find nsVeth %s: %w", nsVeth, err)
+	}
+	if err := netlink.LinkSetNsFd(nsVethLink, int(nsHandle)); err != nil {
+		return fmt.Errorf("move veth into netns: %w", err)
+	}
+
+	// 4. Attach host veth to bridge and bring it UP
+	hostVethLink, err := netlink.LinkByName(hostVeth)
+	if err != nil {
+		return fmt.Errorf("find hostVeth %s: %w", hostVeth, err)
+	}
 	brLink, err := netlink.LinkByName(bridgeName)
 	if err != nil {
-		return fmt.Errorf("bridge not found: %v", err)
+		return fmt.Errorf("find bridge %s: %w", bridgeName, err)
+	}
+	if err := netlink.LinkSetMaster(hostVethLink, brLink); err != nil {
+		return fmt.Errorf("attach hostVeth to bridge: %w", err)
+	}
+	if err := netlink.LinkSetUp(hostVethLink); err != nil {
+		return fmt.Errorf("up hostVeth: %w", err)
 	}
 
-	if err := netlink.LinkSetMaster(tapLink, brLink); err != nil {
-		return fmt.Errorf("failed to attach bridge: %v", err)
+	// 5. Batch configuration inside netns (br0, tap0, iptables)
+	// WARNING: The iptables-restore heredoc block (<<EOF ... EOF) MUST NOT be indented.
+	// bash requires the closing EOF to be at the exact start of the line, and iptables-restore
+	// requires its rules (e.g. *filter) to have no leading whitespace.
+	script := fmt.Sprintf(`
+			set -e
+			ip link add br0 type bridge
+			ip link set %s master br0
+			ip link set %s up
+			ip link set br0 up
+
+			ip tuntap add name tap0 mode tap
+			ip link set tap0 address %s
+			ip link set tap0 master br0
+			ip link set tap0 up
+
+			iptables-restore <<EOF
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A FORWARD -m physdev --physdev-in tap0 -m mac ! --mac-source %s -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 169.254.169.254 -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 10.0.0.0/8 -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 172.16.0.0/12 -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 192.168.0.0/16 -j DROP
+COMMIT
+EOF
+			`,
+		nsVeth, nsVeth, macAddr, macAddr)
+
+	cmd := exec.Command("ip", "netns", "exec", nsName, "bash", "-c", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("netns batch setup failed: %v, output: %s", err, string(out))
 	}
 
-	if err := netlink.LinkSetUp(tapLink); err != nil {
-		return fmt.Errorf("failed to up tap: %v", err)
-	}
-
+	ok = true
 	return nil
 }
 
+// DeleteSandboxNetNS destroys the network namespace and all resources inside it.
+// The kernel automatically garbage-collects: tap0, br0, veth-n, and all iptables rules.
+func DeleteSandboxNetNS(nsName string) error {
+	if nsName == "" {
+		return nil
+	}
+
+	var hostVeth string
+	if strings.Contains(nsName, "-ns-") {
+		// New format: e.g., "inst1-ns-abc" -> "inst1-vh-abc"
+		hostVeth = strings.Replace(nsName, "-ns-", "-vh-", 1)
+	} else if len(nsName) > 3 {
+		// Legacy format: e.g., "vr-abc123" -> "veth-h-abc123"
+		suffix := nsName[3:] // strip "vr-" prefix
+		hostVeth = "veth-h-" + suffix
+	}
+
+	if hostVeth != "" {
+		if link, err := netlink.LinkByName(hostVeth); err == nil {
+			if delErr := netlink.LinkDel(link); delErr != nil {
+				log.Printf("   [Net] Warning: failed to delete %s: %v\n", hostVeth, delErr)
+			}
+		}
+	}
+	// Delete the namespace — kernel cleans up everything inside atomically
+	if out, err := exec.Command("ip", "netns", "del", nsName).CombinedOutput(); err != nil {
+		return fmt.Errorf("ip netns del %s: %w (output: %s)", nsName, err, string(out))
+	}
+	return nil
+}
+
+// teardownNetNS is a best-effort cleanup used during failed creation attempts.
+func teardownNetNS(nsName, hostVeth string) {
+	if link, err := netlink.LinkByName(hostVeth); err == nil {
+		netlink.LinkDel(link)
+	}
+	exec.Command("ip", "netns", "del", nsName).Run()
+}
+
+// randomHex generates n random bytes encoded as a hex string.
+func randomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// GenerateMAC generates a deterministic locally-administered MAC address from an IP.
+func GenerateMAC(ip string) string {
+	mac := "02:00:00:00:00:01"
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return mac
+	}
+	ipv4 := parsedIP.To4()
+	if ipv4 == nil {
+		return mac
+	}
+	return fmt.Sprintf("02:00:%02X:%02X:%02X:%02X", ipv4[0], ipv4[1], ipv4[2], ipv4[3])
+}
+
+// DeleteTap is kept as a no-op stub for backward compatibility during migration.
+// TODO: Remove after all callers are fully migrated to DeleteSandboxNetNS.
 func DeleteTap(tapName string) error {
 	if tapName == "" {
 		return nil
@@ -96,23 +216,4 @@ func DeleteTap(tapName string) error {
 		return nil
 	}
 	return netlink.LinkDel(link)
-}
-
-func GenerateMAC(ip string) string {
-	// Fallback MAC if parsing fails
-	mac := "02:00:00:00:00:01"
-
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
-		return mac
-	}
-
-	ipv4 := parsedIP.To4()
-	if ipv4 == nil {
-		return mac
-	}
-
-	// 02:00 denotes a "Locally Administered" MAC address according to IEEE standards.
-	// The remaining 4 bytes are exactly the 4 octets of the IP address.
-	return fmt.Sprintf("02:00:%02X:%02X:%02X:%02X", ipv4[0], ipv4[1], ipv4[2], ipv4[3])
 }

@@ -14,7 +14,19 @@ const (
 	DNS1123SubdomainMaxLength = 253
 	// DNS1123LabelMaxLength is the maximum length of a DNS-1123 label
 	DNS1123LabelMaxLength = 63
+
+	SandboxMinCPU    = 1
+	SandboxMaxCPU    = 8
+	SandboxMinMemMiB = 1024
+	SandboxMaxMemMiB = 16384
 )
+
+// InvalidSandboxRequestError is returned by SandboxService.Create for client input errors.
+type InvalidSandboxRequestError struct {
+	msg string
+}
+
+func (e *InvalidSandboxRequestError) Error() string { return e.msg }
 
 // ValidateDNS1123Subdomain validates that a string conforms to DNS-1123 subdomain format.
 // This is the same validation used by Kubernetes for pod and service names.
@@ -43,4 +55,20 @@ func ValidateDNS1123Subdomain(value string) error {
 // IsDNS1123Subdomain checks if a string is a valid DNS-1123 subdomain without returning an error.
 func IsDNS1123Subdomain(value string) bool {
 	return ValidateDNS1123Subdomain(value) == nil
+}
+
+// ValidateCreateSandboxRequest checks name, cpu, and mem bounds for POST /sandboxes.
+func ValidateCreateSandboxRequest(name string, cpu, mem int) error {
+	if err := ValidateDNS1123Subdomain(name); err != nil {
+		return &InvalidSandboxRequestError{msg: "invalid name: " + err.Error()}
+	}
+	if cpu < SandboxMinCPU || cpu > SandboxMaxCPU {
+		return &InvalidSandboxRequestError{
+			msg: fmt.Sprintf("invalid cpu count: must be between %d and %d", SandboxMinCPU, SandboxMaxCPU),
+		}
+	}
+	if mem < SandboxMinMemMiB || mem > SandboxMaxMemMiB {
+		return &InvalidSandboxRequestError{msg: "invalid memory size: must be between 1 GiB and 16 GiB"}
+	}
+	return nil
 }

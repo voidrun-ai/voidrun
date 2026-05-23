@@ -11,13 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	minCPU    = 1
-	maxCPU    = 8     // Max 8 vCPUs per sandbox
-	minMemMiB = 1024  // Min 1 GiB
-	maxMemMiB = 16384 // Max 16 GiB per sandbox
-)
-
 type SandboxHandler struct {
 	sandboxService *service.SandboxService
 }
@@ -72,15 +65,8 @@ func (h *SandboxHandler) Create(c *gin.Context) error {
 		return util.ErrBadRequest(err.Error())
 	}
 
-	if err := util.ValidateDNS1123Subdomain(req.Name); err != nil {
-		return util.ErrBadRequest("invalid name: " + err.Error())
-	}
-
-	if req.CPU < minCPU || req.CPU > maxCPU {
-		return util.ErrBadRequest("invalid cpu count: must be between 1 and 8")
-	}
-	if req.Mem < minMemMiB || req.Mem > maxMemMiB {
-		return util.ErrBadRequest("invalid memory size: must be between 1 GiB and 16 GiB")
+	if err := util.ValidateCreateSandboxRequest(req.Name, req.CPU, req.Mem); err != nil {
+		return util.ErrBadRequest(err.Error())
 	}
 
 	orgID, err := util.GetOrgIDFromContext(c)

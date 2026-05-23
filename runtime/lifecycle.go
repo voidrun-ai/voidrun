@@ -22,24 +22,23 @@ import (
 const defaultNetDeviceID = "net0"
 
 func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {
-
-	// fmt.Printf("   [CONFIG] Bridge Name: '%s'\n", cfg.Network.BridgeName)
-	// fmt.Printf("   [CONFIG] TAP Prefix: '%s'\n", cfg.Network.TapPrefix)
 	// Generate MAC based on IP
 	macAddr := GenerateMAC(spec.IPAddress)
 	log.Printf("   [Net] Generated MAC %s for IP %s\n", macAddr, spec.IPAddress)
 
-	// Create TAP interface (Detached state)
-	// We do NOT attach to bridge yet to avoid EBUSY errors in CLH
-	tapName, err := CreateRandomTap(macAddr, cfg.Network.TapPrefix)
+	// Create an isolated network namespace with a tap device inside it.
+	// This protects the host from VM-based network attacks and is immune
+	// to host-level `iptables -F` flushes.
+	nsName, tapName, err := CreateSandboxNetNS(cfg.Network.BridgeName, macAddr, cfg.Network.Prefix)
 	if err != nil {
-		return err
+		return fmt.Errorf("create netns: %w", err)
 	}
 
-	spec.TapName = tapName
+	spec.NetNSName = nsName
+	spec.TapName = tapName // always "tap0" inside the netns
 	spec.MacAddress = macAddr
 
-	log.Printf("   [Net] Created TAP interface %s\n", tapName)
+	log.Printf("   [Net] Created NetNS %s with TAP %s\n", nsName, tapName)
 
 	return nil
 }
@@ -64,8 +63,11 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 		"--event-monitor", "path=" + eventPath,
 	}
 
-	fmt.Printf(">> [Native] Spawning empty CLH process (API Mode)...\n")
-	cmd := exec.Command(cfg.CHBinary, args...)
+	fmt.Printf(">> [Native] Spawning empty CLH process inside NetNS %s...\n", spec.NetNSName)
+	// Run cloud-hypervisor inside the sandbox network namespace so it can
+	// access tap0, which lives inside that namespace.
+	netnsArgs := append([]string{"netns", "exec", spec.NetNSName, cfg.CHBinary}, args...)
+	cmd := exec.Command("ip", netnsArgs...)
 
 	// Redirect IO
 	logFile, _ := os.Create(logPath)
@@ -130,7 +132,7 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 		Memory: &MemoryConfig{
 			Size:      int64(spec.MemoryMB) * 1024 * 1024,
 			Shared:    true,
-			Mergeable: true,
+			Mergeable: false,
 			Prefault:  false,
 		},
 		Disks: []DiskConfig{
@@ -167,18 +169,12 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	}
 
 	// B. Send Boot Signal
-	// fmt.Println("   [+] Sending Boot Signal...")
 	if err := clhClient.VmBoot(ctx); err != nil {
 		Stop(spec.ID)
 		return fmt.Errorf("vm.boot failed: %w", err)
 	}
 
-	if err := EnableTap(cfg.Network.BridgeName, tapName); err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("network attach failed (bridge: %s, tap: %s): %v", cfg.Network.BridgeName, tapName, err)
-	}
-
-	fmt.Printf("   [+] VM Active! PID: %d, Tap: %s\n", pid, tapName)
+	fmt.Printf("   [+] VM Active! PID: %d, NetNS: %s\n", pid, spec.NetNSName)
 	return nil
 }
 
@@ -224,7 +220,7 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 		"--kernel", cfg.Paths.KernelPath,
 		"--cmdline", cmdLine,
 		"--cpus", fmt.Sprintf("boot=%d,max=%d", spec.CPUs, spec.CPUs),
-		"--memory", fmt.Sprintf("size=%dM,shared=on,mergeable=on", spec.MemoryMB),
+		"--memory", fmt.Sprintf("size=%dM,shared=on,mergeable=off", spec.MemoryMB),
 		"--disk", fmt.Sprintf("path=%s,backing_files=%s,image_type=%s", overlayPath, backingFiles, imageType),
 		"--net", fmt.Sprintf("tap=%s,mac=%s", tapName, macAddr),
 		"--vsock", fmt.Sprintf("cid=%d,socket=%s", getCidFromIP(spec.IPAddress), vsockPath),
@@ -310,9 +306,10 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 
 	log.Println(args)
 
-	// 4. Start Cloud Hypervisor Process
-	fmt.Printf(">> [Native] Spawning full CLH process (CLI Mode)...\n")
-	cmd := exec.Command(cfg.CHBinary, args...)
+	// 4. Start Cloud Hypervisor Process inside the sandbox NetNS
+	fmt.Printf(">> [Native] Spawning full CLH process inside NetNS %s (CLI Mode)...\n", spec.NetNSName)
+	netnsArgs := append([]string{"netns", "exec", spec.NetNSName, cfg.CHBinary}, args...)
+	cmd := exec.Command("ip", netnsArgs...)
 
 	logFile, _ := os.Create(logPath)
 	cmd.Stdout = logFile
@@ -339,13 +336,7 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 		return fmt.Errorf("VM crashed on start. Logs:\n%s", string(logs))
 	}
 
-	// 6. Network Attach
-	if err := EnableTap(cfg.Network.BridgeName, tapName); err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("network attach failed (bridge: %s, tap: %s): %v", cfg.Network.BridgeName, tapName, err)
-	}
-
-	fmt.Printf("   [+] VM Active! PID: %d, Tap: %s\n", pid, tapName)
+	fmt.Printf("   [+] VM Active! PID: %d, NetNS: %s\n", pid, spec.NetNSName)
 	return nil
 }
 
@@ -403,7 +394,7 @@ func Start(id string) error {
 }
 
 // Delete shuts down and kills the VM process, but leaves the files on disk for the monitor to sync.
-func Delete(id, tapName string) error {
+func Delete(id, tapName, nsName string) error {
 	socketPath := GetSocketPath(id)
 	pidPath := GetPIDPath(id)
 
@@ -423,14 +414,21 @@ func Delete(id, tapName string) error {
 		pid, _ := strconv.Atoi(string(data))
 		if process, err := os.FindProcess(pid); err == nil {
 			process.Signal(syscall.SIGTERM)
-			// Wait for process to exit
 			time.Sleep(100 * time.Millisecond)
 		}
 		os.Remove(pidPath)
 	}
 
-	// 3. Clean up TAP interface
-	DeleteTap(tapName)
+	// 3. Destroy the network namespace.
+	// This atomically removes: tap0, br0, veth pair, and all iptables rules inside.
+	// If nsName is empty (legacy sandbox), fall back to deleting the tap by name.
+	if nsName != "" {
+		if err := DeleteSandboxNetNS(nsName); err != nil {
+			fmt.Printf("Warning: DeleteSandboxNetNS failed for %s (ns=%s): %v\n", id, nsName, err)
+		}
+	} else if tapName != "" {
+		DeleteTap(tapName) // legacy fallback
+	}
 
 	return nil
 }
