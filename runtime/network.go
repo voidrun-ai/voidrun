@@ -104,6 +104,9 @@ func setupNetNS(nsName, hostVeth, nsVeth, bridgeName, macAddr string) error {
 	}
 
 	// 5. Batch configuration inside netns (br0, tap0, iptables)
+	// WARNING: The iptables-restore heredoc block (<<EOF ... EOF) MUST NOT be indented.
+	// bash requires the closing EOF to be at the exact start of the line, and iptables-restore
+	// requires its rules (e.g. *filter) to have no leading whitespace.
 	script := fmt.Sprintf(`
 			set -e
 			ip link add br0 type bridge
@@ -117,17 +120,17 @@ func setupNetNS(nsName, hostVeth, nsVeth, bridgeName, macAddr string) error {
 			ip link set tap0 up
 
 			iptables-restore <<EOF
-			*filter
-			:INPUT ACCEPT [0:0]
-			:FORWARD ACCEPT [0:0]
-			:OUTPUT ACCEPT [0:0]
-			-A FORWARD -m physdev --physdev-in tap0 -m mac ! --mac-source %s -j DROP
-			-A FORWARD -m physdev --physdev-in tap0 -d 169.254.169.254 -j DROP
-			-A FORWARD -m physdev --physdev-in tap0 -d 10.0.0.0/8 -j DROP
-			-A FORWARD -m physdev --physdev-in tap0 -d 172.16.0.0/12 -j DROP
-			-A FORWARD -m physdev --physdev-in tap0 -d 192.168.0.0/16 -j DROP
-			COMMIT
-			EOF
+*filter
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A FORWARD -m physdev --physdev-in tap0 -m mac ! --mac-source %s -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 169.254.169.254 -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 10.0.0.0/8 -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 172.16.0.0/12 -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 192.168.0.0/16 -j DROP
+COMMIT
+EOF
 			`,
 		nsVeth, nsVeth, macAddr, macAddr)
 
