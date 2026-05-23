@@ -45,7 +45,7 @@ type Manager struct {
 	memUsedGauge       *prometheus.GaugeVec
 	diskUsedGauge      *prometheus.GaugeVec
 	scrapeUpGauge      *prometheus.GaugeVec
-	scrapeTime         prometheus.Observer
+	scrapeTime         *prometheus.HistogramVec
 	httpReqsTotal      *prometheus.CounterVec
 	httpReqDur         *prometheus.HistogramVec
 	diskReadBytes      *prometheus.GaugeVec
@@ -140,7 +140,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 	cpuUsage := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "voidrun_sbx_cpu_usage",
-			Help: "Sandbox CPU usage from guest agent",
+			Help: "Sandbox CPU usage percent (0-100) from guest agent or vm.counters",
 		},
 		[]string{"sbx_id", "sbx_name", "voidrun_host"},
 	)
@@ -165,12 +165,13 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		},
 		[]string{"sbx_id", "sbx_name", "voidrun_host"},
 	)
-	scrapeTime := prometheus.NewHistogram(
+	scrapeTime := prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "voidrun_sbx_scrape_duration_seconds",
-			Help:    "Duration of vm.counters scrape and disk stat per sandbox",
+			Help:    "Duration of guest agent / vm.counters scrape and optional disk stat per sandbox",
 			Buckets: prometheus.DefBuckets,
 		},
+		[]string{"sbx_id", "sbx_name", "voidrun_host"},
 	)
 	httpReqs := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -479,6 +480,7 @@ func (m *Manager) UnregisterSandbox(vmID string) {
 	m.memUsedGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.diskUsedGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.scrapeUpGauge.DeleteLabelValues(labelID, labelName, labelHost)
+	m.scrapeTime.DeleteLabelValues(labelID, labelName, labelHost)
 	m.deleteDeviceMetrics(vmID, labelID, labelName, labelHost)
 }
 
@@ -513,9 +515,10 @@ func (m *Manager) pollOnce(ctx context.Context) {
 		sem <- struct{}{}
 
 		go func() {
+			labelID, labelName, labelHost := m.sandboxLabels(vmID)
 			start := time.Now()
 			defer func() {
-				m.scrapeTime.Observe(time.Since(start).Seconds())
+				m.scrapeTime.WithLabelValues(labelID, labelName, labelHost).Observe(time.Since(start).Seconds())
 			}()
 			defer func() {
 				<-sem
@@ -524,16 +527,17 @@ func (m *Manager) pollOnce(ctx context.Context) {
 
 			ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
-
-			labelID, labelName, labelHost := m.sandboxLabels(vmID)
 			up := false
 
+			var agentCPU, agentMem bool
 			if stats, err := fetchAgentMetrics(ctx, vmID); err == nil {
 				up = true
 				if stats.CPUError == "" {
+					agentCPU = true
 					m.cpuUsageGauge.WithLabelValues(labelID, labelName, labelHost).Set(stats.CPUUsagePercent)
 				}
 				if stats.MemError == "" {
+					agentMem = true
 					m.memUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(float64(stats.MemUsedBytes))
 				}
 			}
@@ -541,10 +545,10 @@ func (m *Manager) pollOnce(ctx context.Context) {
 			stats, err := fetchCounters(ctx, socketPath)
 			if err == nil {
 				up = true
-				if stats.CPU != nil {
-					m.cpuUsageGauge.WithLabelValues(labelID, labelName, labelHost).Set(stats.CPU.Usage)
+				if stats.CPU != nil && !agentCPU {
+					m.cpuUsageGauge.WithLabelValues(labelID, labelName, labelHost).Set(normalizeCPUUsagePercent(stats.CPU.Usage))
 				}
-				if stats.Memory != nil {
+				if stats.Memory != nil && !agentMem {
 					m.memUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(stats.Memory.Usage)
 				}
 				for device, disk := range stats.Disks {
@@ -585,6 +589,14 @@ func (m *Manager) pollOnce(ctx context.Context) {
 	}
 
 	wg.Wait()
+}
+
+// normalizeCPUUsagePercent maps vm.counters cpu.usage (0–1 or 0–100) to 0–100 for Prometheus.
+func normalizeCPUUsagePercent(usage float64) float64 {
+	if usage <= 1 {
+		return usage * 100
+	}
+	return usage
 }
 
 func (m *Manager) snapshotVMs() map[string]string {

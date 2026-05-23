@@ -29,12 +29,11 @@ type PathsConfig struct {
 
 // Network configuration
 type NetworkConfig struct {
-	BridgeName   string
-	GatewayIP    string
-	NetworkCIDR  string
-	SubnetPrefix string
-	TapPrefix    string
-	Nameservers  []string
+	BridgeName  string
+	GatewayIP   string
+	NetworkCIDR string
+	Prefix      string
+	Nameservers []string
 }
 
 // MongoDB configuration
@@ -159,9 +158,9 @@ const (
 	DefaultInitrdPath    = ""
 	DefaultCHPath        = "/usr/local/bin/cloud-hypervisor"
 	DefaultBridgeName    = "vmbr0"
-	DefaultTapPrefix     = "ttap-"
 	DefaultGatewayIP     = "192.168.100.1/22"
 	DefaultNetworkCIDR   = "192.168.100.0/22"
+	DefaultNetPrefix     = "vr"
 	// DefaultSubnetPrefix            = "192.168.100."
 	DefaultNameservers = "8.8.8.8,1.1.1.1"
 	DefaultMongoURI    = "mongodb://localhost:27017/vr-db?authSource=admin"
@@ -255,7 +254,7 @@ func New() *Config {
 			GatewayIP:   getEnv("GATEWAY_IP", DefaultGatewayIP),
 			NetworkCIDR: getEnv("NETWORK_CIDR", DefaultNetworkCIDR),
 			// SubnetPrefix: getEnv("SUBNET_PREFIX", DefaultSubnetPrefix),
-			TapPrefix:   getEnv("TAP_PREFIX", DefaultTapPrefix),
+			Prefix:      getEnv("NET_PREFIX", DefaultNetPrefix),
 			Nameservers: getEnvCSV("DNS_NAMESERVERS", DefaultNameservers),
 		},
 		Mongo: MongoConfig{
@@ -336,6 +335,12 @@ func New() *Config {
 		log.Fatalln("Error resolving CH binary path:", err)
 	}
 	c.CHBinary = chPath
+
+	// Enforce strict length limits on the network prefix to guarantee valid Linux interface names (max 15 chars total)
+	if len(c.Network.Prefix) > 4 {
+		log.Fatalf("Network.Prefix (NET_PREFIX) must be 4 characters or fewer, got %d chars: %s", len(c.Network.Prefix), c.Network.Prefix)
+	}
+
 	return c
 }
 

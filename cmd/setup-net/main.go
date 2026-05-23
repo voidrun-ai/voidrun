@@ -61,6 +61,16 @@ func main() {
 		log.Printf("Warning: Could not enable IP forwarding: %v", err)
 	}
 
+	fmt.Println("   + Loading br_netfilter module...")
+	if err := run("modprobe", "br_netfilter"); err != nil {
+		log.Printf("Warning: Could not load br_netfilter module: %v", err)
+	}
+
+	fmt.Println("   + Enabling bridge-nf-call-iptables...")
+	if err := run("sysctl", "-w", "net.bridge.bridge-nf-call-iptables=1"); err != nil {
+		log.Printf("Warning: Could not enable bridge-nf-call-iptables: %v", err)
+	}
+
 	// 5. Detect WAN Interface
 	wanIface, err := detectWAN()
 	if err != nil {
