@@ -210,9 +210,17 @@ components:
           description: Memory in MiB
         orgId:
           type: string
+          description: >-
+            Organization that owns the sandbox. When omitted, derived from the
+            authenticated API key (the key's org). When provided, must match the
+            key's organization or the request is rejected.
           example: 65ae1234567890abcdef1234
         userId:
           type: string
+          description: >-
+            User attributed as the sandbox creator. When omitted, derived from the
+            API key (typically the key creator). When provided, must be an owner or
+            member of the resolved org or the request is rejected.
           example: 65ae1234567890abcdef1234
         sync:
           type: boolean
