@@ -24,18 +24,20 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"golang.org/x/sync/singleflight"
 )
 
 var ErrSandboxNotFound = errors.New("sandbox not found")
 
 // SandboxService handles sandbox business logic
 type SandboxService struct {
-	repo       repository.ISandboxRepository
-	imageRepo  repository.IImageRepository
-	cfg        *config.Config
-	metrics    *metrics.Manager
-	monitor    *runtime.EventMonitor
-	projection primitive.M
+	repo         repository.ISandboxRepository
+	imageRepo    repository.IImageRepository
+	cfg          *config.Config
+	metrics      *metrics.Manager
+	monitor      *runtime.EventMonitor
+	projection   primitive.M
+	restoreGroup singleflight.Group // deduplicates concurrent auto-restore calls per sandbox
 }
 
 // NewSandboxService creates a new sandbox service
@@ -50,14 +52,14 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 			"_id":            1,
 			"name":           1,
 			"image":          1,
+			"ip":             1,
 			"cpu":            1,
 			"mem":            1,
 			"diskMB":         1,
 			"status":         1,
 			"autoSleep":      1,
 			"lastActivityAt": 1,
-			"pausedAt":       1,
-			"stoppedAt":      1,
+			"snapshottedAt":  1,
 			"createdAt":      1,
 			"orgId":          1,
 			"createdBy":      1,
@@ -66,6 +68,7 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 			"tapName":        1,
 			"tapDeleted":     1,
 			"netnsName":      1,
+			"macAddress":     1,
 		},
 	}
 }
@@ -221,14 +224,23 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		}()
 	}
 
-	go func() {
-		log.Printf("   [Agent] Configuring network on %s (async)...\n", spec.ID)
+	if syncEnabled {
+		log.Printf("   [Agent] Configuring network on %s (sync)...\n", spec.ID)
 		if cfgErr := configureAgentNetwork(spec.ID, &netCfg); cfgErr != nil {
 			log.Printf("   [Agent] network config failed on %s: %v\n", spec.ID, cfgErr)
 		} else {
 			log.Printf("   [Agent] network config done on %s\n", spec.ID)
 		}
-	}()
+	} else {
+		go func() {
+			log.Printf("   [Agent] Configuring network on %s (async)...\n", spec.ID)
+			if cfgErr := configureAgentNetwork(spec.ID, &netCfg); cfgErr != nil {
+				log.Printf("   [Agent] network config failed on %s: %v\n", spec.ID, cfgErr)
+			} else {
+				log.Printf("   [Agent] network config done on %s\n", spec.ID)
+			}
+		}()
+	}
 
 	autoSleep := true
 	if req.AutoSleep != nil {
@@ -239,7 +251,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	sandbox := &model.Sandbox{
 		ID:             objID,
 		Name:           req.Name,
-		Image:          req.Image,
+		Image:          imageName,
 		IP:             ip,
 		CPU:            cpu,
 		Mem:            mem,
@@ -251,6 +263,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		RefID:          req.RefID,
 		TapName:        spec.TapName,
 		NetNSName:      spec.NetNSName,
+		MacAddress:     spec.MacAddress, // persist so Restore doesn't need to re-derive it
 		LastActivityAt: &now,
 		Status:         "running",
 		CreatedAt:      now,
@@ -314,96 +327,7 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 	return nil
 }
 
-func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
-	if err != nil {
-		return err
-	}
-
-	// Verify it's stopped
-	if sandbox.Status != "stopped" {
-		return fmt.Errorf("sandbox is not stopped (current status: %s)", sandbox.Status)
-	}
-
-	socketPath := runtime.GetSocketPath(id)
-
-	// Check if hypervisor is running (socket exists)
-	client := runtime.NewCLHClient(socketPath)
-	if client.IsSocketAvailable() {
-		// Warm start - hypervisor running, just boot the VM
-		log.Printf("[Start] Warm start for sandbox %s\n", id)
-		if err := runtime.Start(id); err != nil {
-			return fmt.Errorf("failed to start VM: %w", err)
-		}
-
-		timeout := 30 * time.Second
-		if err := waitForAgent(ctx, id, timeout); err != nil {
-
-			return fmt.Errorf("agent not ready: %w", err)
-		}
-	} else {
-		// Cold start - hypervisor not running, need to recreate
-		log.Printf("[Start] Cold start for sandbox %s - recreating VM\n", id)
-
-		spec := model.SandboxSpec{
-			ID:        id,
-			Type:      sandbox.Image,
-			CPUs:      sandbox.CPU,
-			MemoryMB:  sandbox.Mem,
-			DiskMB:    sandbox.DiskMB,
-			IPAddress: sandbox.IP,
-		}
-
-		tap := strings.TrimSpace(sandbox.TapName)
-		nsName := strings.TrimSpace(sandbox.NetNSName)
-		if tap == "" || nsName == "" {
-			// No existing netns — create a fresh one
-			if err := runtime.ConfigureNetwork(*s.cfg, &spec); err != nil {
-				return fmt.Errorf("cold start network setup failed: %w", err)
-			}
-			if ok, err := s.repo.UpdateNetNSByIDAndOrg(ctx, sandbox.ID, orgID, spec.TapName, spec.NetNSName); err != nil {
-				log.Printf("[WARN] failed to persist netns info for %s: %v\n", id, err)
-			} else if !ok {
-				log.Printf("[WARN] netns update matched no document for %s\n", id)
-			}
-		} else {
-			spec.TapName = tap
-			spec.NetNSName = nsName
-			spec.MacAddress = runtime.GenerateMAC(sandbox.IP)
-		}
-
-		overlayPath := runtime.GetOverlayPath(id)
-		if err := runtime.Create(*s.cfg, spec, overlayPath); err != nil {
-			return fmt.Errorf("failed to recreate VM: %w", err)
-		}
-
-		// Wait for agent
-		if err := waitForAgent(ctx, id, 30*time.Second); err != nil {
-			return fmt.Errorf("agent not ready after restart: %w", err)
-		}
-	}
-
-	// Update status to running and clear stoppedAt
-	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
-		// VM is running but DB update failed - log but don't fail
-		fmt.Printf("[WARN] VM started but failed to update DB status: %v\n", err)
-	}
-
-	// Register with metrics
-	if s.metrics != nil {
-		spec := model.SandboxSpec{
-			ID:       id,
-			CPUs:     sandbox.CPU,
-			MemoryMB: sandbox.Mem,
-			DiskMB:   sandbox.DiskMB,
-		}
-		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, runtime.GetSocketPath(spec.ID), spec.CPUs, spec.MemoryMB, spec.DiskMB)
-	}
-
-	return nil
-}
-
-func (s *SandboxService) Stop(ctx context.Context, orgID primitive.ObjectID, id string) error {
+func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID, id string) error {
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
@@ -413,26 +337,138 @@ func (s *SandboxService) Stop(ctx context.Context, orgID primitive.ObjectID, id 
 		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
 	}
 
-	if err := runtime.Stop(id); err != nil {
-		return err
-	}
-	if s.metrics != nil {
-		s.metrics.UnregisterSandbox(sandbox.ID.Hex())
+	// Stop event monitor BEFORE snapshot so it can do a final sync while the CLH socket is alive.
+	if s.monitor != nil {
+		s.monitor.Stop(ctx, id)
 	}
 
-	// Update database status to stopped and set stoppedAt
-	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "stopped"); err != nil {
+	if err := runtime.Snapshot(id); err != nil {
+		return err
+	}
+
+	// Update database status to snapshotted and set snapshottedAt
+	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "snapshotted"); err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
 	}
-	// Also set stoppedAt timestamp for auto-delete tracking
-	if err := s.repo.SetStoppedAt(ctx, sandbox.ID); err != nil {
-		log.Printf("[WARN] Failed to set stoppedAt for %s: %v", id, err)
+	if err := s.repo.SetSnapshottedAt(ctx, sandbox.ID); err != nil {
+		log.Printf("[WARN] Failed to set snapshottedAt for %s: %v", id, err)
+	}
+
+	if s.metrics != nil {
+		s.metrics.UnregisterSandbox(sandbox.ID.Hex())
 	}
 
 	return nil
 }
 
-// EnsureRunning checks if sandbox is running and starts it if stopped (auto-start feature)
+func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
+	if err != nil {
+		return err
+	}
+
+	// Verify it's snapshotted
+	if sandbox.Status != "snapshotted" {
+		return fmt.Errorf("sandbox is not snapshotted (current status: %s)", sandbox.Status)
+	}
+
+	imageName := sandbox.Image
+	if !strings.Contains(imageName, ":") {
+		img, err := s.imageRepo.GetLatestByNameForOrg(imageName, orgID)
+		if err == nil && img != nil && img.Tag != "" {
+			imageName = fmt.Sprintf("%s:%s", img.Name, img.Tag)
+		}
+	}
+
+	// Resolve MAC: prefer stored value, fall back to deterministic derivation for
+	// sandboxes created before this field was added.
+	macAddr := sandbox.MacAddress
+	if macAddr == "" {
+		macAddr = runtime.GenerateMAC(sandbox.IP)
+	}
+
+	spec := model.SandboxSpec{
+		ID:         id,
+		Type:       imageName,
+		CPUs:       sandbox.CPU,
+		MemoryMB:   sandbox.Mem,
+		IPAddress:  sandbox.IP,
+		TapName:    sandbox.TapName,
+		MacAddress: macAddr,
+		NetNSName:  sandbox.NetNSName,
+	}
+
+	var overlayPath string
+	if s.cfg.Sandbox.DiskFormat == "raw" {
+		overlayPath = runtime.GetRawOverlayPath(id)
+	} else {
+		overlayPath = runtime.GetOverlayPath(id)
+	}
+	snapshotDir := runtime.GetLatestSnapshotDir(id)
+	if snapshotDir == "" {
+		return fmt.Errorf("no valid snapshot found for sandbox %s", id)
+	}
+
+	if err := runtime.Restore(*s.cfg, spec, overlayPath, snapshotDir); err != nil {
+		return fmt.Errorf("failed to restore VM: %w", err)
+	}
+
+	// From this point, the VMM is running. Any failure must clean it up.
+	cleanup := func() {
+		log.Printf("[Restore] Rolling back: stopping VM %s", id)
+		if stopErr := runtime.Stop(id); stopErr != nil {
+			log.Printf("[Restore] Rollback stop failed for %s: %v", id, stopErr)
+		}
+	}
+
+	timeout := 30 * time.Second
+	if err := waitForAgent(ctx, id, timeout); err != nil {
+		cleanup()
+		return fmt.Errorf("agent not ready after restore: %w", err)
+	}
+
+	// Sync the guest clock — after a snapshot restore the VM clock is frozen at
+	// the time the snapshot was taken. Inject the current wall-clock time via the
+	// agent so that `date`, cron jobs, TLS expiry checks, etc. see the right time.
+	syncSandboxClock(id)
+
+	// After a snapshot restore, the virtio-net device inside the guest comes back
+	// with eth0 DOWN (cloud-hypervisor resets the virtio-net device on restore).
+	// Re-apply the network config to bring eth0 up and restore IP/routes/DNS.
+	netCfg := buildAgentNetConfig(s.cfg, sandbox.IP, sandbox.Name)
+	if cfgErr := configureAgentNetwork(id, &netCfg); cfgErr != nil {
+		log.Printf("   [Restore] network re-config failed on %s: %v\n", id, cfgErr)
+	} else {
+		log.Printf("   [Restore] network re-config done on %s\n", id)
+	}
+
+	// Update status to running
+	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
+		cleanup()
+		return fmt.Errorf("VM restored but failed to update DB status: %w", err)
+	}
+
+	// Touch activity on restore so the sandbox doesn't immediately get auto-snapshotted again
+	if err := s.repo.TouchActivity(ctx, sandbox.ID); err != nil {
+		log.Printf("[WARN] Failed to touch activity on restore for %s: %v", id, err)
+	}
+
+	// Register with metrics
+	if s.metrics != nil {
+		s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
+	}
+
+	// Restart CLH event monitor so restored sandboxes get event tracking
+	if s.monitor != nil {
+		s.monitor.Start(ctx, sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
+	}
+
+	return nil
+}
+
+// EnsureRunning checks if sandbox is running and restores it if snapshotted (auto-restore feature).
+// Uses singleflight to deduplicate concurrent restore calls — if 100 exec requests arrive for the
+// same snapshotted sandbox, only 1 will actually call Restore(); the other 99 block and share the result.
 func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.ObjectID, id string) error {
 	// Get sandbox from DB to check status
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
@@ -445,87 +481,24 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.Obje
 		return nil
 	}
 
-	// If paused, resume it
-	if sandbox.Status == "paused" {
-		log.Printf("[Auto-Resume] Sandbox %s is paused, resuming...\n", id)
-		if err := s.Resume(ctx, orgID, id); err != nil {
-			return fmt.Errorf("failed to auto-resume sandbox: %w", err)
+	// If snapshotted, restore it via singleflight to prevent thundering herd
+	if sandbox.Status == "snapshotted" {
+		_, err, shared := s.restoreGroup.Do(id, func() (interface{}, error) {
+			log.Printf("[Auto-Restore] Sandbox %s is snapshotted, restoring...\n", id)
+			if err := s.Restore(ctx, orgID, id); err != nil {
+				return nil, fmt.Errorf("failed to auto-restore sandbox: %w", err)
+			}
+			log.Printf("[Auto-Restore] Sandbox %s restored and ready\n", id)
+			return nil, nil
+		})
+		if shared {
+			log.Printf("[Auto-Restore] Sandbox %s restore was shared with concurrent caller\n", id)
 		}
-
-		log.Printf("[Auto-Resume] Sandbox %s resumed and ready\n", id)
-		return nil
-	}
-
-	// If stopped, start it
-	if sandbox.Status == "stopped" {
-		log.Printf("[Auto-Start] Sandbox %s is stopped, starting...\n", id)
-		if err := s.Start(ctx, orgID, id); err != nil {
-			return fmt.Errorf("failed to auto-start sandbox: %w", err)
-		}
-
-		log.Printf("[Auto-Start] Sandbox %s started and ready\n", id)
-		return nil
+		return err
 	}
 
 	// Other states
-	return fmt.Errorf("sandbox in unexpected state for auto-start/resume: %s", sandbox.Status)
-}
-
-func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
-	if err != nil {
-		return err
-	}
-
-	if sandbox.Status != "running" {
-		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
-	}
-
-	if !sandbox.AutoSleep {
-		return fmt.Errorf("sandbox has auto-sleep disabled")
-	}
-
-	if err := runtime.Pause(id); err != nil {
-		return err
-	}
-
-	// Update database status to paused and set pausedAt
-	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "paused"); err != nil {
-		return fmt.Errorf("failed to update status: %w", err)
-	}
-	if err := s.repo.SetPausedAt(ctx, sandbox.ID); err != nil {
-		log.Printf("[WARN] Failed to set pausedAt for %s: %v", id, err)
-	}
-
-	return nil
-}
-
-func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
-	if err != nil {
-		return err
-	}
-
-	if sandbox.Status != "paused" {
-		return fmt.Errorf("sandbox is not paused (current status: %s)", sandbox.Status)
-	}
-
-	if err := runtime.Resume(id); err != nil {
-		log.Printf("[ERROR] Failed to resume sandbox %s: %v\n", id, err)
-		return err
-	}
-
-	// Update database status to running
-	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
-		return fmt.Errorf("failed to update status: %w", err)
-	}
-
-	// Touch activity on resume so the sandbox doesn't immediately get auto-paused again
-	if err := s.repo.TouchActivity(ctx, sandbox.ID); err != nil {
-		log.Printf("[WARN] Failed to touch activity on resume for %s: %v", id, err)
-	}
-
-	return nil
+	return fmt.Errorf("sandbox in unexpected state for auto-restore: %s", sandbox.Status)
 }
 
 func (s *SandboxService) Info(id string) (string, error) {
@@ -533,7 +506,7 @@ func (s *SandboxService) Info(id string) (string, error) {
 }
 
 // RefreshStatuses checks each sandbox health and updates status field in DB.
-// Status values: running, paused, stopped.
+// Status values: running, snapshotted, killed, deleted.
 func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 	// Optimization 1: Fetch only necessary fields
 	projection := bson.M{"_id": 1, "status": 1}
@@ -558,9 +531,10 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		client := runtime.NewAPIClientForSandbox(id)
 		socketExists := client.IsSocketAvailable() // Fast os.Stat check
 
-		// Case 1: DB says Stopped + Socket is GONE.
-		// Conclusion: It is definitely stopped/dead. No need to call API.
-		if sb.Status == "stopped" && !socketExists {
+		// Case 1: DB says Snapshotted.
+		// Conclusion: It is either snapshotted (socket gone) or in the process of restoring (socket exists).
+		// In either case, the health check should not touch its status.
+		if sb.Status == "snapshotted" {
 			continue
 		}
 
@@ -577,7 +551,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		go func() {
 			defer func() { <-sem; wg.Done() }()
 
-			newState := "stopped"
+			newState := "killed"
 
 			if socketExists {
 				apiCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -589,18 +563,14 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 					switch strings.ToLower(sbxState) {
 					case "running", "runningvirtualized":
 						newState = "running"
-					case "paused":
-						newState = "paused"
-					case "loaded":
-						// 'Loaded' means Process active, but Guest not booted.
-						// For your app, this is "stopped" (ready to start).
-						newState = "stopped"
 					default:
-						newState = "stopped"
+						// If the socket is somehow still there but state is not running
+						// it might be a zombie, so map it to killed.
+						newState = "killed"
 					}
 				} else {
 					// Socket exists, but API refused connection or timed out.
-					// Process is likely zombie or unresponsive. Treat as stopped.
+					// Process is likely zombie or unresponsive. Treat as killed.
 					fmt.Printf("[health] Sandbox %s unresponsive (socket exists): %v\n", id, err)
 					newState = "killed"
 				}
@@ -633,15 +603,24 @@ func waitForAgent(ctx context.Context, sbxID string, timeout time.Duration) erro
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
 	start := time.Now()
 	attempts := 0
 	var lastErr error
 
+	// Tight 10ms polling interval with 15ms probe timeout.
+	// The vsock needs ~350ms to synchronize after restore regardless of
+	// how often we poll. Using 10ms interval ensures we catch the exact
+	// moment it becomes ready (at most 25ms overshoot).
+	const pollInterval = 10 * time.Millisecond
+	const probeTimeout = 15 * time.Millisecond // CONNECT+OK takes <5ms once ready
+
+	// Use a Ticker (not time.After) to avoid allocating a new timer object
+	// every iteration — time.After leaks ~3000 timers over a 30s timeout.
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
 	for {
-		err := runtime.Probe(sbxID, 1024, 50*time.Millisecond)
+		err := runtime.Probe(sbxID, 1024, probeTimeout)
 		attempts++
 		if err == nil {
 			log.Printf("   [Agent] Ready on %s after %s (%d attempts)\n", sbxID, time.Since(start), attempts)
@@ -682,8 +661,57 @@ func configureAgentNetwork(sbxID string, netCfg *agentNetConfig) error {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("configure network status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	io.Copy(io.Discard, resp.Body)
 
 	return nil
+}
+
+// syncSandboxClock injects the current wall-clock time into a restored sandbox
+// guest via `date -s @<unix_epoch>`.  After a VM snapshot/restore the guest
+// clock is frozen at the snapshot timestamp; this call corrects it so the
+// guest sees the real current time immediately after restore.
+//
+// The agent vsock health-check can pass a split-second before the /exec HTTP
+// handler is fully initialised (EOF on handshake), so we retry a few times
+// with a short back-off before giving up.
+// This is best-effort: a failure is logged but never causes the restore to fail.
+func syncSandboxClock(sbxID string) {
+	now := time.Now().Unix()
+	cmd := fmt.Sprintf("sudo date -s @%d", now)
+
+	payload := map[string]interface{}{
+		"cmd":     cmd,
+		"timeout": 5,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[Restore] syncSandboxClock: marshal error for %s: %v", sbxID, err)
+		return
+	}
+
+	const maxAttempts = 5
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		resp, err := ExecAgentCommand(ctx, nil, sbxID, bytes.NewReader(body))
+		cancel()
+
+		if err != nil {
+			log.Printf("[Restore] syncSandboxClock: attempt %d/%d exec error for %s: %v", attempt, maxAttempts, sbxID, err)
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("[Restore] syncSandboxClock: attempt %d/%d agent returned %d for %s", attempt, maxAttempts, resp.StatusCode, sbxID)
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		log.Printf("   [Restore] clock synced to epoch %d on %s (attempt %d)", now, sbxID, attempt)
+		return
+	}
+	log.Printf("[WARN] syncSandboxClock: gave up syncing clock for %s after %d attempts", sbxID, maxAttempts)
 }
 
 func buildAgentNetConfig(cfg *config.Config, ip, name string) agentNetConfig {
@@ -864,6 +892,7 @@ func setAgentEnvVars(sbxID string, envVars map[string]string) error {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("agent returned status %d: %s", resp.StatusCode, string(body))
 	}
+	io.Copy(io.Discard, resp.Body)
 
 	fmt.Printf("[INFO] Environment variables set on sandbox %s: %v\n", sbxID, envVars)
 	return nil

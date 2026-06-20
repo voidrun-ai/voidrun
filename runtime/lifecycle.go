@@ -29,7 +29,7 @@ func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {
 	// Create an isolated network namespace with a tap device inside it.
 	// This protects the host from VM-based network attacks and is immune
 	// to host-level `iptables -F` flushes.
-	nsName, tapName, err := CreateSandboxNetNS(cfg.Network.BridgeName, macAddr, cfg.Network.Prefix)
+	nsName, tapName, err := CreateSandboxNetNS(cfg.Network.BridgeName, macAddr, cfg.Network.Prefix, cfg.Network.Nameservers)
 	if err != nil {
 		return fmt.Errorf("create netns: %w", err)
 	}
@@ -96,6 +96,11 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 		return fmt.Errorf("VM crashed on start. Logs:\n%s", string(logs))
 	}
 
+	// Ensure tap0 is attached to br0 in netns after VMM starts
+	if err := EnsureTapBridge(spec.NetNSName, spec.TapName); err != nil {
+		log.Printf("[WARN] EnsureTapBridge failed in Create: %v\n", err)
+	}
+
 	tapName := spec.TapName
 	macAddr := spec.MacAddress
 	log.Printf("   [Create] spec.TapName=%q, spec.MacAddress=%q\n", tapName, macAddr)
@@ -131,7 +136,7 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 		},
 		Memory: &MemoryConfig{
 			Size:      int64(spec.MemoryMB) * 1024 * 1024,
-			Shared:    true,
+			Shared:    false,
 			Mergeable: false,
 			Prefault:  false,
 		},
@@ -178,21 +183,16 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	return nil
 }
 
-func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
-	defer util.Track("Sandbox Start (Total CLI)")()
-
-	overlayPath, _ = filepath.Abs(overlayPath)
-
+// BuildCLIArgs constructs the Cloud Hypervisor CLI arguments from the sandbox configuration
+func BuildCLIArgs(cfg config.Config, spec model.SandboxSpec, overlayPath string) []string {
 	// Use centralized path helpers
 	socketPath := GetSocketPath(spec.ID)
 	logPath := GetLogPath(spec.ID)
-	pidPath := GetPIDPath(spec.ID)
 	vsockPath := GetVsockPath(spec.ID)
 	eventPath := GetEventPath(spec.ID)
 
 	tapName := spec.TapName
 	macAddr := spec.MacAddress
-	log.Printf("   [CreateCLI] spec.TapName=%q, spec.MacAddress=%q\n", tapName, macAddr)
 
 	// 1. Map Configurations to CLI Strings
 	cmdLine := strings.TrimSpace(cfg.Sandbox.KernelCmdline)
@@ -214,13 +214,13 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 
 	// 2. Build the Base CLI Arguments
 	args := []string{
-		"--api-socket", socketPath, // Still useful for monitoring/poweroff
+		"--api-socket", socketPath,
 		"--log-file", logPath,
 		"--event-monitor", "path=" + eventPath,
 		"--kernel", cfg.Paths.KernelPath,
 		"--cmdline", cmdLine,
 		"--cpus", fmt.Sprintf("boot=%d,max=%d", spec.CPUs, spec.CPUs),
-		"--memory", fmt.Sprintf("size=%dM,shared=on,mergeable=off", spec.MemoryMB),
+		"--memory", fmt.Sprintf("size=%dM", spec.MemoryMB),
 		"--disk", fmt.Sprintf("path=%s,backing_files=%s,image_type=%s", overlayPath, backingFiles, imageType),
 		"--net", fmt.Sprintf("tap=%s,mac=%s", tapName, macAddr),
 		"--vsock", fmt.Sprintf("cid=%d,socket=%s", getCidFromIP(spec.IPAddress), vsockPath),
@@ -255,18 +255,12 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 		var llRules []string
 
 		// Use a map to collect unique rules, then we'll sort them
-		// Key: path, Value: access string ("r" or "rw")
 		rulesMap := make(map[string]string)
 
-		// Kernel image (read file)
 		rulesMap[absKernel] = "r"
-		// Log file (write)
 		rulesMap[logPath] = "rw"
-		// Entire instance directory: overlay.qcow2, vm.sock, vsock.sock, vm.evt
 		rulesMap[absInstanceDir] = "rw"
-		// RNG
 		rulesMap["/dev/urandom"] = "r"
-		// TUN/TAP and sysfs
 		rulesMap["/dev/net/tun"] = "rw"
 		rulesMap["/sys"] = "r"
 
@@ -276,17 +270,12 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 		}
 
 		if backingFiles == "on" {
-			// Landlock path traversal requires every ancestor directory to have ReadDir.
 			absDataDir, _ := filepath.Abs(filepath.Dir(absBaseDir))
 			rulesMap[absDataDir] = "r"
 			rulesMap[absBaseDir] = "r"
 			rulesMap[absBackingFile] = "r"
 		}
 
-		// Sort rules by path length (shortest first) to ensure broader rules
-		// are added before narrower ones. This avoids a Landlock bug where
-		// adding a specific file rule before a broad directory rule causes
-		// siblings of the specific file to be denied access.
 		var paths []string
 		for p := range rulesMap {
 			paths = append(paths, p)
@@ -301,14 +290,27 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 
 		args = append(args, "--landlock-rules")
 		args = append(args, llRules...)
-
 	}
 
+	return args
+}
+
+func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+	defer util.Track("Sandbox Start (Total CLI)")()
+
+	overlayPath, _ = filepath.Abs(overlayPath)
+
+	socketPath := GetSocketPath(spec.ID)
+	logPath := GetLogPath(spec.ID)
+	pidPath := GetPIDPath(spec.ID)
+
+	args := BuildCLIArgs(cfg, spec, overlayPath)
 	log.Println(args)
+
+	netnsArgs := append([]string{"netns", "exec", spec.NetNSName, cfg.CHBinary}, args...)
 
 	// 4. Start Cloud Hypervisor Process inside the sandbox NetNS
 	fmt.Printf(">> [Native] Spawning full CLH process inside NetNS %s (CLI Mode)...\n", spec.NetNSName)
-	netnsArgs := append([]string{"netns", "exec", spec.NetNSName, cfg.CHBinary}, args...)
 	cmd := exec.Command("ip", netnsArgs...)
 
 	logFile, _ := os.Create(logPath)
@@ -328,7 +330,6 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 	cmd.Process.Release()
 
 	// 5. Wait for Socket (Acts as a Readiness Probe)
-	// Because we passed the full config, CH creates the socket and boots immediately.
 	client := NewAPIClient(socketPath)
 	if err := client.WaitForSocket(2 * time.Second); err != nil {
 		logs, _ := os.ReadFile(logPath)
@@ -336,60 +337,384 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 		return fmt.Errorf("VM crashed on start. Logs:\n%s", string(logs))
 	}
 
+	// Ensure tap0 is attached to br0 in netns after VMM starts
+	if err := EnsureTapBridge(spec.NetNSName, spec.TapName); err != nil {
+		log.Printf("[WARN] EnsureTapBridge failed in CreateCLI: %v\n", err)
+	}
+
 	fmt.Printf("   [+] VM Active! PID: %d, NetNS: %s\n", pid, spec.NetNSName)
 	return nil
 }
 
-// Stop gracefully shuts down the VM via CLH API (keeps hypervisor and network for restart)
+// Snapshot creates a snapshot of the VM and terminates the hypervisor.
+// It is safe to call concurrently for different sandbox IDs.
+func Snapshot(id string) error {
+	defer util.Track("lifecycle: Sandbox Snapshot")()
+	socketPath := GetSocketPath(id)
+	baseSnapshotDir := GetSnapshotBaseDir(id)
+
+	// Generate a unique timestamped directory for this snapshot
+	snapshotDir := filepath.Join(baseSnapshotDir, fmt.Sprintf("snap-%d", time.Now().UnixNano()))
+
+	client := NewCLHClientWithTimeout(socketPath, 30*time.Second)
+	if !client.IsSocketAvailable() {
+		return fmt.Errorf("Sandbox not running")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Ensure base directory exists
+	if err := os.MkdirAll(baseSnapshotDir, 0755); err != nil {
+		return fmt.Errorf("failed to create snapshot base dir: %w", err)
+	}
+	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+		return fmt.Errorf("failed to create snapshot dir: %w", err)
+	}
+
+	// 1. Pause VM (tolerate InvalidStateTransition — VM may already be paused)
+	if err := client.VmPause(ctx); err != nil {
+		log.Printf("[Snapshot] Warning: VmPause failed for %s (may already be paused): %v", id, err)
+	}
+
+	// 2. Take Snapshot
+	snapshotUrl := "file://" + snapshotDir + "/"
+	if err := client.VmSnapshot(ctx, snapshotUrl); err != nil {
+		return fmt.Errorf("VmSnapshot failed: %w", err)
+	}
+
+	// 3. Shutdown VMM (kills the process)
+	if err := client.VmmShutdown(ctx); err != nil {
+		log.Printf("[Snapshot] Warning: VmmShutdown failed for %s: %v", id, err)
+	}
+
+	// 4. Wait for socket to disappear (process dead) — synchronous so the caller
+	// knows the VMM is truly gone before DB state is written, and so that old-
+	// snapshot cleanup doesn't race with a concurrent Restore's GetLatestSnapshotDir.
+	for i := 0; i < 20; i++ {
+		if !client.IsSocketAvailable() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if client.IsSocketAvailable() {
+		log.Printf("[Snapshot] WARNING: VMM %s still alive after 2s, force-killing", id)
+		if err := forceKillByPIDFile(id); err != nil {
+			os.Remove(socketPath)
+			return fmt.Errorf("VMM %s hung and force-kill failed: %w", id, err)
+		}
+	}
+
+	os.Remove(socketPath)
+	log.Printf("[Snapshot] VM %s snapshotted successfully to %s", id, snapshotDir)
+
+	// 5. Clean up older snapshots synchronously to avoid racing with Restore's
+	// GetLatestSnapshotDir. Best-effort: log failures but don't fail the snapshot.
+	if entries, err := os.ReadDir(baseSnapshotDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), "snap-") {
+				fullPath := filepath.Join(baseSnapshotDir, entry.Name())
+				if fullPath != snapshotDir {
+					if rmErr := os.RemoveAll(fullPath); rmErr != nil {
+						log.Printf("[Snapshot] Warning: failed to remove old snapshot %s: %v", fullPath, rmErr)
+					}
+				}
+			}
+		}
+	} else {
+		log.Printf("[Snapshot] Warning: could not read snapshot dir for cleanup %s: %v", baseSnapshotDir, err)
+	}
+
+	return nil
+}
+
+// Stop gracefully shuts down a VM process via the API and waits for the socket to disappear.
+// This is used for cleanup when VM creation/boot fails.
 func Stop(id string) error {
 	defer util.Track("lifecycle: Sandbox Stop")()
 	socketPath := GetSocketPath(id)
 
-	// 1. Gracefully shutdown VM via CLH API (keeps hypervisor process running)
-	client := NewCLHClient(socketPath)
-	if client.IsSocketAvailable() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+	client := NewCLHClientForSandbox(id)
+	if !client.IsSocketAvailable() {
+		return fmt.Errorf("Sandbox not running")
+	}
 
-		if err := client.VmShutdown(ctx); err != nil {
-			fmt.Printf("Warning: VmShutdown failed for %s: %v\n", id, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := client.VmmShutdown(ctx); err != nil {
+		log.Printf("[Stop] Warning: VmmShutdown failed for %s: %v", id, err)
+	}
+
+	for i := 0; i < 20; i++ {
+		if !client.IsSocketAvailable() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if client.IsSocketAvailable() {
+		log.Printf("[Stop] WARNING: VMM %s still alive after 2s, force-killing", id)
+		if err := forceKillByPIDFile(id); err != nil {
+			os.Remove(socketPath)
+			return fmt.Errorf("VMM %s hung and force-kill failed: %w", id, err)
 		}
 	}
-	fmt.Printf("   [+] VM %s Stopped (CLH process and TAP interface preserved).\n", id)
+
+	os.Remove(socketPath)
+
+	log.Printf("[Stop] VM %s stopped successfully", id)
 	return nil
 }
 
-// Start boots a VM that is in shutdown state
-func Start(id string) error {
-	defer util.Track("lifecycle: Sandbox Start")()
-	socketPath := GetSocketPath(id)
-
-	client := NewCLHClient(socketPath)
-	if !client.IsSocketAvailable() {
-		return fmt.Errorf("VM socket not available. Is the hypervisor process running?")
+// forceKillByPIDFile reads the PID file and forcefully kills the process if it's still alive.
+func forceKillByPIDFile(id string) error {
+	pidPath := GetPIDPath(id)
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return fmt.Errorf("failed to read PID file: %w", err)
+	}
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return fmt.Errorf("invalid PID in file: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return nil // Process already gone
+	}
+
+	if err := process.Signal(syscall.SIGKILL); err != nil {
+		log.Printf("Warning: failed to send SIGKILL to PID %d: %v", pid, err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Check if it's still alive. A zombie process will respond to Signal(0),
+	// so we must read its state from /proc to see if it's actually dead.
+	if err := process.Signal(syscall.Signal(0)); err == nil {
+		statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err == nil {
+			fields := strings.Fields(string(statData))
+			if len(fields) >= 3 {
+				state := fields[2]
+				if state == "Z" || state == "X" {
+					// It's a zombie, so it's dead
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("process %d still alive after SIGKILL", pid)
+	}
+
+	return nil
+}
+
+// Restore restores a VM from a snapshot using the REST API (to prevent warm boot)
+func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir string) error {
+	defer util.Track("lifecycle: Sandbox Restore (API)")()
+
+	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
+		return fmt.Errorf("ensure netns: %w", err)
+	}
+
+	overlayPath, _ = filepath.Abs(overlayPath)
+
+	socketPath := GetSocketPath(spec.ID)
+	pidPath := GetPIDPath(spec.ID)
+	logPath := GetLogPath(spec.ID)
+
+	// Clean up old socket, vsock, and event files if they exist so we start fresh
+	os.Remove(socketPath)
+	os.Remove(GetEventPath(spec.ID))
+	os.Remove(GetEventOffsetPath(spec.ID))
+	os.Remove(GetVsockPath(spec.ID))
+
+	// 1. Build CLI args to start an empty Cloud Hypervisor process
+	args := []string{
+		"--api-socket", socketPath,
+		"--log-file", logPath,
+		"--event-monitor", "path=" + GetEventPath(spec.ID),
+	}
+
+	if cfg.Sandbox.Seccomp {
+		args = append(args, "--seccomp", "true")
+	}
+
+	// 2. Prepend NetNS execution
+	netnsArgs := append([]string{"netns", "exec", spec.NetNSName, cfg.CHBinary}, args...)
+
+	// 3. Start Cloud Hypervisor Process
+	fmt.Printf(">> [Native] Spawning empty CLH process for restore of %s inside NetNS %s...\n", spec.ID, spec.NetNSName)
+	cmd := exec.Command("ip", netnsArgs...)
+
+	logFile, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // Daemonize
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("process start failed during restore: %v", err)
+	}
+
+	pid := cmd.Process.Pid
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
+		cmd.Process.Kill()
+		return err
+	}
+	cmd.Process.Release()
+
+	// 4. Wait for Socket to appear
+	client := NewAPIClient(socketPath)
+	if err := client.WaitForSocket(2 * time.Second); err != nil {
+		logs, _ := os.ReadFile(logPath)
+		Stop(spec.ID) // Cleanup
+		return fmt.Errorf("VM crashed on restore startup. Logs:\n%s", string(logs))
+	}
+
+	// Ensure tap0 is attached to br0 in netns after VMM starts
+	if err := EnsureTapBridge(spec.NetNSName, spec.TapName); err != nil {
+		log.Printf("[WARN] EnsureTapBridge failed in Restore: %v\n", err)
+	}
+
+	// 5. Send Restore Config via API (use a longer timeout since loading snapshot RAM can take time)
+	clhClient := NewCLHClientWithTimeout(socketPath, 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Check current state
-	state, err := client.GetState(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get VM state: %w", err)
+	sourceURL := "file://" + snapshotDir
+	if !strings.HasSuffix(sourceURL, "/") {
+		sourceURL += "/"
 	}
 
-	// Can boot from Created or Shutdown states
-	if state != VmStateShutdown && state != "Created" {
-		return fmt.Errorf("VM must be in shutdown or created state to start (current state: %s)", state)
+	restoreCfg := &RestoreConfig{
+		SourceURL: sourceURL,
+		Prefault:  false,
+		Resume:    true,
 	}
 
-	// Boot the VM
-	fmt.Printf("   [+] Starting VM %s (state: %s)...\n", id, state)
-	if err := client.VmBoot(ctx); err != nil {
-		return fmt.Errorf("vm.boot failed: %w", err)
+	if err := clhClient.VmRestore(ctx, restoreCfg); err != nil {
+		Stop(spec.ID)
+		return fmt.Errorf("vm.restore failed: %w", err)
 	}
 
-	fmt.Printf("   [+] VM %s Started.\n", id)
+	fmt.Printf("   [+] VM %s Restored via API! PID: %d\n", spec.ID, pid)
+	return nil
+}
+
+// RestoreCLI restores a VM from a snapshot
+func RestoreCLI(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir string) error {
+	defer util.Track("lifecycle: Sandbox Restore")()
+
+	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
+		return fmt.Errorf("ensure netns: %w", err)
+	}
+
+	overlayPath, _ = filepath.Abs(overlayPath)
+
+	socketPath := GetSocketPath(spec.ID)
+	pidPath := GetPIDPath(spec.ID)
+	logPath := GetLogPath(spec.ID)
+
+	// Clean up old socket, vsock, and event files if they exist so we start fresh
+	os.Remove(socketPath)
+	os.Remove(GetEventPath(spec.ID))
+	os.Remove(GetEventOffsetPath(spec.ID))
+	os.Remove(GetVsockPath(spec.ID))
+
+	// 1. Build minimal CLI args for restore
+	// CLH v52+ requires --kernel (or --firmware) even when restoring from a snapshot.
+	absKernelPath, _ := filepath.Abs(cfg.Paths.KernelPath)
+	args := []string{
+		"--api-socket", socketPath,
+		"--log-file", logPath,
+		"--event-monitor", "path=" + GetEventPath(spec.ID),
+		"--kernel", absKernelPath,
+	}
+
+	if cfg.Paths.InitrdPath != "" {
+		absInitrdPath, _ := filepath.Abs(cfg.Paths.InitrdPath)
+		args = append(args, "--initramfs", absInitrdPath)
+	}
+
+	if cfg.Sandbox.Seccomp {
+		args = append(args, "--seccomp", "true")
+		args = append(args, "--landlock")
+
+		absBaseDir, _ := filepath.Abs(cfg.Paths.BaseImagesDir)
+		// Parent of base-images dir (e.g. /root/void-run-prod) — mirrors the
+		// broad read rule used at fresh-boot so CLH can reach all required files.
+		absBaseParentDir := filepath.Dir(absBaseDir)
+		absInstanceDir, _ := filepath.Abs(filepath.Dir(overlayPath))
+		absSnapshotDir, _ := filepath.Abs(snapshotDir)
+
+		// Each rule must be a separate element — CLH's clap parser treats
+		// --landlock-rules as a multi-value flag, not a single space-joined string.
+		llRules := []string{
+			"path=/sys,access=r",
+			"path=/dev/urandom,access=r",
+			"path=/dev/net/tun,access=rw",
+			fmt.Sprintf("path=%s,access=r", absBaseParentDir),
+			fmt.Sprintf("path=%s,access=r", absBaseDir),
+			fmt.Sprintf("path=%s,access=r", absKernelPath),
+			fmt.Sprintf("path=%s,access=rw", absInstanceDir),
+			fmt.Sprintf("path=%s,access=r", absSnapshotDir),
+		}
+		if cfg.Paths.InitrdPath != "" {
+			absInitrdPath, _ := filepath.Abs(cfg.Paths.InitrdPath)
+			llRules = append(llRules, fmt.Sprintf("path=%s,access=r", absInitrdPath))
+		}
+		args = append(args, "--landlock-rules")
+		args = append(args, llRules...)
+	}
+
+	// 2. Append restore arguments
+	restoreArg := fmt.Sprintf("source_url=file://%s/,memory_restore_mode=ondemand,prefault=off,resume=true", snapshotDir)
+	args = append(args, "--restore", restoreArg)
+
+	// 3. Prepend NetNS execution
+	netnsArgs := append([]string{"netns", "exec", spec.NetNSName, cfg.CHBinary}, args...)
+
+	// 4. Start Cloud Hypervisor Process
+	fmt.Printf(">> [Native] Spawning restored CLH process for %s inside NetNS %s...\n", spec.ID, spec.NetNSName)
+	cmd := exec.Command("ip", netnsArgs...)
+
+	logFile, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // Daemonize
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("process start failed during restore: %v", err)
+	}
+
+	pid := cmd.Process.Pid
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
+		cmd.Process.Kill()
+		return err
+	}
+	cmd.Process.Release()
+
+	// 5. Quick sanity check — just verify the process is alive, don't block
+	//    waiting for the CLH API socket. The caller polls the vsock directly
+	//    via waitForAgent, which is the actual readiness signal.
+	time.Sleep(5 * time.Millisecond)
+	if proc, err := os.FindProcess(pid); err == nil {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			logs, _ := os.ReadFile(logPath)
+			return fmt.Errorf("VM crashed on restore. Logs:\n%s", string(logs))
+		}
+	}
+
+	// Ensure tap0 is attached to br0 in netns after VMM starts/restores
+	if err := EnsureTapBridge(spec.NetNSName, spec.TapName); err != nil {
+		log.Printf("[WARN] EnsureTapBridge failed in Restore: %v\n", err)
+	}
+
+
+
+	fmt.Printf("   [+] VM %s Restored! PID: %d\n", spec.ID, pid)
 	return nil
 }
 
@@ -445,28 +770,6 @@ func Cleanup(id string) error {
 
 	fmt.Printf("   [+] VM %s files cleaned up.\n", id)
 	return nil
-}
-
-// Pause pauses a running VM
-func Pause(id string) error {
-	client := NewCLHClientForSandbox(id)
-	if !client.IsSocketAvailable() {
-		return fmt.Errorf("Sandbox not running")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.VmPause(ctx)
-}
-
-// Resume resumes a paused VM
-func Resume(id string) error {
-	client := NewCLHClientForSandbox(id)
-	if !client.IsSocketAvailable() {
-		return fmt.Errorf("Sandbox not running")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return client.VmResume(ctx)
 }
 
 // Info returns the raw JSON info from Cloud Hypervisor

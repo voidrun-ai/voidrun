@@ -163,6 +163,7 @@ type RestoreConfig struct {
 	SourceURL string      `json:"source_url"`
 	Prefault  bool        `json:"prefault,omitempty"`
 	Net       []NetConfig `json:"net_fds,omitempty"`
+	Resume    bool        `json:"resume,omitempty"`
 }
 
 // ReceiveMigrationData is used for receiving migrations

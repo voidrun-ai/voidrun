@@ -49,8 +49,8 @@ func (m *LifecycleManager) Start(ctx context.Context) {
 	}
 	interval := time.Duration(intervalSec) * time.Second
 
-	log.Printf("[lifecycle] started (check every %s, pause-idle=%ds, stop-paused=%ds, delete-stopped=%ds)",
-		interval, m.cfg.PauseAfterIdleSec, m.cfg.StopAfterPausedSec, m.cfg.DeleteAfterStoppedSec)
+	log.Printf("[lifecycle] started (check every %s, snapshot-idle=%ds, delete-snapshotted=%ds)",
+		interval, m.cfg.SnapshotAfterIdleSec, m.cfg.DeleteAfterSnapshottedSec)
 
 	ticker := time.NewTicker(interval)
 	go func() {
@@ -69,16 +69,11 @@ func (m *LifecycleManager) Start(ctx context.Context) {
 
 func (m *LifecycleManager) tick(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		m.autoPause(ctx)
-	}()
-
-	go func() {
-		defer wg.Done()
-		m.autoStop(ctx)
+		m.autoSnapshot(ctx)
 	}()
 
 	go func() {
@@ -89,99 +84,111 @@ func (m *LifecycleManager) tick(ctx context.Context) {
 	wg.Wait()
 }
 
-// autoPause pauses running sandboxes that have been idle too long.
-func (m *LifecycleManager) autoPause(ctx context.Context) {
-	if m.cfg.PauseAfterIdleSec <= 0 {
+// autoSnapshot snapshots running sandboxes that have been idle too long.
+func (m *LifecycleManager) autoSnapshot(ctx context.Context) {
+	if m.cfg.SnapshotAfterIdleSec <= 0 {
 		return
 	}
 
-	threshold := time.Now().Add(-time.Duration(m.cfg.PauseAfterIdleSec) * time.Second)
+	threshold := time.Now().Add(-time.Duration(m.cfg.SnapshotAfterIdleSec) * time.Second)
 	sandboxes, err := m.repo.FindIdleRunning(ctx, threshold)
 	if err != nil {
-		log.Printf("[lifecycle] auto-pause query failed: %v", err)
+		log.Printf("[lifecycle] auto-snapshot query failed: %v", err)
 		return
 	}
+
+	maxConc := m.cfg.Concurrency
+	if maxConc <= 0 {
+		maxConc = 10
+	}
+	sem := make(chan struct{}, maxConc)
+	var wg sync.WaitGroup
 
 	for _, sb := range sandboxes {
-		id := sb.ID.Hex()
-		if err := runtime.Pause(id); err != nil {
-			log.Printf("[lifecycle] auto-pause runtime failed for %s (%s): %v", sb.Name, id, err)
-			continue
-		}
-		if err := m.repo.SetPausedAt(ctx, sb.ID); err != nil {
-			log.Printf("[lifecycle] auto-pause DB update failed for %s (%s): %v", sb.Name, id, err)
-			continue
-		}
-		log.Printf("[lifecycle] auto-paused sandbox %s (%s) after %ds idle", sb.Name, id, m.cfg.PauseAfterIdleSec)
+		sb := sb
+		wg.Add(1)
+		sem <- struct{}{}
+		
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			
+			id := sb.ID.Hex()
+
+			// Stop event monitor BEFORE snapshotting so it can do a final sync
+			// while the CLH API socket is still alive.
+			if m.monitor != nil {
+				m.monitor.Stop(ctx, id)
+			}
+
+			if err := runtime.Snapshot(id); err != nil {
+				log.Printf("[lifecycle] auto-snapshot runtime failed for %s (%s): %v", sb.Name, id, err)
+				return
+			}
+			if m.metrics != nil {
+				m.metrics.UnregisterSandbox(id)
+			}
+			if err := m.repo.SetSnapshottedAt(ctx, sb.ID); err != nil {
+				log.Printf("[lifecycle] auto-snapshot DB update failed for %s (%s): %v", sb.Name, id, err)
+				return
+			}
+			log.Printf("[lifecycle] auto-snapshotted sandbox %s (%s) after %ds idle", sb.Name, id, m.cfg.SnapshotAfterIdleSec)
+		}()
 	}
+	wg.Wait()
 }
 
-// autoStop stops paused sandboxes that have been paused too long.
-func (m *LifecycleManager) autoStop(ctx context.Context) {
-	if m.cfg.StopAfterPausedSec <= 0 {
-		return
-	}
-
-	threshold := time.Now().Add(-time.Duration(m.cfg.StopAfterPausedSec) * time.Second)
-	sandboxes, err := m.repo.FindStalePaused(ctx, threshold)
-	if err != nil {
-		log.Printf("[lifecycle] auto-stop query failed: %v", err)
-		return
-	}
-
-	for _, sb := range sandboxes {
-		id := sb.ID.Hex()
-		if err := runtime.Stop(id); err != nil {
-			log.Printf("[lifecycle] auto-stop runtime failed for %s (%s): %v", sb.Name, id, err)
-			continue
-		}
-		if m.metrics != nil {
-			m.metrics.UnregisterSandbox(id)
-		}
-		if err := m.repo.SetStoppedAt(ctx, sb.ID); err != nil {
-			log.Printf("[lifecycle] auto-stop DB update failed for %s (%s): %v", sb.Name, id, err)
-			continue
-		}
-		log.Printf("[lifecycle] auto-stopped sandbox %s (%s) after %ds paused", sb.Name, id, m.cfg.StopAfterPausedSec)
-	}
-}
-
-// autoDelete deletes stopped sandboxes that have been stopped too long.
+// autoDelete deletes snapshotted sandboxes that have been snapshotted too long.
 func (m *LifecycleManager) autoDelete(ctx context.Context) {
-	if m.cfg.DeleteAfterStoppedSec <= 0 {
+	if m.cfg.DeleteAfterSnapshottedSec <= 0 {
 		return
 	}
 
-	threshold := time.Now().Add(-time.Duration(m.cfg.DeleteAfterStoppedSec) * time.Second)
-	sandboxes, err := m.repo.FindStaleStopped(ctx, threshold)
+	threshold := time.Now().Add(-time.Duration(m.cfg.DeleteAfterSnapshottedSec) * time.Second)
+	sandboxes, err := m.repo.FindStaleSnapshotted(ctx, threshold)
 	if err != nil {
 		log.Printf("[lifecycle] auto-delete query failed: %v", err)
 		return
 	}
 
-	for _, sb := range sandboxes {
-		id := sb.ID.Hex()
-
-		if err := runtime.Delete(id, sb.TapName, sb.NetNSName); err != nil {
-			log.Printf("[lifecycle] auto-delete runtime failed for %s (%s): %v", sb.Name, id, err)
-			// Continue with cleanup anyway — the VM may already be gone
-		}
-
-		// Stop event monitor (final sync)
-		if m.monitor != nil {
-			m.monitor.Stop(ctx, id)
-		}
-
-		// Physical cleanup
-		if err := runtime.Cleanup(id); err != nil {
-			fmt.Printf("[lifecycle] auto-delete cleanup failed for %s (%s): %v\n", sb.Name, id, err)
-		}
-
-		// Mark as deleted in DB
-		if err := m.repo.UpdateStatusForHealth(ctx, sb.ID, "deleted"); err != nil {
-			log.Printf("[lifecycle] auto-delete DB update failed for %s (%s): %v", sb.Name, id, err)
-			continue
-		}
-		log.Printf("[lifecycle] auto-deleted sandbox %s (%s) after %ds stopped", sb.Name, id, m.cfg.DeleteAfterStoppedSec)
+	maxConc := m.cfg.Concurrency
+	if maxConc <= 0 {
+		maxConc = 10
 	}
+	sem := make(chan struct{}, maxConc)
+	var wg sync.WaitGroup
+
+	for _, sb := range sandboxes {
+		sb := sb
+		wg.Add(1)
+		sem <- struct{}{}
+		
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			
+			id := sb.ID.Hex()
+
+			if err := runtime.Delete(id, sb.TapName, sb.NetNSName); err != nil {
+				log.Printf("[lifecycle] auto-delete runtime failed for %s (%s): %v", sb.Name, id, err)
+				// Continue with cleanup anyway — the VM may already be gone
+			}
+
+			// Stop event monitor (final sync)
+			if m.monitor != nil {
+				m.monitor.Stop(ctx, id)
+			}
+
+			// Physical cleanup
+			if err := runtime.Cleanup(id); err != nil {
+				fmt.Printf("[lifecycle] auto-delete cleanup failed for %s (%s): %v\n", sb.Name, id, err)
+			}
+
+			// Mark as deleted in DB
+			if err := m.repo.UpdateStatusForHealth(ctx, sb.ID, "deleted"); err != nil {
+				log.Printf("[lifecycle] auto-delete DB update failed for %s (%s): %v", sb.Name, id, err)
+				return
+			}
+			log.Printf("[lifecycle] auto-deleted sandbox %s (%s) after %ds snapshotted", sb.Name, id, m.cfg.DeleteAfterSnapshottedSec)
+		}()
+	}
+	wg.Wait()
 }
