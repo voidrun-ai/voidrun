@@ -18,8 +18,7 @@ type Sandbox struct {
 	Status           string             `bson:"status" json:"status"`
 	AutoSleep        bool               `bson:"autoSleep" json:"autoSleep"`
 	LastActivityAt   *time.Time         `bson:"lastActivityAt,omitempty" json:"-"`
-	PausedAt         *time.Time         `bson:"pausedAt,omitempty" json:"-"`
-	StoppedAt        *time.Time         `bson:"stoppedAt,omitempty" json:"-"`
+	SnapshottedAt    *time.Time         `bson:"snapshottedAt,omitempty" json:"-"`
 	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
 	CreatedBy        primitive.ObjectID `bson:"createdBy" json:"createdBy"`
 	OrgID            primitive.ObjectID `bson:"orgId" json:"orgId"`
@@ -29,6 +28,7 @@ type Sandbox struct {
 	Hypervisor       string             `bson:"hypervisor,omitempty" json:"hypervisor,omitempty"`
 	TapName          string             `bson:"tapName,omitempty" json:"-"`
 	NetNSName        string             `bson:"netnsName,omitempty" json:"-"`
+	MacAddress       string             `bson:"macAddress,omitempty" json:"-"`
 	TapDeleted       bool               `bson:"tapDeleted,omitempty" json:"-"`
 	BillingCompleted bool               `bson:"billingCompleted,omitempty" json:"-"`
 }

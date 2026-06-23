@@ -126,7 +126,7 @@ func (h *SandboxHandler) Delete(c *gin.Context) error {
 	return nil
 }
 
-func (h *SandboxHandler) Start(c *gin.Context) error {
+func (h *SandboxHandler) Snapshot(c *gin.Context) error {
 	id := c.Param("id")
 
 	orgID, err := util.GetOrgIDFromContext(c)
@@ -134,14 +134,14 @@ func (h *SandboxHandler) Start(c *gin.Context) error {
 		return err
 	}
 
-	if err := h.sandboxService.Start(c.Request.Context(), orgID, id); err != nil {
-		return util.ErrInternal("Start failed", err)
+	if err := h.sandboxService.Snapshot(c.Request.Context(), orgID, id); err != nil {
+		return util.ErrInternal("Snapshot failed", err)
 	}
-	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox started", nil))
+	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox snapshotted", nil))
 	return nil
 }
 
-func (h *SandboxHandler) Stop(c *gin.Context) error {
+func (h *SandboxHandler) Restore(c *gin.Context) error {
 	id := c.Param("id")
 
 	orgID, err := util.GetOrgIDFromContext(c)
@@ -149,39 +149,9 @@ func (h *SandboxHandler) Stop(c *gin.Context) error {
 		return err
 	}
 
-	if err := h.sandboxService.Stop(c.Request.Context(), orgID, id); err != nil {
-		return util.ErrInternal("Stop failed", err)
+	if err := h.sandboxService.Restore(c.Request.Context(), orgID, id); err != nil {
+		return util.ErrInternal("Restore failed", err)
 	}
-	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox stopped", nil))
-	return nil
-}
-
-func (h *SandboxHandler) Pause(c *gin.Context) error {
-	id := c.Param("id")
-
-	orgID, err := util.GetOrgIDFromContext(c)
-	if err != nil {
-		return err
-	}
-
-	if err := h.sandboxService.Pause(c.Request.Context(), orgID, id); err != nil {
-		return util.ErrInternal("Pause failed", err)
-	}
-	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox paused", nil))
-	return nil
-}
-
-func (h *SandboxHandler) Resume(c *gin.Context) error {
-	id := c.Param("id")
-
-	orgID, err := util.GetOrgIDFromContext(c)
-	if err != nil {
-		return err
-	}
-
-	if err := h.sandboxService.Resume(c.Request.Context(), orgID, id); err != nil {
-		return util.ErrInternal("Resume failed", err)
-	}
-	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox resumed", nil))
+	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox restored", nil))
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -253,14 +254,42 @@ func GetEventOffsetPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/vm.evt_offset", InstancesRoot, sbxID)
 }
 
-func GetSnapshotsRoot() string {
-	return fmt.Sprintf("%s/snapshots", InstancesRoot)
+// GetSnapshotBaseDir returns the root directory for all snapshots for a sandbox.
+func GetSnapshotBaseDir(sbxID string) string {
+	return fmt.Sprintf("%s/%s/snapshots", InstancesRoot, sbxID)
 }
 
-func GetSnapshotsDir(sbxID string) string {
-	return fmt.Sprintf("%s/%s", GetSnapshotsRoot(), sbxID)
+// PrepareSnapshotDir creates a unique timestamped directory for a new snapshot.
+func PrepareSnapshotDir(sbxID string) (string, error) {
+	baseSnapshotDir := GetSnapshotBaseDir(sbxID)
+	snapshotDir := filepath.Join(baseSnapshotDir, fmt.Sprintf("snap-%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(baseSnapshotDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create snapshot base dir: %w", err)
+	}
+	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create snapshot dir: %w", err)
+	}
+	return snapshotDir, nil
 }
 
-func GetSnapshotTempDir(sbxID string) string {
-	return fmt.Sprintf("%s/%s/.tmp", GetSnapshotsRoot(), sbxID)
+// GetLatestSnapshotDir finds the newest timestamped snapshot directory for a sandbox.
+func GetLatestSnapshotDir(sbxID string) string {
+	baseDir := GetSnapshotBaseDir(sbxID)
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return ""
+	}
+	var latest string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "snap-") {
+			if entry.Name() > latest {
+				latest = entry.Name()
+			}
+		}
+	}
+	if latest != "" {
+		return filepath.Join(baseDir, latest)
+	}
+	return ""
 }
+

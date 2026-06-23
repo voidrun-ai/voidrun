@@ -15,7 +15,6 @@ import (
 	"voidrun/util"
 
 	"github.com/gin-gonic/gin"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -181,28 +180,6 @@ func PopulateInitialData(cfg *config.Config, repos *Repositories) error {
 			return fmt.Errorf("ensure local org: %w", err)
 		}
 		cfg.SystemUser.OrgID = localOrg.ID
-	}
-
-	// Create default system images (using concrete repo)
-	if imgRepo, ok := repos.Image.(interface{ EnsureSystemImage(model.Image) error }); ok {
-		if err := imgRepo.EnsureSystemImage(model.Image{
-			ID:        primitive.NewObjectID(),
-			Name:      "alpine",
-			Tag:       "latest",
-			Active:    true,
-			CreatedBy: systemUserID,
-		}); err != nil {
-			return err
-		}
-		if err := imgRepo.EnsureSystemImage(model.Image{
-			ID:        primitive.NewObjectID(),
-			Name:      "debian",
-			Tag:       "latest",
-			Active:    true,
-			CreatedBy: systemUserID,
-		}); err != nil {
-			return err
-		}
 	}
 
 	return nil

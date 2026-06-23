@@ -63,11 +63,11 @@ type SystemUserConfig struct {
 
 // AutoLifecycleConfig controls automatic sandbox lifecycle transitions
 type AutoLifecycleConfig struct {
-	Enabled               bool
-	PauseAfterIdleSec     int // auto-pause after N seconds of inactivity (default: 60)
-	StopAfterPausedSec    int // auto-stop after N seconds of being paused (default: 900)
-	DeleteAfterStoppedSec int // auto-delete after N seconds of being stopped (default: 604800)
-	CheckIntervalSec      int // how often the manager scans (default: 30)
+	Enabled                   bool
+	SnapshotAfterIdleSec      int // auto-snapshot after N seconds of inactivity (default: 60)
+	DeleteAfterSnapshottedSec int // auto-delete after N seconds of being snapshotted (default: 604800)
+	CheckIntervalSec          int // how often the manager scans (default: 30)
+	Concurrency               int // max concurrent snapshot/delete operations (default: 10)
 }
 
 // HypervisorConfig selects the default VMM backend.
@@ -231,11 +231,11 @@ const (
 	DefaultRedisPassword       = ""
 	DefaultRedisDB             = 0
 	// Auto-lifecycle defaults
-	DefaultAutoLifecycleEnabled               = true
-	DefaultAutoLifecyclePauseAfterIdleSec     = 60     // 1 minute
-	DefaultAutoLifecycleStopAfterPausedSec    = 300    // 5 minutes
-	DefaultAutoLifecycleDeleteAfterStoppedSec = 604800 // 1 week
-	DefaultAutoLifecycleCheckIntervalSec      = 30     // 30 seconds
+	DefaultAutoLifecycleEnabled                   = true
+	DefaultAutoLifecycleSnapshotAfterIdleSec      = 60     // 1 minute
+	DefaultAutoLifecycleDeleteAfterSnapshottedSec = 604800 // 1 week
+	DefaultAutoLifecycleCheckIntervalSec          = 30     // 30 seconds
+	DefaultAutoLifecycleConcurrency               = 10
 	// Monitor defaults
 	DefaultMonitorEnabled = true
 	// Pagination defaults
@@ -340,11 +340,11 @@ func New() *Config {
 			MaxAgeSec:        getEnvInt("CORS_MAX_AGE_SEC", DefaultCORSMaxAgeSec),
 		},
 		AutoLifecycle: AutoLifecycleConfig{
-			Enabled:               getEnvBool("AUTO_LIFECYCLE_ENABLED", DefaultAutoLifecycleEnabled),
-			PauseAfterIdleSec:     getEnvInt("AUTO_LIFECYCLE_PAUSE_AFTER_IDLE_SEC", DefaultAutoLifecyclePauseAfterIdleSec),
-			StopAfterPausedSec:    getEnvInt("AUTO_LIFECYCLE_STOP_AFTER_PAUSED_SEC", DefaultAutoLifecycleStopAfterPausedSec),
-			DeleteAfterStoppedSec: getEnvInt("AUTO_LIFECYCLE_DELETE_AFTER_STOPPED_SEC", DefaultAutoLifecycleDeleteAfterStoppedSec),
-			CheckIntervalSec:      getEnvInt("AUTO_LIFECYCLE_CHECK_INTERVAL_SEC", DefaultAutoLifecycleCheckIntervalSec),
+			Enabled:                   getEnvBool("AUTO_LIFECYCLE_ENABLED", DefaultAutoLifecycleEnabled),
+			SnapshotAfterIdleSec:      getEnvInt("AUTO_LIFECYCLE_SNAPSHOT_AFTER_IDLE_SEC", DefaultAutoLifecycleSnapshotAfterIdleSec),
+			DeleteAfterSnapshottedSec: getEnvInt("AUTO_LIFECYCLE_DELETE_AFTER_SNAPSHOTTED_SEC", DefaultAutoLifecycleDeleteAfterSnapshottedSec),
+			CheckIntervalSec:          getEnvInt("AUTO_LIFECYCLE_CHECK_INTERVAL_SEC", DefaultAutoLifecycleCheckIntervalSec),
+			Concurrency:               getEnvInt("AUTO_LIFECYCLE_CONCURRENCY", DefaultAutoLifecycleConcurrency),
 		},
 		Monitor: MonitorConfig{
 			Enabled: getEnvBool("MONITOR_ENABLED", DefaultMonitorEnabled),

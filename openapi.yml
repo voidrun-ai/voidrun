@@ -1222,13 +1222,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sandboxes/{id}/start:
+  /sandboxes/{id}/snapshot:
     post:
       tags:
         - Sandboxes
-      summary: Start sandbox
-      description: Start a stopped sandbox
-      operationId: startSandbox
+      summary: Snapshot sandbox
+      description: Snapshot a running sandbox and stop the VM process
+      operationId: snapshotSandbox
       security:
         - ApiKeyAuth: []
       parameters:
@@ -1240,49 +1240,7 @@ paths:
           example: 65ae1234567890abcdef1234
       responses:
         "200":
-          description: Sandbox started
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
-        "400":
-          description: Invalid request (sandbox not stopped)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Sandbox not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sandboxes/{id}/stop:
-    post:
-      tags:
-        - Sandboxes
-      summary: Stop sandbox
-      description: Stop a running sandbox
-      operationId: stopSandbox
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
-      responses:
-        "200":
-          description: Sandbox stopped
+          description: Sandbox snapshotted
           content:
             application/json:
               schema:
@@ -1300,13 +1258,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sandboxes/{id}/pause:
+  /sandboxes/{id}/restore:
     post:
       tags:
         - Sandboxes
-      summary: Pause sandbox
-      description: Pause a running sandbox
-      operationId: pauseSandbox
+      summary: Restore sandbox
+      description: Restore a snapshotted sandbox from its latest snapshot
+      operationId: restoreSandbox
       security:
         - ApiKeyAuth: []
       parameters:
@@ -1318,43 +1276,7 @@ paths:
           example: 65ae1234567890abcdef1234
       responses:
         "200":
-          description: Sandbox paused
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Sandbox not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sandboxes/{id}/resume:
-    post:
-      tags:
-        - Sandboxes
-      summary: Resume sandbox
-      description: Resume a paused sandbox
-      operationId: resumeSandbox
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
-      responses:
-        "200":
-          description: Sandbox resumed
+          description: Sandbox restored
           content:
             application/json:
               schema:

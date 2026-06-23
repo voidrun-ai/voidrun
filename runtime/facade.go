@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"voidrun/config"
 	"voidrun/model"
@@ -123,13 +124,22 @@ func Snapshot(ctx context.Context, id, snapshotDir, hvType string) error {
 }
 
 func Restore(ctx context.Context, cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir, hvType string) error {
+	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
+		return fmt.Errorf("ensure netns: %w", err)
+	}
 	hv, err := getHV(hvType)
 	if err != nil {
 		return err
 	}
 	vmCfg := BuildVMConfig(cfg, spec, overlayPath)
 	vmCfg.SnapshotDir = snapshotDir
-	return hv.Restore(ctx, vmCfg)
+	if err := hv.Restore(ctx, vmCfg); err != nil {
+		return err
+	}
+	if err := EnsureTapBridge(spec.NetNSName, spec.TapName); err != nil {
+		log.Printf("[WARN] EnsureTapBridge failed after restore: %v", err)
+	}
+	return nil
 }
 
 func DeleteVM(ctx context.Context, id, hvType string) error {

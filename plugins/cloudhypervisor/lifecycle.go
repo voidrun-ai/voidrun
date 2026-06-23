@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -246,36 +247,193 @@ func (p *Provider) DeleteVM(ctx context.Context, id string) error {
 
 func (p *Provider) Snapshot(ctx context.Context, id string, snapshotDir string) error {
 	socketPath := compute.GetSocketPath(id)
+	baseSnapshotDir := compute.GetSnapshotBaseDir(id)
 	client := NewCLHClientWithTimeout(socketPath, 30*time.Second)
 	if !client.IsSocketAvailable() {
 		return fmt.Errorf("sandbox not running")
 	}
 
 	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
-		return err
+		return fmt.Errorf("failed to create snapshot dir: %w", err)
 	}
 
-	_ = client.VmPause(ctx)
-	url := "file://" + snapshotDir + "/"
-	if err := client.VmSnapshot(ctx, url); err != nil {
-		return err
+	if err := client.VmPause(ctx); err != nil {
+		log.Printf("[Snapshot] Warning: VmPause failed for %s (may already be paused): %v", id, err)
 	}
-	return client.VmmShutdown(ctx)
+
+	snapshotURL := "file://" + snapshotDir + "/"
+	if err := client.VmSnapshot(ctx, snapshotURL); err != nil {
+		return fmt.Errorf("VmSnapshot failed: %w", err)
+	}
+
+	if err := client.VmmShutdown(ctx); err != nil {
+		log.Printf("[Snapshot] Warning: VmmShutdown failed for %s: %v", id, err)
+	}
+
+	for i := 0; i < 20; i++ {
+		if !client.IsSocketAvailable() {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if client.IsSocketAvailable() {
+		log.Printf("[Snapshot] WARNING: VMM %s still alive after 2s, force-killing", id)
+		if err := forceKillByPIDFile(id); err != nil {
+			os.Remove(socketPath)
+			return fmt.Errorf("VMM %s hung and force-kill failed: %w", id, err)
+		}
+	}
+
+	os.Remove(socketPath)
+	log.Printf("[Snapshot] VM %s snapshotted successfully to %s", id, snapshotDir)
+
+	if entries, err := os.ReadDir(baseSnapshotDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), "snap-") {
+				fullPath := filepath.Join(baseSnapshotDir, entry.Name())
+				if fullPath != snapshotDir {
+					if rmErr := os.RemoveAll(fullPath); rmErr != nil {
+						log.Printf("[Snapshot] Warning: failed to remove old snapshot %s: %v", fullPath, rmErr)
+					}
+				}
+			}
+		}
+	} else {
+		log.Printf("[Snapshot] Warning: could not read snapshot dir for cleanup %s: %v", baseSnapshotDir, err)
+	}
+
+	return nil
 }
 
 func (p *Provider) Restore(ctx context.Context, cfg compute.VMConfig) error {
-	if err := p.startViaAPI(ctx, cfg); err != nil {
-		return err
+	host := compute.Host()
+	chBinary := host.CHBinary
+	if chBinary == "" {
+		return fmt.Errorf("cloud_hypervisor: CH binary not configured")
 	}
+
+	overlayPath, _ := filepath.Abs(cfg.OverlayPath)
+	snapshotDir := cfg.SnapshotDir
 	socketPath := compute.GetSocketPath(cfg.ID)
-	client := NewCLHClient(socketPath)
-	restoreCfg := &RestoreConfig{
-		SourceURL: "file://" + cfg.SnapshotDir + "/",
+	pidPath := compute.GetPIDPath(cfg.ID)
+	logPath := compute.GetLogPath(cfg.ID)
+
+	os.Remove(socketPath)
+	os.Remove(compute.GetEventPath(cfg.ID))
+	os.Remove(compute.GetEventOffsetPath(cfg.ID))
+	os.Remove(compute.GetVsockPath(cfg.ID))
+
+	absKernelPath, _ := filepath.Abs(cfg.KernelPath)
+	args := []string{
+		"--api-socket", socketPath,
+		"--log-file", logPath,
+		"--event-monitor", "path=" + compute.GetEventPath(cfg.ID),
+		"--kernel", absKernelPath,
 	}
-	if err := client.VmRestore(ctx, restoreCfg); err != nil {
+
+	if cfg.InitrdPath != "" {
+		absInitrdPath, _ := filepath.Abs(cfg.InitrdPath)
+		args = append(args, "--initramfs", absInitrdPath)
+	}
+
+	if cfg.EnableSecurity {
+		args = append(args, "--seccomp", "true", "--landlock")
+		absBaseDir, _ := filepath.Abs(host.BaseImagesDir)
+		absBaseParentDir := filepath.Dir(absBaseDir)
+		absInstanceDir, _ := filepath.Abs(filepath.Dir(overlayPath))
+		absSnapshotDir, _ := filepath.Abs(snapshotDir)
+
+		llRules := []string{
+			"path=/sys,access=r",
+			"path=/dev/urandom,access=r",
+			"path=/dev/net/tun,access=rw",
+			fmt.Sprintf("path=%s,access=r", absBaseParentDir),
+			fmt.Sprintf("path=%s,access=r", absBaseDir),
+			fmt.Sprintf("path=%s,access=r", absKernelPath),
+			fmt.Sprintf("path=%s,access=rw", absInstanceDir),
+			fmt.Sprintf("path=%s,access=r", absSnapshotDir),
+		}
+		if cfg.InitrdPath != "" {
+			absInitrdPath, _ := filepath.Abs(cfg.InitrdPath)
+			llRules = append(llRules, fmt.Sprintf("path=%s,access=r", absInitrdPath))
+		}
+		args = append(args, "--landlock-rules")
+		args = append(args, llRules...)
+	}
+
+	restoreArg := fmt.Sprintf("source_url=file://%s/,memory_restore_mode=ondemand,prefault=off,resume=true", snapshotDir)
+	args = append(args, "--restore", restoreArg)
+
+	netnsArgs := append([]string{"netns", "exec", cfg.NetNSName, chBinary}, args...)
+	cmd := exec.CommandContext(ctx, "ip", netnsArgs...)
+
+	logFile, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("process start failed during restore: %v", err)
+	}
+
+	pid := cmd.Process.Pid
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
+		cmd.Process.Kill()
 		return err
 	}
-	return client.VmBoot(ctx)
+	cmd.Process.Release()
+
+	time.Sleep(5 * time.Millisecond)
+	if proc, err := os.FindProcess(pid); err == nil {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			logs, _ := os.ReadFile(logPath)
+			_ = p.StopVM(context.Background(), cfg.ID)
+			return fmt.Errorf("VM crashed on restore. Logs:\n%s", string(logs))
+		}
+	}
+
+	fmt.Printf("   [+] VM %s Restored! PID: %d\n", cfg.ID, pid)
+	return nil
+}
+
+func forceKillByPIDFile(id string) error {
+	pidPath := compute.GetPIDPath(id)
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return fmt.Errorf("failed to read PID file: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return fmt.Errorf("invalid PID in file: %w", err)
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return nil
+	}
+
+	if err := process.Signal(syscall.SIGKILL); err != nil {
+		log.Printf("Warning: failed to send SIGKILL to PID %d: %v", pid, err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	if err := process.Signal(syscall.Signal(0)); err == nil {
+		statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err == nil {
+			fields := strings.Fields(string(statData))
+			if len(fields) >= 3 {
+				state := fields[2]
+				if state != "Z" && state != "X" {
+					return fmt.Errorf("process %d still alive after SIGKILL (state: %s)", pid, state)
+				}
+			}
+		}
+	}
+
+	os.Remove(pidPath)
+	return nil
 }
 
 func (p *Provider) GetState(ctx context.Context, id string) (compute.VMState, error) {
