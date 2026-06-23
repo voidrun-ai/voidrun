@@ -52,6 +52,7 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 			"_id":            1,
 			"name":           1,
 			"image":          1,
+			"ip":             1,
 			"cpu":            1,
 			"mem":            1,
 			"diskMB":         1,

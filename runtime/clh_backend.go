@@ -46,7 +46,14 @@ func (b *CLHBackend) Capabilities() Capabilities {
 
 // Boot spawns the CLH process for a fresh sandbox. We use the CLI mode
 // (CreateCLI) which applies landlock rules.
+//
+// Cold restarts re-use the existing instance directory, so any stale
+// management/vsock socket files from a previous (killed) CH process must be
+// removed first or CH will fail with "Address in use" when binding the API
+// socket. The previous owner is presumed dead by the time we get here.
 func (b *CLHBackend) Boot(ctx context.Context, cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+	_ = os.Remove(GetSocketPath(spec.ID))
+	_ = os.Remove(GetVsockPath(spec.ID))
 	return CreateCLI(cfg, spec, overlayPath)
 }
 
