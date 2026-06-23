@@ -100,7 +100,6 @@ func spawnJailer(ctx context.Context, cfg compute.VMConfig) (jailPaths, error) {
 		"--new-pid-ns",
 		"--",
 		"--api-sock", "run/firecracker.socket",
-		"--log-path", "run/firecracker.log",
 	}
 
 	cmd := exec.CommandContext(ctx, host.FCJailerPath, args...)
@@ -113,6 +112,10 @@ func spawnJailer(ctx context.Context, cfg compute.VMConfig) (jailPaths, error) {
 	if err := prepareChrootAssets(jp.chrootDir, cfg); err != nil {
 		return jp, err
 	}
+	// Ensure API socket parent exists and is writable for the jailed UID.
+	runDir := filepath.Join(jp.chrootDir, "run")
+	_ = os.MkdirAll(runDir, 0755)
+	_ = chownTree(runDir, host.FCJailUID, host.FCJailGID)
 	return jp, nil
 }
 

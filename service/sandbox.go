@@ -436,7 +436,10 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 		}
 	}
 
-	timeout := 30 * time.Second
+	timeout := time.Duration(s.cfg.Sandbox.SyncTimeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
 	if err := waitForAgent(ctx, id, timeout); err != nil {
 		cleanup()
 		return fmt.Errorf("agent not ready after restore: %w", err)
