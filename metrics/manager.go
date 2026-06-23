@@ -542,34 +542,39 @@ func (m *Manager) pollOnce(ctx context.Context) {
 				}
 			}
 
-			stats, err := fetchCounters(ctx, socketPath)
-			if err == nil {
-				up = true
-				if stats.CPU != nil && !agentCPU {
-					m.cpuUsageGauge.WithLabelValues(labelID, labelName, labelHost).Set(normalizeCPUUsagePercent(stats.CPU.Usage))
-				}
-				if stats.Memory != nil && !agentMem {
-					m.memUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(stats.Memory.Usage)
-				}
-				for device, disk := range stats.Disks {
-					m.trackDiskDevice(vmID, device)
-					m.diskReadBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.ReadBytes))
-					m.diskWriteBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.WriteBytes))
-					m.diskReadOps.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.ReadOps))
-					m.diskWriteOps.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.WriteOps))
-					m.diskReadLatMin.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyMin)
-					m.diskReadLatMax.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyMax)
-					m.diskReadLatAvg.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyAvg)
-					m.diskWriteLatMin.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyMin)
-					m.diskWriteLatMax.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyMax)
-					m.diskWriteLatAvg.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyAvg)
-				}
-				for device, netc := range stats.Nets {
-					m.trackNetDevice(vmID, device)
-					m.netRxBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.RxBytes))
-					m.netTxBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.TxBytes))
-					m.netRxFrames.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.RxFrames))
-					m.netTxFrames.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.TxFrames))
+			// CLH-specific: vm.counters endpoint is only available on Cloud Hypervisor.
+			// Skip for Firecracker (guest-agent metrics above are sufficient).
+			hvType := machine.ReadHypervisorType(vmID)
+			if machine.HypervisorType(hvType) != machine.HypervisorFirecracker {
+				stats, err := fetchCounters(ctx, socketPath)
+				if err == nil {
+					up = true
+					if stats.CPU != nil && !agentCPU {
+						m.cpuUsageGauge.WithLabelValues(labelID, labelName, labelHost).Set(normalizeCPUUsagePercent(stats.CPU.Usage))
+					}
+					if stats.Memory != nil && !agentMem {
+						m.memUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(stats.Memory.Usage)
+					}
+					for device, disk := range stats.Disks {
+						m.trackDiskDevice(vmID, device)
+						m.diskReadBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.ReadBytes))
+						m.diskWriteBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.WriteBytes))
+						m.diskReadOps.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.ReadOps))
+						m.diskWriteOps.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.WriteOps))
+						m.diskReadLatMin.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyMin)
+						m.diskReadLatMax.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyMax)
+						m.diskReadLatAvg.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyAvg)
+						m.diskWriteLatMin.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyMin)
+						m.diskWriteLatMax.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyMax)
+						m.diskWriteLatAvg.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyAvg)
+					}
+					for device, netc := range stats.Nets {
+						m.trackNetDevice(vmID, device)
+						m.netRxBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.RxBytes))
+						m.netTxBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.TxBytes))
+						m.netRxFrames.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.RxFrames))
+						m.netTxFrames.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.TxFrames))
+					}
 				}
 			}
 

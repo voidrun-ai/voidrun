@@ -18,7 +18,6 @@ import (
 	"voidrun/model"
 	"voidrun/util"
 )
-
 const defaultNetDeviceID = "net0"
 
 func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {

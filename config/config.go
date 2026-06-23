@@ -18,13 +18,29 @@ type ServerConfig struct {
 	Host string
 }
 
-// Paths configuration
+// PathsConfig holds filesystem paths for binaries and disk images.
 type PathsConfig struct {
 	BaseImagesDir string
 	InstancesDir  string
 	KernelPath    string
 	InitrdPath    string
 	CHPath        string // cloud-hypervisor binary (CH_PATH)
+	FCPath        string // firecracker binary (FC_PATH)
+	FCJailerPath  string // firecracker jailer binary (FC_JAILER_PATH)
+}
+
+// FirecrackerConfig holds Firecracker-specific runtime configuration.
+type FirecrackerConfig struct {
+	// JailerEnabled wraps each Firecracker process in the jailer for additional
+	// isolation (chroot, uid/gid namespace, cgroup limits).  Requires
+	// FC_JAILER_PATH to be set.
+	JailerEnabled bool
+	// JailerBinary is the absolute path to the jailer binary.
+	JailerBinary string
+	// MetricsFIFO is an optional path prefix for per-VM Firecracker metrics
+	// FIFO files.  When non-empty the FCRuntime creates a metrics pipe at
+	// <MetricsFIFO>/<sandboxID>/vm.metrics and passes it to Firecracker.
+	MetricsFIFO string
 }
 
 // Network configuration
@@ -75,6 +91,9 @@ type Config struct {
 	Server                ServerConfig
 	Paths                 PathsConfig
 	CHBinary              string // absolute cloud-hypervisor binary; set by ResolveDerivedPaths
+	FCBinary              string // absolute firecracker binary; set by ResolveDerivedPaths
+	HypervisorType        string // "cloud-hypervisor" (default) or "firecracker"
+	FirecrackerConfig     FirecrackerConfig
 	Network               NetworkConfig
 	Mongo                 MongoConfig
 	Redis                 RedisConfig
@@ -156,8 +175,12 @@ const (
 	DefaultInstancesDir  = "/var/lib/voidrun/instances"
 	DefaultKernelPath    = "/var/lib/voidrun/base-images/vmlinux"
 	DefaultInitrdPath    = ""
-	DefaultCHPath        = "/usr/local/bin/cloud-hypervisor"
-	DefaultBridgeName    = "vmbr0"
+	DefaultCHPath            = "/usr/local/bin/cloud-hypervisor"
+	DefaultFCPath            = "/usr/local/bin/firecracker"
+	DefaultFCJailerPath      = "/usr/local/bin/jailer"
+	DefaultHypervisorType    = "cloud-hypervisor"
+	DefaultFCJailerEnabled   = false
+	DefaultBridgeName        = "vmbr0"
 	DefaultGatewayIP     = "192.168.100.1/22"
 	DefaultNetworkCIDR   = "192.168.100.0/22"
 	DefaultNetPrefix     = "vr"
@@ -248,6 +271,8 @@ func New() *Config {
 			KernelPath:    getEnv("KERNEL_PATH", DefaultKernelPath),
 			InitrdPath:    getEnv("INITRD_PATH", DefaultInitrdPath),
 			CHPath:        getEnv("CH_PATH", DefaultCHPath),
+			FCPath:        getEnv("FC_PATH", DefaultFCPath),
+			FCJailerPath:  getEnv("FC_JAILER_PATH", DefaultFCJailerPath),
 		},
 		Network: NetworkConfig{
 			BridgeName:  getEnv("BRIDGE_NAME", DefaultBridgeName),
@@ -335,6 +360,38 @@ func New() *Config {
 		log.Fatalln("Error resolving CH binary path:", err)
 	}
 	c.CHBinary = chPath
+
+	// Hypervisor selection and Firecracker-specific config.
+	c.HypervisorType = getEnv("HYPERVISOR_TYPE", DefaultHypervisorType)
+	if c.HypervisorType == "firecracker" {
+		fcPath, err := resolveBinaryPath("FC_PATH", c.Paths.FCPath, "firecracker")
+		if err != nil {
+			log.Fatalln("Error resolving Firecracker binary path:", err)
+		}
+		c.FCBinary = fcPath
+
+		jailerEnabled := getEnvBool("FC_JAILER_ENABLED", DefaultFCJailerEnabled)
+		jailerBinary := ""
+		if jailerEnabled {
+			jPath, err := resolveBinaryPath("FC_JAILER_PATH", c.Paths.FCJailerPath, "jailer")
+			if err != nil {
+				log.Fatalln("Error resolving Firecracker jailer path:", err)
+			}
+			jailerBinary = jPath
+		}
+		c.FirecrackerConfig = FirecrackerConfig{
+			JailerEnabled: jailerEnabled,
+			JailerBinary:  jailerBinary,
+			MetricsFIFO:   getEnv("FC_METRICS_FIFO", ""),
+		}
+	}
+
+	// Firecracker only supports raw disk images; enforce this automatically
+	// so operators don't have to remember to set SANDBOX_DISK_FORMAT=raw.
+	if c.HypervisorType == "firecracker" && c.Sandbox.DiskFormat != "raw" {
+		log.Printf("[config] HYPERVISOR_TYPE=firecracker requires raw disk format; overriding SANDBOX_DISK_FORMAT from %q to \"raw\"", c.Sandbox.DiskFormat)
+		c.Sandbox.DiskFormat = "raw"
+	}
 
 	// Enforce strict length limits on the network prefix to guarantee valid Linux interface names (max 15 chars total)
 	if len(c.Network.Prefix) > 4 {
@@ -437,6 +494,24 @@ func resolveCHBinaryPath(chPath string) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", fmt.Errorf("CH binary path: %w", err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+// resolveBinaryPath resolves an arbitrary binary path from a config field,
+// logging a warning (not fatal) when the file does not exist yet (e.g. the
+// binary is installed at deployment time, not build time).
+func resolveBinaryPath(envKey, path, name string) (string, error) {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return "", fmt.Errorf("%s binary path is empty (set %s)", name, envKey)
+	}
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p), nil
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("%s binary path: %w", name, err)
 	}
 	return filepath.Clean(abs), nil
 }

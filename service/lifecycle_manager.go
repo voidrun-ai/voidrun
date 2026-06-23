@@ -104,7 +104,12 @@ func (m *LifecycleManager) autoPause(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
-		if err := runtime.Pause(id); err != nil {
+		rt := runtime.NewRuntimeForSandbox(id)
+		if !rt.SupportsPause() {
+			log.Printf("[lifecycle] auto-pause skipped for %s (%s): hypervisor does not support pause", sb.Name, id)
+			continue
+		}
+		if err := rt.Pause(id); err != nil {
 			log.Printf("[lifecycle] auto-pause runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue
 		}
@@ -131,7 +136,7 @@ func (m *LifecycleManager) autoStop(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
-		if err := runtime.Stop(id); err != nil {
+		if err := runtime.NewRuntimeForSandbox(id).Stop(id); err != nil {
 			log.Printf("[lifecycle] auto-stop runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue
 		}
@@ -162,7 +167,7 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
 
-		if err := runtime.Delete(id, sb.TapName, sb.NetNSName); err != nil {
+		if err := runtime.NewRuntimeForSandbox(id).Delete(id, sb.TapName, sb.NetNSName); err != nil {
 			log.Printf("[lifecycle] auto-delete runtime failed for %s (%s): %v", sb.Name, id, err)
 			// Continue with cleanup anyway — the VM may already be gone
 		}

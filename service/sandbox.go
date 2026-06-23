@@ -190,10 +190,22 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
 
-	if err := runtime.CreateCLI(*s.cfg, spec, overlay); err != nil {
+	// Select the correct hypervisor runtime based on server configuration.
+	rt, err := runtime.NewRuntime(s.cfg)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("hypervisor init failed: %w", err)
+	}
+
+	if err := rt.Create(*s.cfg, spec, overlay); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
+	}
+
+	// Persist the hypervisor type so lifecycle ops always use the right runtime.
+	if err := runtime.WriteHypervisorType(spec.ID, rt.Type()); err != nil {
+		log.Printf("[WARN] failed to write vm.hypervisor for %s: %v", spec.ID, err)
 	}
 
 	netCfg := buildAgentNetConfig(s.cfg, spec.IPAddress, req.Name)
@@ -255,6 +267,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		Status:         "running",
 		CreatedAt:      now,
 		CreatedBy:      req.UserID,
+		Hypervisor:     string(rt.Type()),
 	}
 
 	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), sandbox.OrgID.Hex())
@@ -297,7 +310,8 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 		s.metrics.UnregisterSandbox(id)
 	}
 
-	if err := runtime.Delete(id, sandbox.TapName, sandbox.NetNSName); err != nil {
+	rt := runtime.NewRuntimeForSandbox(id)
+	if err := rt.Delete(id, sandbox.TapName, sandbox.NetNSName); err != nil {
 		fmt.Printf("[WARN] Failed to delete sandbox %s: %v\n", id, err)
 	}
 
@@ -325,24 +339,30 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		return fmt.Errorf("sandbox is not stopped (current status: %s)", sandbox.Status)
 	}
 
-	socketPath := runtime.GetSocketPath(id)
+	rt := runtime.NewRuntimeForSandbox(id)
 
 	// Check if hypervisor is running (socket exists)
-	client := runtime.NewCLHClient(socketPath)
-	if client.IsSocketAvailable() {
-		// Warm start - hypervisor running, just boot the VM
+	if rt.IsSocketAvailable(id) {
+		// Warm start — hypervisor process is alive, just boot the VM.
+		// This applies to Cloud Hypervisor only; Firecracker returns
+		// ErrWarmStartNotSupported and we fall through to cold boot below.
 		log.Printf("[Start] Warm start for sandbox %s\n", id)
-		if err := runtime.Start(id); err != nil {
-			return fmt.Errorf("failed to start VM: %w", err)
+		warmErr := rt.WarmStart(id)
+		if warmErr == nil {
+			timeout := 30 * time.Second
+			if err := waitForAgent(ctx, id, timeout); err != nil {
+				return fmt.Errorf("agent not ready: %w", err)
+			}
+			goto updateStatus
 		}
-
-		timeout := 30 * time.Second
-		if err := waitForAgent(ctx, id, timeout); err != nil {
-
-			return fmt.Errorf("agent not ready: %w", err)
+		if warmErr != runtime.ErrWarmStartNotSupported {
+			return fmt.Errorf("failed to start VM: %w", warmErr)
 		}
-	} else {
-		// Cold start - hypervisor not running, need to recreate
+		log.Printf("[Start] Warm start not supported for %s, falling back to cold boot\n", id)
+	}
+
+	{
+		// Cold start — hypervisor process is gone, recreate VM from scratch.
 		log.Printf("[Start] Cold start for sandbox %s - recreating VM\n", id)
 
 		spec := model.SandboxSpec{
@@ -372,8 +392,8 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 			spec.MacAddress = runtime.GenerateMAC(sandbox.IP)
 		}
 
-		overlayPath := runtime.GetOverlayPath(id)
-		if err := runtime.Create(*s.cfg, spec, overlayPath); err != nil {
+		overlayPath := resolveOverlayPath(id)
+		if err := rt.Create(*s.cfg, spec, overlayPath); err != nil {
 			return fmt.Errorf("failed to recreate VM: %w", err)
 		}
 
@@ -383,6 +403,7 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		}
 	}
 
+updateStatus:
 	// Update status to running and clear stoppedAt
 	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
 		// VM is running but DB update failed - log but don't fail
@@ -413,7 +434,7 @@ func (s *SandboxService) Stop(ctx context.Context, orgID primitive.ObjectID, id 
 		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
 	}
 
-	if err := runtime.Stop(id); err != nil {
+	if err := runtime.NewRuntimeForSandbox(id).Stop(id); err != nil {
 		return err
 	}
 	if s.metrics != nil {
@@ -485,7 +506,7 @@ func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id
 		return fmt.Errorf("sandbox has auto-sleep disabled")
 	}
 
-	if err := runtime.Pause(id); err != nil {
+	if err := runtime.NewRuntimeForSandbox(id).Pause(id); err != nil {
 		return err
 	}
 
@@ -510,7 +531,7 @@ func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, i
 		return fmt.Errorf("sandbox is not paused (current status: %s)", sandbox.Status)
 	}
 
-	if err := runtime.Resume(id); err != nil {
+	if err := runtime.NewRuntimeForSandbox(id).Resume(id); err != nil {
 		log.Printf("[ERROR] Failed to resume sandbox %s: %v\n", id, err)
 		return err
 	}
@@ -529,7 +550,7 @@ func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, i
 }
 
 func (s *SandboxService) Info(id string) (string, error) {
-	return runtime.Info(id)
+	return runtime.NewRuntimeForSandbox(id).Info(id)
 }
 
 // RefreshStatuses checks each sandbox health and updates status field in DB.
@@ -555,8 +576,10 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		id := sb.ID.Hex()
 
 		// --- FAST PATH CHECKS ---
-		client := runtime.NewAPIClientForSandbox(id)
-		socketExists := client.IsSocketAvailable() // Fast os.Stat check
+		// Use runtime.NewRuntimeForSandbox to check socket availability correctly
+		// for both CLH (vm.sock) and Firecracker (vm.sock) — the socket path is
+		// the same; only the protocol differs.
+		socketExists := runtime.NewAPIClientForSandbox(id).IsSocketAvailable()
 
 		// Case 1: DB says Stopped + Socket is GONE.
 		// Conclusion: It is definitely stopped/dead. No need to call API.
@@ -580,27 +603,22 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 			newState := "stopped"
 
 			if socketExists {
-				apiCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				defer cancel()
-
-				sbxState, err := client.GetStateWithContext(apiCtx)
+				rt := runtime.NewRuntimeForSandbox(id)
+				state, err := rt.GetState(id)
 				if err == nil {
-					// Map Cloud Hypervisor States to your App States
-					switch strings.ToLower(sbxState) {
-					case "running", "runningvirtualized":
+					switch state {
+					case "running":
 						newState = "running"
 					case "paused":
 						newState = "paused"
-					case "loaded":
-						// 'Loaded' means Process active, but Guest not booted.
-						// For your app, this is "stopped" (ready to start).
+					case "stopped":
 						newState = "stopped"
 					default:
 						newState = "stopped"
 					}
 				} else {
 					// Socket exists, but API refused connection or timed out.
-					// Process is likely zombie or unresponsive. Treat as stopped.
+					// Process is likely zombie or unresponsive. Treat as killed.
 					fmt.Printf("[health] Sandbox %s unresponsive (socket exists): %v\n", id, err)
 					newState = "killed"
 				}
@@ -686,10 +704,20 @@ func configureAgentNetwork(sbxID string, netCfg *agentNetConfig) error {
 	return nil
 }
 
+// resolveOverlayPath returns the overlay disk path for a given sandbox,
+// probing which file exists on disk.  Firecracker uses overlay.raw while
+// Cloud Hypervisor may use overlay.qcow2 or overlay.raw.
+func resolveOverlayPath(id string) string {
+	rawPath := runtime.GetRawOverlayPath(id)
+	if _, err := os.Stat(rawPath); err == nil {
+		return rawPath
+	}
+	return runtime.GetOverlayPath(id)
+}
+
 func buildAgentNetConfig(cfg *config.Config, ip, name string) agentNetConfig {
 	hostname := name
-	if hostname == "" {
-		hostname = cfg.Sandbox.DefaultHostname
+	if hostname == "" {		hostname = cfg.Sandbox.DefaultHostname
 	}
 	return agentNetConfig{
 		IP:          ip,

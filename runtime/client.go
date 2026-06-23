@@ -262,3 +262,31 @@ func GetSnapshotsDir(sbxID string) string {
 func GetSnapshotTempDir(sbxID string) string {
 	return fmt.Sprintf("%s/%s/.tmp", GetSnapshotsRoot(), sbxID)
 }
+
+// GetHypervisorTypePath returns the path to the hypervisor-type marker file.
+// This file is written once at sandbox creation time and consulted by the
+// vsock dialer and runtime factory to select the correct implementation.
+func GetHypervisorTypePath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/vm.hypervisor", InstancesRoot, sbxID)
+}
+
+// ReadHypervisorType reads the hypervisor type for a given sandbox from disk.
+// Returns "cloud-hypervisor" as the default when the file is absent so that
+// sandboxes created before multi-hypervisor support was added continue to work.
+func ReadHypervisorType(sbxID string) string {
+	data, err := os.ReadFile(GetHypervisorTypePath(sbxID))
+	if err != nil {
+		return "cloud-hypervisor"
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// writeFileAtomic writes data to path using a write-then-rename pattern to
+// avoid partial reads if the process crashes mid-write.
+func writeFileAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}

@@ -30,6 +30,11 @@ type Sandbox struct {
 	NetNSName        string             `bson:"netnsName,omitempty" json:"-"`
 	TapDeleted       bool               `bson:"tapDeleted,omitempty" json:"-"`
 	BillingCompleted bool               `bson:"billingCompleted,omitempty" json:"-"`
+	// Hypervisor identifies which hypervisor backs this sandbox.
+	// Values: "cloud-hypervisor" (default), "firecracker".
+	// Persisted so that lifecycle operations always use the same runtime that
+	// created the sandbox, even when the server-wide default changes.
+	Hypervisor string `bson:"hypervisor,omitempty" json:"hypervisor,omitempty"`
 }
 
 type SandboxSpec struct {
