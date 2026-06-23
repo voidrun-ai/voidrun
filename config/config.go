@@ -70,11 +70,22 @@ type AutoLifecycleConfig struct {
 	CheckIntervalSec      int // how often the manager scans (default: 30)
 }
 
+// HypervisorConfig selects the default VMM backend.
+type HypervisorConfig struct {
+	Default      string
+	FCJailUID    int
+	FCJailGID    int
+	FCChrootBase string
+}
+
 // Config holds all application configuration
 type Config struct {
 	Server                ServerConfig
 	Paths                 PathsConfig
-	CHBinary              string // absolute cloud-hypervisor binary; set by ResolveDerivedPaths
+	Hypervisor            HypervisorConfig
+	CHBinary              string
+	FCBinary              string
+	FCJailerPath          string
 	Network               NetworkConfig
 	Mongo                 MongoConfig
 	Redis                 RedisConfig
@@ -156,7 +167,13 @@ const (
 	DefaultInstancesDir  = "/var/lib/voidrun/instances"
 	DefaultKernelPath    = "/var/lib/voidrun/base-images/vmlinux"
 	DefaultInitrdPath    = ""
-	DefaultCHPath        = "/usr/local/bin/cloud-hypervisor"
+	DefaultCHPath           = "/usr/local/bin/cloud-hypervisor"
+	DefaultFCPath           = "/usr/local/bin/firecracker"
+	DefaultFCJailerPath     = "/usr/local/bin/firecracker-jailer"
+	DefaultHypervisor       = "cloud_hypervisor"
+	DefaultFCJailUID        = 1000
+	DefaultFCJailGID        = 1000
+	DefaultFCChrootBase     = ""
 	DefaultBridgeName    = "vmbr0"
 	DefaultGatewayIP     = "192.168.100.1/22"
 	DefaultNetworkCIDR   = "192.168.100.0/22"
@@ -249,6 +266,12 @@ func New() *Config {
 			InitrdPath:    getEnv("INITRD_PATH", DefaultInitrdPath),
 			CHPath:        getEnv("CH_PATH", DefaultCHPath),
 		},
+		Hypervisor: HypervisorConfig{
+			Default:      getEnv("HYPERVISOR", DefaultHypervisor),
+			FCJailUID:    getEnvInt("FC_JAIL_UID", DefaultFCJailUID),
+			FCJailGID:    getEnvInt("FC_JAIL_GID", DefaultFCJailGID),
+			FCChrootBase: getEnv("FC_CHROOT_BASE_DIR", DefaultFCChrootBase),
+		},
 		Network: NetworkConfig{
 			BridgeName:  getEnv("BRIDGE_NAME", DefaultBridgeName),
 			GatewayIP:   getEnv("GATEWAY_IP", DefaultGatewayIP),
@@ -335,6 +358,18 @@ func New() *Config {
 		log.Fatalln("Error resolving CH binary path:", err)
 	}
 	c.CHBinary = chPath
+
+	fcPath := getEnv("FC_PATH", DefaultFCPath)
+	if abs, err := resolveBinaryPath(fcPath); err == nil {
+		c.FCBinary = abs
+	}
+	jailerPath := getEnv("FC_JAILER_PATH", DefaultFCJailerPath)
+	if abs, err := resolveBinaryPath(jailerPath); err == nil {
+		c.FCJailerPath = abs
+	}
+	if c.Hypervisor.FCChrootBase == "" {
+		c.Hypervisor.FCChrootBase = c.Paths.InstancesDir + "/jails"
+	}
 
 	// Enforce strict length limits on the network prefix to guarantee valid Linux interface names (max 15 chars total)
 	if len(c.Network.Prefix) > 4 {
@@ -427,16 +462,20 @@ func (n *NetworkConfig) GetCleanGateway() string {
 }
 
 func resolveCHBinaryPath(chPath string) (string, error) {
-	p := strings.TrimSpace(chPath)
+	return resolveBinaryPath(chPath)
+}
+
+func resolveBinaryPath(p string) (string, error) {
+	p = strings.TrimSpace(p)
 	if p == "" {
-		return "", fmt.Errorf("CH binary path is empty (set CH_PATH)")
+		return "", fmt.Errorf("binary path is empty")
 	}
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p), nil
 	}
 	abs, err := filepath.Abs(p)
 	if err != nil {
-		return "", fmt.Errorf("CH binary path: %w", err)
+		return "", fmt.Errorf("binary path: %w", err)
 	}
 	return filepath.Clean(abs), nil
 }

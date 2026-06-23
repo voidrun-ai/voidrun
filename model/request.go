@@ -15,6 +15,7 @@ type CreateSandboxRequest struct {
 	AutoSleep    *bool              `json:"autoSleep,omitempty"`
 	Region       string             `json:"region,omitempty"`
 	RefID        string             `json:"refId,omitempty"`
+	Hypervisor   string             `json:"hypervisor,omitempty"`
 }
 
 // ExecRequest represents a command execution request

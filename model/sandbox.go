@@ -26,6 +26,7 @@ type Sandbox struct {
 	EnvVars          map[string]string  `bson:"envVars,omitempty" json:"-"`
 	Region           string             `bson:"region,omitempty" json:"region,omitempty"`
 	RefID            string             `bson:"refId,omitempty" json:"refId,omitempty"`
+	Hypervisor       string             `bson:"hypervisor,omitempty" json:"hypervisor,omitempty"`
 	TapName          string             `bson:"tapName,omitempty" json:"-"`
 	NetNSName        string             `bson:"netnsName,omitempty" json:"-"`
 	TapDeleted       bool               `bson:"tapDeleted,omitempty" json:"-"`

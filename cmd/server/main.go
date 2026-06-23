@@ -6,6 +6,9 @@ import (
 	"voidrun/config"
 	"voidrun/server"
 
+	_ "voidrun/plugins/cloudhypervisor"
+	_ "voidrun/plugins/firecracker"
+
 	"github.com/joho/godotenv"
 )
 

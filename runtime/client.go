@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"voidrun/pkg/compute"
 )
 
 // Default paths - can be overridden via configuration
@@ -213,15 +215,15 @@ func (c *APIClient) GetStateWithContext(ctx context.Context) (string, error) {
 }
 
 func GetInstanceDir(sbxID string) string {
-	return fmt.Sprintf("%s/%s", InstancesRoot, sbxID)
+	return compute.GetInstanceDir(sbxID)
 }
 
 func GetSocketPath(sbxID string) string {
-	return fmt.Sprintf("%s/%s/vm.sock", InstancesRoot, sbxID)
+	return compute.GetSocketPath(sbxID)
 }
 
 func GetVsockPath(sbxID string) string {
-	return fmt.Sprintf("%s/%s/vsock.sock", InstancesRoot, sbxID)
+	return compute.GetVsockPath(sbxID)
 }
 
 func GetPIDPath(sbxID string) string {

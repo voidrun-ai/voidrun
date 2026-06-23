@@ -63,6 +63,7 @@ func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, i
 			"createdBy":      1,
 			"region":         1,
 			"refId":          1,
+			"hypervisor":     1,
 			"tapName":        1,
 			"tapDeleted":     1,
 			"netnsName":      1,
@@ -126,6 +127,13 @@ func (s *SandboxService) Exists(ctx context.Context, orgID primitive.ObjectID, i
 	return s.repo.Exists(ctx, orgID, id)
 }
 
+func (s *SandboxService) resolveHV(hv string) string {
+	if hv != "" {
+		return hv
+	}
+	return s.cfg.Hypervisor.Default
+}
+
 func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequest) (*model.Sandbox, error) {
 	ip, err := s.repo.NextAvailableIP()
 	if err != nil {
@@ -146,6 +154,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		mem = s.cfg.Sandbox.DefaultMemoryMB
 	}
 	diskMB := s.cfg.Sandbox.DefaultDiskMB
+	hvType := s.resolveHV(req.Hypervisor)
 	if req.Image == "" {
 		req.Image = s.cfg.Sandbox.DefaultImage
 	}
@@ -190,7 +199,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
 
-	if err := runtime.CreateCLI(*s.cfg, spec, overlay); err != nil {
+	if err := runtime.CreateCLI(ctx, *s.cfg, spec, overlay, hvType); err != nil {
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		cleanup()
 		return nil, fmt.Errorf("boot failed: %w", err)
@@ -204,7 +213,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	}
 	if syncEnabled {
 		if err := waitForAgent(ctx, spec.ID, timeout); err != nil {
-			runtime.Stop(spec.ID)
+			runtime.Stop(ctx, spec.ID, hvType)
 			cleanup()
 			return nil, fmt.Errorf("agent not ready: %w", err)
 		}
@@ -247,6 +256,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		OrgID:          req.OrgID,
 		EnvVars:        req.EnvVars,
 		AutoSleep:      autoSleep,
+		Hypervisor:     hvType,
 		Region:         req.Region,
 		RefID:          req.RefID,
 		TapName:        spec.TapName,
@@ -260,7 +270,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), sandbox.OrgID.Hex())
 	err = s.repo.Create(ctx, sandbox)
 	if err != nil {
-		runtime.Stop(spec.ID)
+		runtime.Stop(ctx, spec.ID, hvType)
 		cleanup()
 		return nil, fmt.Errorf("DB save failed: %w", err)
 	}
@@ -297,7 +307,7 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 		s.metrics.UnregisterSandbox(id)
 	}
 
-	if err := runtime.Delete(id, sandbox.TapName, sandbox.NetNSName); err != nil {
+	if err := runtime.Delete(ctx, id, sandbox.TapName, sandbox.NetNSName, s.resolveHV(sandbox.Hypervisor)); err != nil {
 		fmt.Printf("[WARN] Failed to delete sandbox %s: %v\n", id, err)
 	}
 
@@ -325,14 +335,11 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		return fmt.Errorf("sandbox is not stopped (current status: %s)", sandbox.Status)
 	}
 
-	socketPath := runtime.GetSocketPath(id)
+	hv := s.resolveHV(sandbox.Hypervisor)
 
-	// Check if hypervisor is running (socket exists)
-	client := runtime.NewCLHClient(socketPath)
-	if client.IsSocketAvailable() {
-		// Warm start - hypervisor running, just boot the VM
+	if runtime.IsSocketAvailable(id, hv) {
 		log.Printf("[Start] Warm start for sandbox %s\n", id)
-		if err := runtime.Start(id); err != nil {
+		if err := runtime.Start(ctx, id, hv); err != nil {
 			return fmt.Errorf("failed to start VM: %w", err)
 		}
 
@@ -373,7 +380,7 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		}
 
 		overlayPath := runtime.GetOverlayPath(id)
-		if err := runtime.Create(*s.cfg, spec, overlayPath); err != nil {
+		if err := runtime.Create(ctx, *s.cfg, spec, overlayPath, hv); err != nil {
 			return fmt.Errorf("failed to recreate VM: %w", err)
 		}
 
@@ -413,7 +420,7 @@ func (s *SandboxService) Stop(ctx context.Context, orgID primitive.ObjectID, id 
 		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
 	}
 
-	if err := runtime.Stop(id); err != nil {
+	if err := runtime.Stop(ctx, id, s.resolveHV(sandbox.Hypervisor)); err != nil {
 		return err
 	}
 	if s.metrics != nil {
@@ -485,7 +492,7 @@ func (s *SandboxService) Pause(ctx context.Context, orgID primitive.ObjectID, id
 		return fmt.Errorf("sandbox has auto-sleep disabled")
 	}
 
-	if err := runtime.Pause(id); err != nil {
+	if err := runtime.Pause(ctx, id, s.resolveHV(sandbox.Hypervisor)); err != nil {
 		return err
 	}
 
@@ -510,7 +517,7 @@ func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, i
 		return fmt.Errorf("sandbox is not paused (current status: %s)", sandbox.Status)
 	}
 
-	if err := runtime.Resume(id); err != nil {
+	if err := runtime.Resume(ctx, id, s.resolveHV(sandbox.Hypervisor)); err != nil {
 		log.Printf("[ERROR] Failed to resume sandbox %s: %v\n", id, err)
 		return err
 	}
@@ -529,7 +536,7 @@ func (s *SandboxService) Resume(ctx context.Context, orgID primitive.ObjectID, i
 }
 
 func (s *SandboxService) Info(id string) (string, error) {
-	return runtime.Info(id)
+	return runtime.Info(context.Background(), id, s.cfg.Hypervisor.Default)
 }
 
 // RefreshStatuses checks each sandbox health and updates status field in DB.

@@ -15,25 +15,35 @@ import (
 
 // LifecycleManager runs periodic scans to auto-pause, auto-stop, and auto-delete sandboxes.
 type LifecycleManager struct {
-	repo    repository.ISandboxRepository
-	cfg     config.AutoLifecycleConfig
-	monitor *runtime.EventMonitor
-	metrics *metrics.Manager
+	repo           repository.ISandboxRepository
+	cfg            config.AutoLifecycleConfig
+	defaultHV      string
+	monitor        *runtime.EventMonitor
+	metrics        *metrics.Manager
 }
 
 // NewLifecycleManager creates a new lifecycle manager.
 func NewLifecycleManager(
 	cfg config.AutoLifecycleConfig,
+	defaultHV string,
 	repo repository.ISandboxRepository,
 	monitor *runtime.EventMonitor,
 	metricsManager *metrics.Manager,
 ) *LifecycleManager {
 	return &LifecycleManager{
-		repo:    repo,
-		cfg:     cfg,
-		monitor: monitor,
-		metrics: metricsManager,
+		repo:      repo,
+		cfg:       cfg,
+		defaultHV: defaultHV,
+		monitor:   monitor,
+		metrics:   metricsManager,
 	}
+}
+
+func (m *LifecycleManager) resolveHV(hv string) string {
+	if hv != "" {
+		return hv
+	}
+	return m.defaultHV
 }
 
 // Start launches the lifecycle scan loop in a background goroutine.
@@ -104,7 +114,7 @@ func (m *LifecycleManager) autoPause(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
-		if err := runtime.Pause(id); err != nil {
+		if err := runtime.Pause(ctx, id, m.resolveHV(sb.Hypervisor)); err != nil {
 			log.Printf("[lifecycle] auto-pause runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue
 		}
@@ -131,7 +141,7 @@ func (m *LifecycleManager) autoStop(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
-		if err := runtime.Stop(id); err != nil {
+		if err := runtime.Stop(ctx, id, m.resolveHV(sb.Hypervisor)); err != nil {
 			log.Printf("[lifecycle] auto-stop runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue
 		}
@@ -162,7 +172,7 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
 
-		if err := runtime.Delete(id, sb.TapName, sb.NetNSName); err != nil {
+		if err := runtime.Delete(ctx, id, sb.TapName, sb.NetNSName, m.resolveHV(sb.Hypervisor)); err != nil {
 			log.Printf("[lifecycle] auto-delete runtime failed for %s (%s): %v", sb.Name, id, err)
 			// Continue with cleanup anyway — the VM may already be gone
 		}
