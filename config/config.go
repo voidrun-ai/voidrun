@@ -25,6 +25,7 @@ type PathsConfig struct {
 	KernelPath    string
 	InitrdPath    string
 	CHPath        string // cloud-hypervisor binary (CH_PATH)
+	FCPath        string // firecracker binary (FC_PATH)
 }
 
 // Network configuration
@@ -75,6 +76,8 @@ type Config struct {
 	Server                ServerConfig
 	Paths                 PathsConfig
 	CHBinary              string // absolute cloud-hypervisor binary; set by ResolveDerivedPaths
+	FCBinary              string // absolute firecracker binary; set by ResolveDerivedPaths
+	HypervisorType        string // "cloud-hypervisor" or "firecracker"
 	Network               NetworkConfig
 	Mongo                 MongoConfig
 	Redis                 RedisConfig
@@ -157,6 +160,8 @@ const (
 	DefaultKernelPath    = "/var/lib/voidrun/base-images/vmlinux"
 	DefaultInitrdPath    = ""
 	DefaultCHPath        = "/usr/local/bin/cloud-hypervisor"
+	DefaultFCPath        = "/usr/local/bin/firecracker"
+	DefaultHypervisorType = "cloud-hypervisor"
 	DefaultBridgeName    = "vmbr0"
 	DefaultGatewayIP     = "192.168.100.1/22"
 	DefaultNetworkCIDR   = "192.168.100.0/22"
@@ -248,7 +253,9 @@ func New() *Config {
 			KernelPath:    getEnv("KERNEL_PATH", DefaultKernelPath),
 			InitrdPath:    getEnv("INITRD_PATH", DefaultInitrdPath),
 			CHPath:        getEnv("CH_PATH", DefaultCHPath),
+			FCPath:        getEnv("FC_PATH", DefaultFCPath),
 		},
+		HypervisorType: getEnv("HYPERVISOR_TYPE", DefaultHypervisorType),
 		Network: NetworkConfig{
 			BridgeName:  getEnv("BRIDGE_NAME", DefaultBridgeName),
 			GatewayIP:   getEnv("GATEWAY_IP", DefaultGatewayIP),
@@ -335,6 +342,12 @@ func New() *Config {
 		log.Fatalln("Error resolving CH binary path:", err)
 	}
 	c.CHBinary = chPath
+
+	fcPath, err := resolveFCBinaryPath(c.Paths.FCPath)
+	if err != nil {
+		log.Fatalln("Error resolving FC binary path:", err)
+	}
+	c.FCBinary = fcPath
 
 	// Enforce strict length limits on the network prefix to guarantee valid Linux interface names (max 15 chars total)
 	if len(c.Network.Prefix) > 4 {
@@ -437,6 +450,22 @@ func resolveCHBinaryPath(chPath string) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", fmt.Errorf("CH binary path: %w", err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+func resolveFCBinaryPath(fcPath string) (string, error) {
+	p := strings.TrimSpace(fcPath)
+	if p == "" {
+		// Firecracker path is optional — only required when HYPERVISOR_TYPE=firecracker
+		return DefaultFCPath, nil
+	}
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p), nil
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", fmt.Errorf("FC binary path: %w", err)
 	}
 	return filepath.Clean(abs), nil
 }

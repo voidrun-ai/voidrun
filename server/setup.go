@@ -85,9 +85,16 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		monitor.SetRootContext(context.Background())
 	}
 
+	// Instantiate the hypervisor driver (Cloud Hypervisor or Firecracker).
+	driver, err := runtime.NewVMDriver(cfg)
+	if err != nil {
+		panic(fmt.Sprintf("[FATAL] Failed to initialise VM driver: %v", err))
+	}
+	fmt.Printf("[server] Using hypervisor driver: %s\n", driver.Name())
+
 	return &Services{
 		User:             service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
-		Sandbox:          service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor),
+		Sandbox:          service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor, driver),
 		Image:            service.NewImageService(cfg, repos.Image),
 		Exec:             service.NewExecService(cfg),
 		Session:          service.NewSessionExecService(cfg),
@@ -101,7 +108,7 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		Clerk:            clerkSvc,
 		AuthCache:        authCache,
 		Monitor:          monitor,
-		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager),
+		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager, driver),
 	}
 }
 

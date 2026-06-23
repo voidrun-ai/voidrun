@@ -19,6 +19,7 @@ type LifecycleManager struct {
 	cfg     config.AutoLifecycleConfig
 	monitor *runtime.EventMonitor
 	metrics *metrics.Manager
+	driver  runtime.VMDriver
 }
 
 // NewLifecycleManager creates a new lifecycle manager.
@@ -27,12 +28,14 @@ func NewLifecycleManager(
 	repo repository.ISandboxRepository,
 	monitor *runtime.EventMonitor,
 	metricsManager *metrics.Manager,
+	driver runtime.VMDriver,
 ) *LifecycleManager {
 	return &LifecycleManager{
 		repo:    repo,
 		cfg:     cfg,
 		monitor: monitor,
 		metrics: metricsManager,
+		driver:  driver,
 	}
 }
 
@@ -104,7 +107,7 @@ func (m *LifecycleManager) autoPause(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
-		if err := runtime.Pause(id); err != nil {
+		if err := m.driver.Pause(id); err != nil {
 			log.Printf("[lifecycle] auto-pause runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue
 		}
@@ -131,7 +134,7 @@ func (m *LifecycleManager) autoStop(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
-		if err := runtime.Stop(id); err != nil {
+		if err := m.driver.Stop(id); err != nil {
 			log.Printf("[lifecycle] auto-stop runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue
 		}
@@ -162,9 +165,9 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
 
-		if err := runtime.Delete(id, sb.TapName, sb.NetNSName); err != nil {
+		if err := m.driver.Delete(id, sb.TapName, sb.NetNSName); err != nil {
 			log.Printf("[lifecycle] auto-delete runtime failed for %s (%s): %v", sb.Name, id, err)
-			// Continue with cleanup anyway — the VM may already be gone
+			// Continue with cleanup anyway — the VM may already be gone.
 		}
 
 		// Stop event monitor (final sync)

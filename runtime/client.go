@@ -251,6 +251,21 @@ func GetEventOffsetPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/vm.evt_offset", InstancesRoot, sbxID)
 }
 
+// GetFCSocketPath returns the path to the Firecracker API socket for a sandbox.
+func GetFCSocketPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/fc.sock", InstancesRoot, sbxID)
+}
+
+// GetFCPIDPath returns the path to the Firecracker PID file for a sandbox.
+func GetFCPIDPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/fc.pid", InstancesRoot, sbxID)
+}
+
+// GetFCLogPath returns the path to the Firecracker log file for a sandbox.
+func GetFCLogPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/fc.log", InstancesRoot, sbxID)
+}
+
 func GetSnapshotsRoot() string {
 	return fmt.Sprintf("%s/snapshots", InstancesRoot)
 }
