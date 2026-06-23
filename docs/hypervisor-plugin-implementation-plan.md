@@ -23,7 +23,6 @@ This plan assumes the **snapshot/restore lifecycle** from `origin/feat/ch-snap-r
 
 ### Non-goals (this effort)
 
-- Firecracker jailer integration (follow-up)
 - Cross-hypervisor snapshot migration
 - Replacing Gin handlers or MongoDB persistence layer
 - Merging `feat/ch-snap-restore` in this branch (prerequisite tracked separately)
@@ -60,8 +59,11 @@ This planning branch (`cursor/hypervisor-plugin-plan-4063`) documents the design
 |------------|--------|--------------|
 | Cloud Hypervisor | `cloud-hypervisor` | `CH_PATH` / `/usr/local/bin/cloud-hypervisor` |
 | Firecracker | `firecracker` | `FC_PATH` / `/usr/local/bin/firecracker` |
+| Firecracker Jailer | `firecracker-jailer` (same version as FC) | `FC_JAILER_PATH` / `/usr/local/bin/firecracker-jailer` |
 
 Both require KVM (`/dev/kvm`). Firecracker hosts need a PVH-compatible kernel (may share `KERNEL_PATH` or use `FC_KERNEL_PATH`).
+
+Firecracker **must always run inside the jailer** — bare `firecracker` binary invocation is not supported in production or integration tests. The jailer and Firecracker binaries must be the **same version** (static musl build).
 
 ---
 
@@ -90,6 +92,7 @@ voidrun/
 │   └── firecracker/
 │       ├── plugin.go
 │       ├── lifecycle.go
+│       ├── jailer.go                        # jailer spawn, chroot prep, cleanup
 │       ├── client.go                        # FC REST over Unix socket
 │       ├── config.go                        # FC API types
 │       └── types.go
@@ -221,7 +224,11 @@ Env vars:
 |----------|---------|---------|
 | `HYPERVISOR` | `cloud_hypervisor` | Host default backend |
 | `CH_PATH` | `/usr/local/bin/cloud-hypervisor` | CH binary |
-| `FC_PATH` | `/usr/local/bin/firecracker` | FC binary |
+| `FC_PATH` | `/usr/local/bin/firecracker` | FC binary (must match jailer version) |
+| `FC_JAILER_PATH` | `/usr/local/bin/firecracker-jailer` | Jailer binary |
+| `FC_JAIL_UID` | `1000` | UID jailer drops to before exec |
+| `FC_JAIL_GID` | `1000` | GID jailer drops to before exec |
+| `FC_CHROOT_BASE_DIR` | `{INSTANCES_DIR}/jails` | Base for `<chroot_base>/firecracker/<id>/root` |
 | `FC_KERNEL_PATH` | `""` (falls back to `KERNEL_PATH`) | FC-specific kernel |
 
 ---
@@ -277,27 +284,135 @@ cmd := exec.CommandContext(ctx, "ip", append(
 {INSTANCES_DIR}/{id}/snapshots/snap-{nanos}/
 ```
 
-### 5.2 Firecracker (`plugins/firecracker`)
+### 5.2 Firecracker (`plugins/firecracker`) — **always via jailer**
 
 **Registration:** `compute.Register("firecracker", ...)`
 
-**Method mapping:**
+Firecracker is **never** spawned directly. All VM processes go through `firecracker-jailer`, which provides chroot isolation, privilege dropping, cgroups, and optional netns join. This is Firecracker's recommended production model and maps to VoidRun's `EnableSecurity` semantics for the FC backend.
 
-| Interface method | FC implementation |
-|------------------|-------------------|
-| `StartVM` | spawn FC → PUT boot-source, machine-config, drives, net, vsock → `InstanceStart` |
-| `StopVM` | `SendCtrlAltDel` or kill process |
-| `Snapshot` | `Pause` → `CreateSnapshot` → kill VMM |
-| `Restore` | spawn FC → `LoadSnapshot` → `Resume` |
-| `GetState` | `GET /` → `state` field |
+#### Jailer spawn pattern
+
+```bash
+firecracker-jailer \
+  --id <sandbox_id> \
+  --exec-file /usr/local/bin/firecracker \
+  --uid <FC_JAIL_UID> \
+  --gid <FC_JAIL_GID> \
+  --chroot-base-dir <FC_CHROOT_BASE_DIR> \
+  --netns /var/run/netns/<netns_name> \
+  --daemonize \
+  --new-pid-ns \
+  --cgroup cpuset.cpus=<vcpu_affinity> \
+  --resource-limit no-file=2048 \
+  -- \
+  --api-sock run/firecracker.socket \
+  --log-path run/firecracker.log
+```
+
+Go equivalent:
+
+```go
+cmd := exec.CommandContext(ctx, jailerPath,
+    "--id", cfg.ID,
+    "--exec-file", fcBinary,
+    "--uid", strconv.Itoa(jailUID),
+    "--gid", strconv.Itoa(jailGID),
+    "--chroot-base-dir", chrootBase,
+    "--netns", filepath.Join("/var/run/netns", cfg.NetNSName),
+    "--daemonize",
+    "--new-pid-ns",
+    "--cgroup", fmt.Sprintf("cpuset.cpus=%d", cfg.VCPU-1), // example
+    "--",
+    "--api-sock", "run/firecracker.socket",
+    "--log-path", "run/firecracker.log",
+)
+```
+
+**Notes:**
+- Jailer must run as **root** (VoidRun daemon already runs privileged for netns/KVM).
+- `--netns` is passed to the **jailer** (not `ip netns exec`), which joins the sandbox netns before chroot — same isolation model as CH.
+- Extra FC flags after `--` are forwarded unchanged to the jailed Firecracker process.
+- Jailer and Firecracker binary versions **must match** (same release artifact).
+
+#### Chroot layout
+
+Jailer creates:
+
+```
+{FC_CHROOT_BASE_DIR}/firecracker/{sandbox_id}/root/   ← chroot_dir
+├── firecracker          # copy of exec-file (jailer does this)
+├── firecracker.pid      # PID of jailed FC process (read by orchestrator)
+├── run/
+│   ├── firecracker.socket   # API socket (default path inside jail)
+│   └── firecracker.log
+├── vmlinux              # hardlink from host (orchestrator prepares)
+├── rootfs.img           # hardlink of overlay disk (orchestrator prepares)
+├── vsock.sock           # hardlink; vsock uds_path in API must be jail-relative
+└── snapshots/           # hardlink snapshot mem/state files on restore
+```
+
+**Orchestrator responsibilities before jailer starts** (`plugins/firecracker/jailer.go`):
+
+1. Ensure `{chroot_base}/firecracker/{id}/root` does not exist (unique ID per sandbox).
+2. Let jailer create the chroot, **or** pre-create and hardlink resources into `root/` after jailer init (preferred: prepare links in a `PrepareJail(ctx, cfg)` step immediately before spawn).
+3. Hardlink (not symlink) kernel, disk, vsock path, and snapshot files into chroot — jailer docs require hardlinks/copies with correct ownership for the jail UID/GID.
+4. `chown` jail resources to `FC_JAIL_UID:FC_JAIL_GID` so the dropped-privilege FC process can read/write disks and create sockets.
+
+**Host-visible API socket path** (for REST client):
+
+```
+{FC_CHROOT_BASE_DIR}/firecracker/{id}/root/run/firecracker.socket
+```
+
+Store this in `pkg/compute/paths.go` as `GetFCAPISocketPath(id)`.
+
+**PID file** (for stop/delete):
+
+```
+{FC_CHROOT_BASE_DIR}/firecracker/{id}/root/firecracker.pid
+```
+
+#### Method mapping
+
+| Interface method | FC + jailer implementation |
+|------------------|---------------------------|
+| `StartVM` | `PrepareJail` → spawn jailer → wait for API socket → PUT boot-source, machine-config, drives, net, vsock → `InstanceStart` |
+| `StopVM` | `SendCtrlAltDel` via API → wait for socket gone → read `firecracker.pid` → SIGKILL fallback |
+| `Snapshot` | `Pause` → `CreateSnapshot` (paths inside chroot) → kill via PID file → cleanup socket |
+| `Restore` | `PrepareJail` with snapshot hardlinks → spawn jailer → `LoadSnapshot` → `Resume` |
+| `Delete` | kill process → remove `{chroot_base}/firecracker/{id}/` tree + cgroup dir |
+| `GetState` | `GET /` on host-visible API socket |
 | `Counters` | optional `GET /metrics` if FIFO enabled; else nil |
 | `EventSource` | nil (no file stream); health poll only |
 
-**Disk policy:**
+#### Security mapping
+
+| `EnableSecurity` | CH backend | FC backend |
+|------------------|------------|------------|
+| `true` (default) | `--seccomp` + `--landlock` | jailer (always) + cgroups + `--resource-limit` |
+| `false` | seccomp/landlock off | **still use jailer** — jailer is mandatory for FC; only skip optional cgroup/resource-limit tuning |
+
+Jailer is not optional for Firecracker even when `EnableSecurity=false`. The flag controls extra cgroup/resource-limit hardening on top of the jail.
+
+#### Disk policy
+
 - Reject `FormatQcow2` with backing overlay
 - Prefer `FormatRaw` or standalone qcow2 copy (`qcow2-flat`)
+- Disk hardlinked into chroot as `rootfs.img` (jail-relative path in `PUT /drives/root`)
 
-**Vsock:** same `CONNECT <port>\n` handshake — guest agent unchanged.
+#### Vsock
+
+- `PUT /vsock` with `uds_path` set to jail-relative path (e.g. `vsock.sock`)
+- Hardlink host `{instanceDir}/vsock.sock` into chroot before boot
+- Guest agent `CONNECT` handshake unchanged on host side (dial host path `{instanceDir}/vsock.sock`)
+
+#### Cleanup on delete
+
+```go
+// 1. Kill via firecracker.pid inside chroot
+// 2. os.RemoveAll("{chroot_base}/firecracker/{id}/")
+// 3. Best-effort: remove cgroup at /sys/fs/cgroup/*/firecracker/{id}/
+```
 
 ---
 
@@ -415,17 +530,20 @@ Tasks:
 
 ---
 
-### Phase 3 — Firecracker plugin
+### Phase 3 — Firecracker plugin (jailer required)
 
 Tasks:
-- [ ] Add `plugins/firecracker/client.go` — FC REST client over Unix socket
-- [ ] Implement `StartVM`, `StopVM`, `Snapshot`, `Restore`, `GetState`
+- [ ] Add `plugins/firecracker/jailer.go` — `PrepareJail`, `SpawnJailer`, `CleanupJail`, hardlink helpers
+- [ ] Add `plugins/firecracker/client.go` — FC REST client over host-visible jail API socket
+- [ ] Implement `StartVM`, `StopVM`, `Snapshot`, `Restore`, `Delete`, `GetState` — all via jailer
+- [ ] Add jailer config: `FC_JAILER_PATH`, `FC_JAIL_UID`, `FC_JAIL_GID`, `FC_CHROOT_BASE_DIR`
+- [ ] Create dedicated system user `voidrun-fc` (or configurable UID/GID) in setup docs
 - [ ] Blank import `plugins/firecracker` in `cmd/server/main.go`
 - [ ] Disk validation: reject qcow2 backing overlay for FC
-- [ ] Integration test script: `HYPERVISOR=firecracker` create → probe agent → exec → snapshot → restore → delete
-- [ ] `docs/firecracker-setup.md`
+- [ ] Integration tests (root + KVM): jailer spawn, chroot isolation, full lifecycle
+- [ ] `docs/firecracker-setup.md` — jailer install, version pinning, user setup
 
-**Exit criteria:** full sandbox lifecycle works on FC host with `HYPERVISOR=firecracker`.
+**Exit criteria:** full sandbox lifecycle works on FC host with `HYPERVISOR=firecracker`; all FC processes run jailed as non-root UID; no bare `firecracker` spawn path exists.
 
 ---
 
@@ -436,8 +554,8 @@ Tasks:
 - [ ] OpenAPI: optional `hypervisor` on create
 - [ ] Health monitor: normalized `VMState` (no CH-specific strings in service)
 - [ ] Lifecycle manager: load hypervisor per sandbox from DB
-- [ ] README update: dual hypervisor requirements
-- [ ] Optional: FC jailer wrapper (follow-up ticket)
+- [ ] README update: dual hypervisor requirements (CH landlock vs FC jailer)
+- [ ] Cgroup cleanup on sandbox delete (FC jailer leaves cgroup dirs)
 
 **Exit criteria:** documented dual-backend deployment; OpenAPI updated.
 
@@ -452,24 +570,51 @@ Tasks:
 | `pkg/compute` | Register duplicate panic, Get unknown, List |
 | `plugins/cloudhypervisor` | CLI arg builder, landlock rules, state normalization |
 | `plugins/firecracker` | API payload builder, action types, state parse |
+| `plugins/firecracker/jailer` | jailer CLI arg builder, chroot path resolution, hardlink manifest |
 | `runtime/disk.go` | Format rejection per hypervisor |
 
-### Integration tests (KVM host required)
+### Integration tests (KVM + root required)
 
 ```bash
 # CH (default)
-go test -tags=integration ./plugins/cloudhypervisor/...
+sudo -E go test -tags=integration ./plugins/cloudhypervisor/...
 
-# FC
-HYPERVISOR=firecracker go test -tags=integration ./plugins/firecracker/...
+# FC via jailer (root required for jailer + netns)
+sudo -E HYPERVISOR=firecracker \
+  FC_JAILER_PATH=/usr/local/bin/firecracker-jailer \
+  FC_JAIL_UID=1000 FC_JAIL_GID=1000 \
+  go test -tags=integration ./plugins/firecracker/...
 ```
 
 Scenarios per backend:
 1. Create → agent probe → exec command
 2. Snapshot → verify snapshotted status → restore → agent probe
-3. Delete → files removed
-4. Concurrent create (10 sandboxes) — no socket collisions
-5. Context cancel during boot — process killed
+3. Delete → files removed, chroot tree removed, cgroup cleaned up
+4. Concurrent create (10 sandboxes) — no socket/chroot ID collisions
+5. Context cancel during boot — jailer/FC process killed, chroot cleaned up
+
+**FC jailer-specific integration tests:**
+
+| Test | Assert |
+|------|--------|
+| `TestFC_JailerProcessNotRoot` | FC process UID == `FC_JAIL_UID` |
+| `TestFC_ApiSocketInsideChroot` | socket at `{chroot}/run/firecracker.socket` |
+| `TestFC_HardlinksInChroot` | kernel + disk exist in chroot, not symlinks to host |
+| `TestFC_JailerVersionMatch` | jailer + firecracker from same release |
+| `TestFC_NetnsJoined` | TAP reachable inside jail netns |
+| `TestFC_SnapshotRestore` | snapshot files created inside chroot; restore re-hardlinks |
+| `TestFC_DeleteCleansChroot` | `{chroot_base}/firecracker/{id}/` gone after delete |
+
+**Host setup for FC integration tests:**
+
+```bash
+# Create dedicated jail user (once per host)
+sudo useradd -r -s /bin/false -u 1000 voidrun-fc 2>/dev/null || true
+
+# Install matching FC + jailer from same release
+curl -LO https://github.com/firecracker-microvm/firecracker/releases/download/v1.10.0/firecracker-v1.10.0-x86_64.tgz
+# extract firecracker + firecracker-jailer to /usr/local/bin/
+```
 
 ### CI matrix
 
@@ -525,6 +670,12 @@ integration:
 | FC no event file | Certain | Low | Skip event monitor for FC sandboxes |
 | Vsock reset on FC pause/snapshot | Medium | Medium | Re-probe agent after restore; document |
 | Concurrent boot socket races | Low | High | Per-VM paths under `{instanceDir}` (already enforced) |
+| Jailer chroot prep race | Medium | High | Unique sandbox ID; prepare hardlinks before spawn; fail if chroot exists |
+| Jailer/FC version mismatch | Medium | High | Validate versions at daemon startup; document pinned releases |
+| Jailer requires root | Certain | Medium | VoidRun daemon already root-capable; document requirement |
+| Chroot cleanup incomplete | Medium | Medium | `CleanupJail` on delete + rollback on boot failure |
+| Cgroup dirs left after delete | Medium | Low | Best-effort cgroup cleanup in `DeleteVM` |
+| Parallel jailer slowdown | Low | Medium | Document; limit concurrent FC boots via semaphore if needed |
 
 ---
 
@@ -547,6 +698,8 @@ plugins/cloudhypervisor/events.go
 plugins/cloudhypervisor/security.go
 plugins/firecracker/plugin.go
 plugins/firecracker/lifecycle.go
+plugins/firecracker/jailer.go
+plugins/firecracker/jailer_test.go
 plugins/firecracker/client.go
 plugins/firecracker/config.go
 plugins/firecracker/types.go
@@ -598,12 +751,14 @@ Both plugins always compiled in; runtime selection via `HYPERVISOR` env and per-
 ## 15. Acceptance Criteria (overall)
 
 1. `HYPERVISOR=cloud_hypervisor` (default) — identical behavior to post-merge snapshot branch
-2. `HYPERVISOR=firecracker` — create, snapshot, restore, delete work end-to-end
-3. No CH/FC imports in `service/` or `handler/`
-4. All `Hypervisor` methods accept `context.Context`
-5. `go test ./...` passes (unit); integration tests pass on KVM runners
-6. OpenAPI documents optional `hypervisor` field
-7. Existing sandboxes without `hypervisor` field default to `cloud_hypervisor`
+2. `HYPERVISOR=firecracker` — create, snapshot, restore, delete work end-to-end **via jailer**
+3. No FC process runs outside jailer chroot; FC process UID != 0
+4. No CH/FC imports in `service/` or `handler/`
+5. All `Hypervisor` methods accept `context.Context`
+6. `go test ./...` passes (unit); integration tests pass on KVM runners (FC tests require root)
+7. OpenAPI documents optional `hypervisor` field
+8. Existing sandboxes without `hypervisor` field default to `cloud_hypervisor`
+9. Jailer + Firecracker versions validated at daemon startup
 
 ---
 
