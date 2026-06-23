@@ -33,12 +33,18 @@ type Server struct {
 
 // New creates a new server instance
 func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Server, error) {
-	// Initialize machine package with config paths
 	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
+
+	resolver, err := runtime.NewResolver(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("hypervisor resolver: %w", err)
+	}
+	fmt.Printf("[hypervisor] active backend = %s\n", resolver.Default().Name())
+
 	var metricsManager *metrics.Manager
 	var stopFn context.CancelFunc
 	if cfg.Metrics.Enabled {
-		metricsManager = metrics.NewManager(cfg.Metrics)
+		metricsManager = metrics.NewManager(cfg.Metrics, resolver)
 		ctx, cancel := context.WithCancel(context.Background())
 		metricsManager.Start(ctx)
 		stopFn = cancel
@@ -51,7 +57,7 @@ func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Ser
 	db := mongoClient.Database(cfg.Mongo.Database)
 
 	repos := InitRepositories(cfg, db)
-	services := InitServices(cfg, repos, metricsManager)
+	services := InitServices(cfg, repos, metricsManager, resolver)
 	handlers := InitHandlers(services)
 
 	if err := PopulateInitialData(cfg, repos); err != nil {
@@ -171,9 +177,10 @@ func (s *Server) resumeEventWatchers() {
 	var meta []runtime.SandboxMeta
 	for _, sb := range sandboxes {
 		meta = append(meta, runtime.SandboxMeta{
-			SandboxID: sb.ID,
-			OrgID:     sb.OrgID,
-			UserID:    sb.CreatedBy,
+			SandboxID:  sb.ID,
+			OrgID:      sb.OrgID,
+			UserID:     sb.CreatedBy,
+			Hypervisor: sb.Hypervisor,
 		})
 	}
 

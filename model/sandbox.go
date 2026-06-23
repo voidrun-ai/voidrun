@@ -30,6 +30,10 @@ type Sandbox struct {
 	NetNSName        string             `bson:"netnsName,omitempty" json:"-"`
 	TapDeleted       bool               `bson:"tapDeleted,omitempty" json:"-"`
 	BillingCompleted bool               `bson:"billingCompleted,omitempty" json:"-"`
+	// Hypervisor is the backend that manages this sandbox's VM. Empty values
+	// are treated as "cloud-hypervisor" for backward compatibility with rows
+	// created before multi-hypervisor support landed.
+	Hypervisor string `bson:"hypervisor,omitempty" json:"hypervisor,omitempty"`
 }
 
 type SandboxSpec struct {

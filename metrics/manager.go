@@ -5,15 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"voidrun/config"
+	"voidrun/model"
 	machine "voidrun/runtime"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,9 +27,12 @@ type Manager struct {
 	concurrency  int
 	host         string
 
+	hv machine.HypervisorResolver
+
 	mu             sync.RWMutex
 	vms            map[string]string
 	sbxNames       map[string]string
+	sbxHV          map[string]string // sandboxID -> hypervisor name
 	lastDisk       map[string]time.Time
 	alloc          map[string]allocSpec
 	allocVcpu      int64
@@ -73,17 +75,6 @@ type allocSpec struct {
 	diskBytes int64
 }
 
-type countersResponse struct {
-	CPU    *usageField `json:"cpu"`
-	Memory *usageField `json:"memory"`
-	Disks  map[string]diskCounters
-	Nets   map[string]netCounters
-}
-
-type usageField struct {
-	Usage float64 `json:"usage"`
-}
-
 type agentMetrics struct {
 	CPUUsagePercent   float64 `json:"cpuUsagePercent"`
 	MemTotalBytes     uint64  `json:"memTotalBytes"`
@@ -97,27 +88,7 @@ type agentMetrics struct {
 	DiskError         string  `json:"diskError"`
 }
 
-type diskCounters struct {
-	ReadBytes       uint64  `json:"read_bytes"`
-	WriteBytes      uint64  `json:"write_bytes"`
-	ReadOps         uint64  `json:"read_ops"`
-	WriteOps        uint64  `json:"write_ops"`
-	ReadLatencyMin  float64 `json:"read_latency_min"`
-	ReadLatencyMax  float64 `json:"read_latency_max"`
-	ReadLatencyAvg  float64 `json:"read_latency_avg"`
-	WriteLatencyMin float64 `json:"write_latency_min"`
-	WriteLatencyMax float64 `json:"write_latency_max"`
-	WriteLatencyAvg float64 `json:"write_latency_avg"`
-}
-
-type netCounters struct {
-	RxBytes  uint64 `json:"rx_bytes"`
-	TxBytes  uint64 `json:"tx_bytes"`
-	RxFrames uint64 `json:"rx_frames"`
-	TxFrames uint64 `json:"tx_frames"`
-}
-
-func NewManager(cfg config.MetricsConfig) *Manager {
+func NewManager(cfg config.MetricsConfig, hv machine.HypervisorResolver) *Manager {
 	interval := time.Duration(cfg.IntervalSec) * time.Second
 	if interval <= 0 {
 		interval = 10 * time.Second
@@ -347,8 +318,10 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		diskInterval:       diskInterval,
 		concurrency:        concurrency,
 		host:               hostname,
+		hv:                 hv,
 		vms:                map[string]string{},
 		sbxNames:           map[string]string{},
+		sbxHV:              map[string]string{},
 		lastDisk:           map[string]time.Time{},
 		alloc:              map[string]allocSpec{},
 		diskDevs:           map[string]map[string]struct{}{},
@@ -408,7 +381,7 @@ func (m *Manager) Middleware() gin.HandlerFunc {
 	}
 }
 
-func (m *Manager) RegisterSandbox(vmID, sbxName, socketPath string, cpu, memMB, diskMB int) {
+func (m *Manager) RegisterSandbox(vmID, sbxName, socketPath, hypervisor string, cpu, memMB, diskMB int) {
 	if vmID == "" || socketPath == "" {
 		return
 	}
@@ -430,6 +403,7 @@ func (m *Manager) RegisterSandbox(vmID, sbxName, socketPath string, cpu, memMB, 
 	m.mu.Lock()
 	m.vms[vmID] = socketPath
 	m.sbxNames[vmID] = sbxName
+	m.sbxHV[vmID] = hypervisor
 	if prev, ok := m.alloc[vmID]; ok {
 		m.allocVcpu -= prev.vcpu
 		m.allocMemBytes -= prev.memBytes
@@ -461,6 +435,7 @@ func (m *Manager) UnregisterSandbox(vmID string) {
 	delete(m.diskDevs, vmID)
 	delete(m.netDevs, vmID)
 	delete(m.sbxNames, vmID)
+	delete(m.sbxHV, vmID)
 	if prev, ok := m.alloc[vmID]; ok {
 		m.allocVcpu -= prev.vcpu
 		m.allocMemBytes -= prev.memBytes
@@ -542,34 +517,37 @@ func (m *Manager) pollOnce(ctx context.Context) {
 				}
 			}
 
-			stats, err := fetchCounters(ctx, socketPath)
-			if err == nil {
-				up = true
-				if stats.CPU != nil && !agentCPU {
-					m.cpuUsageGauge.WithLabelValues(labelID, labelName, labelHost).Set(normalizeCPUUsagePercent(stats.CPU.Usage))
-				}
-				if stats.Memory != nil && !agentMem {
-					m.memUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(stats.Memory.Usage)
-				}
-				for device, disk := range stats.Disks {
-					m.trackDiskDevice(vmID, device)
-					m.diskReadBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.ReadBytes))
-					m.diskWriteBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.WriteBytes))
-					m.diskReadOps.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.ReadOps))
-					m.diskWriteOps.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.WriteOps))
-					m.diskReadLatMin.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyMin)
-					m.diskReadLatMax.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyMax)
-					m.diskReadLatAvg.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyAvg)
-					m.diskWriteLatMin.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyMin)
-					m.diskWriteLatMax.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyMax)
-					m.diskWriteLatAvg.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyAvg)
-				}
-				for device, netc := range stats.Nets {
-					m.trackNetDevice(vmID, device)
-					m.netRxBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.RxBytes))
-					m.netTxBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.TxBytes))
-					m.netRxFrames.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.RxFrames))
-					m.netTxFrames.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.TxFrames))
+			hv := m.hypervisorFor(vmID)
+			if hv != nil {
+				stats, err := hv.Counters(ctx, vmID)
+				if err == nil && stats != nil {
+					up = true
+					if !agentCPU && stats.CPUUsage != 0 {
+						m.cpuUsageGauge.WithLabelValues(labelID, labelName, labelHost).Set(normalizeCPUUsagePercent(stats.CPUUsage))
+					}
+					if !agentMem && stats.MemoryUsedBytes != 0 {
+						m.memUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(float64(stats.MemoryUsedBytes))
+					}
+					for device, disk := range stats.Disks {
+						m.trackDiskDevice(vmID, device)
+						m.diskReadBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.ReadBytes))
+						m.diskWriteBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.WriteBytes))
+						m.diskReadOps.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.ReadOps))
+						m.diskWriteOps.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(disk.WriteOps))
+						m.diskReadLatMin.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyMin)
+						m.diskReadLatMax.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyMax)
+						m.diskReadLatAvg.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.ReadLatencyAvg)
+						m.diskWriteLatMin.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyMin)
+						m.diskWriteLatMax.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyMax)
+						m.diskWriteLatAvg.WithLabelValues(labelID, labelName, labelHost, device).Set(disk.WriteLatencyAvg)
+					}
+					for device, netc := range stats.Nets {
+						m.trackNetDevice(vmID, device)
+						m.netRxBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.RxBytes))
+						m.netTxBytes.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.TxBytes))
+						m.netRxFrames.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.RxFrames))
+						m.netTxFrames.WithLabelValues(labelID, labelName, labelHost, device).Set(float64(netc.TxFrames))
+					}
 				}
 			}
 
@@ -620,58 +598,17 @@ func (m *Manager) sandboxLabels(vmID string) (string, string, string) {
 	return vmID, name, m.host
 }
 
-func fetchCounters(ctx context.Context, socketPath string) (*countersResponse, error) {
-	body, status, err := unixGet(ctx, socketPath, "/vm.counters")
-	if err != nil {
-		return nil, err
+func (m *Manager) hypervisorFor(vmID string) machine.Hypervisor {
+	if m.hv == nil {
+		return nil
 	}
-	if status == http.StatusNotFound {
-		body, status, err = unixGet(ctx, socketPath, "/api/v1/vm.counters")
-		if err != nil {
-			return nil, err
-		}
+	m.mu.RLock()
+	name := m.sbxHV[vmID]
+	m.mu.RUnlock()
+	if name == "" {
+		return m.hv.Default()
 	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("vm.counters status %d", status)
-	}
-
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("decode vm.counters: %w", err)
-	}
-
-	resp := &countersResponse{
-		Disks: map[string]diskCounters{},
-		Nets:  map[string]netCounters{},
-	}
-	if cpuRaw, ok := raw["cpu"]; ok {
-		var cpu usageField
-		if err := json.Unmarshal(cpuRaw, &cpu); err == nil {
-			resp.CPU = &cpu
-		}
-	}
-	if memRaw, ok := raw["memory"]; ok {
-		var mem usageField
-		if err := json.Unmarshal(memRaw, &mem); err == nil {
-			resp.Memory = &mem
-		}
-	}
-	for key, payload := range raw {
-		switch {
-		case strings.HasPrefix(key, "_disk"):
-			var disk diskCounters
-			if err := json.Unmarshal(payload, &disk); err == nil {
-				resp.Disks[key] = disk
-			}
-		case strings.HasPrefix(key, "_net"):
-			var netc netCounters
-			if err := json.Unmarshal(payload, &netc); err == nil {
-				resp.Nets[key] = netc
-			}
-		}
-	}
-
-	return resp, nil
+	return m.hv.For(&model.Sandbox{Hypervisor: name})
 }
 
 func fetchAgentMetrics(ctx context.Context, sbxID string) (*agentMetrics, error) {
@@ -701,34 +638,6 @@ func fetchAgentMetrics(ctx context.Context, sbxID string) (*agentMetrics, error)
 	}
 
 	return &metrics, nil
-}
-
-func unixGet(ctx context.Context, socketPath, urlPath string) ([]byte, int, error) {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return net.Dial("unix", socketPath)
-		},
-		DisableKeepAlives: true,
-	}
-
-	client := &http.Client{Transport: transport}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://unix"+urlPath, nil)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, resp.StatusCode, err
-	}
-
-	return body, resp.StatusCode, nil
 }
 
 func (m *Manager) shouldScrapeDisk(vmID string) bool {

@@ -28,7 +28,7 @@ func TestNormalizeCPUUsagePercent(t *testing.T) {
 }
 
 func TestScrapeDurationHistogramPerSandboxLabels(t *testing.T) {
-	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m := NewManager(config.MetricsConfig{IntervalSec: 10}, nil)
 	m.scrapeTime.WithLabelValues("sbx-1", "stress-test", "test-host").Observe(0.05)
 
 	rr := httptest.NewRecorder()
@@ -43,8 +43,8 @@ func TestScrapeDurationHistogramPerSandboxLabels(t *testing.T) {
 }
 
 func TestUnregisterSandboxDeletesScrapeDurationLabels(t *testing.T) {
-	m := NewManager(config.MetricsConfig{IntervalSec: 10})
-	m.RegisterSandbox("vm-1", "my-sbx", "/tmp/sock", 1, 512, 1024)
+	m := NewManager(config.MetricsConfig{IntervalSec: 10}, nil)
+	m.RegisterSandbox("vm-1", "my-sbx", "/tmp/sock", "cloud-hypervisor", 1, 512, 1024)
 	m.scrapeTime.WithLabelValues("vm-1", "my-sbx", m.host).Observe(0.02)
 
 	m.UnregisterSandbox("vm-1")

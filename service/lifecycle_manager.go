@@ -19,6 +19,7 @@ type LifecycleManager struct {
 	cfg     config.AutoLifecycleConfig
 	monitor *runtime.EventMonitor
 	metrics *metrics.Manager
+	hv      runtime.HypervisorResolver
 }
 
 // NewLifecycleManager creates a new lifecycle manager.
@@ -27,12 +28,14 @@ func NewLifecycleManager(
 	repo repository.ISandboxRepository,
 	monitor *runtime.EventMonitor,
 	metricsManager *metrics.Manager,
+	hv runtime.HypervisorResolver,
 ) *LifecycleManager {
 	return &LifecycleManager{
 		repo:    repo,
 		cfg:     cfg,
 		monitor: monitor,
 		metrics: metricsManager,
+		hv:      hv,
 	}
 }
 
@@ -104,7 +107,8 @@ func (m *LifecycleManager) autoPause(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
-		if err := runtime.Pause(id); err != nil {
+		hv := m.hv.For(sb)
+		if err := hv.Pause(ctx, id); err != nil {
 			log.Printf("[lifecycle] auto-pause runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue
 		}
@@ -131,7 +135,8 @@ func (m *LifecycleManager) autoStop(ctx context.Context) {
 
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
-		if err := runtime.Stop(id); err != nil {
+		hv := m.hv.For(sb)
+		if err := hv.Stop(ctx, id); err != nil {
 			log.Printf("[lifecycle] auto-stop runtime failed for %s (%s): %v", sb.Name, id, err)
 			continue
 		}
@@ -162,7 +167,8 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 	for _, sb := range sandboxes {
 		id := sb.ID.Hex()
 
-		if err := runtime.Delete(id, sb.TapName, sb.NetNSName); err != nil {
+		hv := m.hv.For(sb)
+		if err := hv.Delete(ctx, id, sb.TapName, sb.NetNSName); err != nil {
 			log.Printf("[lifecycle] auto-delete runtime failed for %s (%s): %v", sb.Name, id, err)
 			// Continue with cleanup anyway — the VM may already be gone
 		}

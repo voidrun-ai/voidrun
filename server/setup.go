@@ -65,7 +65,7 @@ type Services struct {
 	LifecycleManager *service.LifecycleManager
 }
 
-func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metrics.Manager) *Services {
+func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metrics.Manager, hv runtime.HypervisorResolver) *Services {
 	clerkSvc := service.NewClerkService(cfg)
 	orgSvc := service.NewOrgService(repos.Org)
 
@@ -80,14 +80,13 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 	// Initialize Event Monitor if enabled
 	var monitor *runtime.EventMonitor
 	if cfg.Monitor.Enabled {
-		monitor = runtime.NewEventMonitor(repos.Event)
-		// Set root context for monitor (used for watcher goroutines)
+		monitor = runtime.NewEventMonitor(repos.Event, hv)
 		monitor.SetRootContext(context.Background())
 	}
 
 	return &Services{
 		User:             service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
-		Sandbox:          service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor),
+		Sandbox:          service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor, hv),
 		Image:            service.NewImageService(cfg, repos.Image),
 		Exec:             service.NewExecService(cfg),
 		Session:          service.NewSessionExecService(cfg),
@@ -101,7 +100,7 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		Clerk:            clerkSvc,
 		AuthCache:        authCache,
 		Monitor:          monitor,
-		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager),
+		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager, hv),
 	}
 }
 

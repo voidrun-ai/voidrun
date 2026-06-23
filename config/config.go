@@ -27,6 +27,18 @@ type PathsConfig struct {
 	CHPath        string // cloud-hypervisor binary (CH_PATH)
 }
 
+// HypervisorConfig selects which backend manages sandbox VMs.
+//
+// Default backend is cloud-hypervisor for backward compatibility. Additional
+// backends (e.g. firecracker) can be selected by setting Type and providing
+// the matching binary path.
+type HypervisorConfig struct {
+	Type          string // "cloud-hypervisor" (default) | "firecracker"
+	FCPath        string // firecracker binary (FC_PATH) — reserved for future backend
+	FCJailerPath  string // jailer binary (FC_JAILER_PATH) — reserved for future backend
+	FCSeccompPath string // optional BPF seccomp filter for firecracker
+}
+
 // Network configuration
 type NetworkConfig struct {
 	BridgeName  string
@@ -75,6 +87,7 @@ type Config struct {
 	Server                ServerConfig
 	Paths                 PathsConfig
 	CHBinary              string // absolute cloud-hypervisor binary; set by ResolveDerivedPaths
+	Hypervisor            HypervisorConfig
 	Network               NetworkConfig
 	Mongo                 MongoConfig
 	Redis                 RedisConfig
@@ -157,6 +170,11 @@ const (
 	DefaultKernelPath    = "/var/lib/voidrun/base-images/vmlinux"
 	DefaultInitrdPath    = ""
 	DefaultCHPath        = "/usr/local/bin/cloud-hypervisor"
+	// Hypervisor selection defaults
+	DefaultHypervisorType = "cloud-hypervisor"
+	DefaultFCPath         = "/usr/local/bin/firecracker"
+	DefaultFCJailerPath   = "/usr/local/bin/jailer"
+	DefaultFCSeccompPath  = ""
 	DefaultBridgeName    = "vmbr0"
 	DefaultGatewayIP     = "192.168.100.1/22"
 	DefaultNetworkCIDR   = "192.168.100.0/22"
@@ -248,6 +266,12 @@ func New() *Config {
 			KernelPath:    getEnv("KERNEL_PATH", DefaultKernelPath),
 			InitrdPath:    getEnv("INITRD_PATH", DefaultInitrdPath),
 			CHPath:        getEnv("CH_PATH", DefaultCHPath),
+		},
+		Hypervisor: HypervisorConfig{
+			Type:          getEnv("HYPERVISOR_TYPE", DefaultHypervisorType),
+			FCPath:        getEnv("FC_PATH", DefaultFCPath),
+			FCJailerPath:  getEnv("FC_JAILER_PATH", DefaultFCJailerPath),
+			FCSeccompPath: getEnv("FC_SECCOMP_PATH", DefaultFCSeccompPath),
 		},
 		Network: NetworkConfig{
 			BridgeName:  getEnv("BRIDGE_NAME", DefaultBridgeName),
