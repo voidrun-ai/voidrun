@@ -190,13 +190,21 @@ func PrepareInstanceRaw(ctx context.Context, cfg config.Config, spec model.Sandb
 		return "", fmt.Errorf("invalid characters in spec ID: %q", spec.ID)
 	}
 
-	// Check for the raw base image; auto-convert from qcow2 if missing
+	// Check for the raw base image; auto-convert from qcow2 if missing.
+	// Naming convention matches the qcow2 strategies: when spec.Type contains
+	// a tag (e.g. "docker:1.0.59"), the base file is "<name>-<tag>.raw";
+	// otherwise it falls back to "<name>-base.raw".
 	rawBaseName := spec.Type + "-base.raw"
+	qcow2BaseName := spec.Type + "-base.qcow2"
+	if idx := strings.Index(spec.Type, ":"); idx != -1 {
+		name := spec.Type[:idx]
+		tag := spec.Type[idx+1:]
+		rawBaseName = fmt.Sprintf("%s-%s.raw", name, tag)
+		qcow2BaseName = fmt.Sprintf("%s-%s.qcow2", name, tag)
+	}
 	rawBasePath := filepath.Join(cfg.Paths.BaseImagesDir, rawBaseName)
 
 	if _, err := os.Stat(rawBasePath); os.IsNotExist(err) {
-		// Try to find the qcow2 source and convert it
-		qcow2BaseName := spec.Type + "-base.qcow2"
 		qcow2BasePath := filepath.Join(cfg.Paths.BaseImagesDir, qcow2BaseName)
 
 		if _, err := os.Stat(qcow2BasePath); os.IsNotExist(err) {

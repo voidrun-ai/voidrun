@@ -241,6 +241,16 @@ func GetRawOverlayPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/overlay.raw", InstancesRoot, sbxID)
 }
 
+// OverlayPathFor returns the on-disk overlay path matching the configured
+// disk format. Used by cold-restart paths where we don't go through
+// PrepareStorage but still need the same path the original boot wrote.
+func OverlayPathFor(diskFormat, sbxID string) string {
+	if diskFormat == "raw" {
+		return GetRawOverlayPath(sbxID)
+	}
+	return GetOverlayPath(sbxID)
+}
+
 // GetEventPath returns the path to the CLH event file for a sandbox.
 func GetEventPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/vm.evt", InstancesRoot, sbxID)

@@ -187,12 +187,15 @@ func (r *staticResolver) For(sandbox *model.Sandbox) Hypervisor {
 }
 
 // NewResolver constructs a HypervisorResolver from the application config.
-// At present only the cloud-hypervisor backend is registered.
+//
+// Both the cloud-hypervisor and firecracker backends are always registered so
+// existing rows can be driven by their stamped backend even after the
+// operator changes HYPERVISOR_TYPE for new sandboxes (mixed-fleet rollout).
 func NewResolver(cfg *config.Config) (HypervisorResolver, error) {
-	registered := map[HypervisorType]Hypervisor{}
-
-	clh := NewCLHBackend(cfg)
-	registered[HypervisorCloudHypervisor] = clh
+	registered := map[HypervisorType]Hypervisor{
+		HypervisorCloudHypervisor: NewCLHBackend(cfg),
+		HypervisorFirecracker:     NewFCBackend(cfg),
+	}
 
 	t := HypervisorType(strings.TrimSpace(string(cfg.Hypervisor.Type)))
 	if t == "" {
@@ -202,6 +205,15 @@ func NewResolver(cfg *config.Config) (HypervisorResolver, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown hypervisor type %q (supported: %s)",
 			t, supportedHypervisorList(registered))
+	}
+
+	// Validate disk-format compatibility with the active backend up front so
+	// misconfigurations fail at boot rather than at sandbox-create time.
+	if !def.Capabilities().SupportsQcow2Disks {
+		switch strings.ToLower(strings.TrimSpace(cfg.Sandbox.DiskFormat)) {
+		case "qcow2", "qcow2-flat":
+			return nil, fmt.Errorf("hypervisor %q does not support qcow2 disks; set SANDBOX_DISK_FORMAT=raw", t)
+		}
 	}
 	return &staticResolver{def: def, registered: registered}, nil
 }

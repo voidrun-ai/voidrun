@@ -375,7 +375,7 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 			spec.MacAddress = runtime.GenerateMAC(sandbox.IP)
 		}
 
-		overlayPath := runtime.GetOverlayPath(id)
+		overlayPath := runtime.OverlayPathFor(s.cfg.Sandbox.DiskFormat, id)
 		bootCtx, bootCancel := context.WithTimeout(ctx, 60*time.Second)
 		err := hv.Boot(bootCtx, *s.cfg, spec, overlayPath)
 		bootCancel()
