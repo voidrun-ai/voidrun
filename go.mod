@@ -6,6 +6,7 @@ toolchain go1.24.11
 
 require (
 	github.com/3th1nk/cidr v0.3.0
+	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/clerk/clerk-sdk-go/v2 v2.5.1
 	github.com/gorilla/websocket v1.5.1
 	github.com/joho/godotenv v1.5.1

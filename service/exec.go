@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -84,48 +83,6 @@ func (s *ExecService) ParseAndValidateRequest(req model.ExecRequest) (cmd string
 	}
 
 	return cmd, args, timeout, nil
-}
-
-// ExecuteCommand executes a command in a sandbox and streams the output
-func (s *ExecService) ExecuteCommand(sbxID, cmd string, args []string, timeout int, writer io.Writer, flush func()) error {
-	// Use common DialVsock helper
-	conn, err := machine.DialVsock(sbxID, 1024, 2*time.Second)
-	if err != nil {
-		return fmt.Errorf("sandbox not reachable: %w", err)
-	}
-	defer conn.Close()
-
-	// Send request
-	conn.SetDeadline(time.Now().Add(time.Duration(timeout) * time.Second))
-
-	agentReq := map[string]interface{}{
-		"cmd":     cmd,
-		"args":    args,
-		"timeout": timeout,
-	}
-	if err := json.NewEncoder(conn).Encode(agentReq); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Stream response
-	buffer := make([]byte, config.ReadBufferSize)
-	for {
-		n, err := conn.Read(buffer)
-		if n > 0 {
-			writer.Write(buffer[:n])
-			if flush != nil {
-				flush()
-			}
-		}
-		if err != nil {
-			if err != io.EOF {
-				log.Printf("[exec] sandbox %s read error: %v", sbxID, err)
-			}
-			break
-		}
-	}
-
-	return nil
 }
 
 // ExecSync executes a command synchronously via agent /exec endpoint and returns the result

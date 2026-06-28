@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const VsockDialRetryAttempts uint64 = 5
+
 var sandboxHTTPClient *http.Client
 
 func InitSandboxHTTPClient() *http.Client {
@@ -18,7 +20,7 @@ func InitSandboxHTTPClient() *http.Client {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			sbxID := strings.Split(addr, ":")[0]
-			return DialVsock(sbxID, 1024, 5*time.Second)
+			return DialVsockWithRetry(ctx, sbxID, 1024, 5*time.Second, VsockDialRetryAttempts)
 		},
 		// Connection Pooling
 		MaxIdleConns:        1000,
@@ -35,9 +37,8 @@ func InitSandboxHTTPClient() *http.Client {
 
 	sandboxHTTPClient = &http.Client{
 		Transport: tr,
-		Timeout:   0, // No global timeout, large files need time.
+		Timeout:   0,
 	}
-
 	return sandboxHTTPClient
 }
 

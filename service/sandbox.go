@@ -427,20 +427,16 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 		return fmt.Errorf("agent not ready after restore: %w", err)
 	}
 
-	// Sync the guest clock — after a snapshot restore the VM clock is frozen at
-	// the time the snapshot was taken. Inject the current wall-clock time via the
-	// agent so that `date`, cron jobs, TLS expiry checks, etc. see the right time.
-	syncSandboxClock(id)
-
-	// After a snapshot restore, the virtio-net device inside the guest comes back
-	// with eth0 DOWN (cloud-hypervisor resets the virtio-net device on restore).
-	// Re-apply the network config to bring eth0 up and restore IP/routes/DNS.
-	netCfg := buildAgentNetConfig(s.cfg, sandbox.IP, sandbox.Name)
-	if cfgErr := configureAgentNetwork(id, &netCfg); cfgErr != nil {
-		log.Printf("   [Restore] network re-config failed on %s: %v\n", id, cfgErr)
-	} else {
-		log.Printf("   [Restore] network re-config done on %s\n", id)
-	}
+	go func() {
+		defer util.Track("configureAgentNetwork - " + id)()
+		netCfg := buildAgentNetConfig(s.cfg, sandbox.IP, sandbox.Name)
+		if cfgErr := configureAgentNetwork(id, &netCfg); cfgErr != nil {
+			log.Printf("   [Restore] network re-config failed on %s: %v\n", id, cfgErr)
+		} else {
+			log.Printf("   [Restore] network re-config done on %s\n", id)
+		}
+		syncSandboxClock(id)
+	}()
 
 	// Update status to running
 	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
@@ -485,7 +481,8 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.Obje
 	if sandbox.Status == "snapshotted" {
 		_, err, shared := s.restoreGroup.Do(id, func() (interface{}, error) {
 			log.Printf("[Auto-Restore] Sandbox %s is snapshotted, restoring...\n", id)
-			if err := s.Restore(ctx, orgID, id); err != nil {
+			bgCtx := context.WithoutCancel(ctx)
+			if err := s.Restore(bgCtx, orgID, id); err != nil {
 				return nil, fmt.Errorf("failed to auto-restore sandbox: %w", err)
 			}
 			log.Printf("[Auto-Restore] Sandbox %s restored and ready\n", id)
@@ -648,22 +645,32 @@ func configureAgentNetwork(sbxID string, netCfg *agentNetConfig) error {
 		return fmt.Errorf("failed to marshal network config: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	var lastErr error
+	for attempt := 1; attempt <= 5; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resp, err := AgentCommand(ctx, nil, sbxID, bytes.NewReader(jsonData), "/configure-network", http.MethodPost)
+		cancel()
 
-	resp, err := AgentCommand(ctx, nil, sbxID, bytes.NewReader(jsonData), "/configure-network", http.MethodPost)
-	if err != nil {
-		return fmt.Errorf("configure network failed: %w", err)
+		if err != nil {
+			lastErr = fmt.Errorf("configure network failed: %w", err)
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("configure network status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return nil
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("configure network status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	io.Copy(io.Discard, resp.Body)
-
-	return nil
+	return lastErr
 }
 
 // syncSandboxClock injects the current wall-clock time into a restored sandbox
@@ -914,7 +921,7 @@ func (s *SandboxService) getOrgScopedSandbox(ctx context.Context, orgID primitiv
 }
 
 // TouchActivity updates the lastActivityAt timestamp for a sandbox (called by handlers on API access).
-func (s *SandboxService) TouchActivity(ctx context.Context, orgID primitive.ObjectID, id string) {
+func (s *SandboxService) TouchActivity(ctx context.Context, id string) {
 	objID, err := util.ParseObjectID(id)
 	if err != nil {
 		return

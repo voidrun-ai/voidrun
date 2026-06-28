@@ -11,7 +11,6 @@ import (
 	"voidrun/util"
 
 	"github.com/gin-gonic/gin"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // HandlerFunc is like gin.HandlerFunc but returns an error.
@@ -36,38 +35,24 @@ func Handle(fn HandlerFunc) gin.HandlerFunc {
 	}
 }
 
-// ensureSandboxRunning validates the org auth context, checks the sandbox is
-// running, and fires a background TouchActivity call.
 func ensureSandboxRunning(
 	c *gin.Context,
 	sandboxSvc *service.SandboxService,
 	sandboxID string,
 ) error {
-	_, err := ensureSandboxRunningWithOrg(c, sandboxSvc, sandboxID)
-	return err
-}
-
-// ensureSandboxRunningWithOrg is the same as ensureSandboxRunning but also
-// returns the resolved orgID for callers that need it.
-func ensureSandboxRunningWithOrg(
-	c *gin.Context,
-	sandboxSvc *service.SandboxService,
-	sandboxID string,
-) (primitive.ObjectID, error) {
 	orgID, err := util.GetOrgIDFromContext(c)
 	if err != nil {
-		return primitive.NilObjectID, err
+		return err
 	}
 
-
 	if err = sandboxSvc.EnsureRunning(c.Request.Context(), orgID, sandboxID); err != nil {
-		return primitive.NilObjectID, util.ErrNotFound(err.Error())
+		return util.ErrNotFound(err.Error())
 	}
 
 	// Touch activity for auto-pause tracking (async, fire-and-forget)
-	go sandboxSvc.TouchActivity(c.Request.Context(), orgID, sandboxID)
+	go sandboxSvc.TouchActivity(c.Request.Context(), sandboxID)
 
-	return orgID, nil
+	return nil
 }
 
 // HandleJSONResponse proxies the agent HTTP response back to the client in our

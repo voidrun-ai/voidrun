@@ -49,7 +49,7 @@ func (h *Handlers) ensureRunning(ctx context.Context, orgID primitive.ObjectID, 
 	if err := h.SandboxService.EnsureRunning(ctx, orgID, sandboxID); err != nil {
 		return err
 	}
-	go h.SandboxService.TouchActivity(ctx, orgID, sandboxID)
+	go h.SandboxService.TouchActivity(ctx, sandboxID)
 	return nil
 }
 

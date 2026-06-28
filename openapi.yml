@@ -278,7 +278,7 @@ components:
           description: >-
             Lifecycle state. Terminal states `killed` and `deleted` may still appear
             in list responses for historical or cleanup rows.
-          enum: [running, stopped, paused, error, killed, deleted]
+          enum: [running, snapshotted, error, killed, deleted]
           example: running
         createdAt:
           type: string

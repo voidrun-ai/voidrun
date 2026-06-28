@@ -173,11 +173,11 @@ iptables-restore <<EOF
 :OUTPUT ACCEPT [0:0]
 -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 -A FORWARD -m physdev --physdev-in tap0 -m mac ! --mac-source %s -j DROP
-%s-A FORWARD -m physdev --physdev-in tap0 -d 169.254.169.254 -j DROP
+-A FORWARD -m physdev --physdev-in tap0 -d 169.254.169.254 -j DROP
 -A FORWARD -m physdev --physdev-in tap0 -d 10.0.0.0/8 -j DROP
 -A FORWARD -m physdev --physdev-in tap0 -d 172.16.0.0/12 -j DROP
 -A FORWARD -m physdev --physdev-in tap0 -d 192.168.0.0/16 -j DROP
-COMMIT
+%sCOMMIT
 EOF
 `,
 		nsVeth, nsVeth, macAddr, dnsRules)
@@ -201,10 +201,8 @@ func DeleteSandboxNetNS(nsName string) error {
 
 	var hostVeth string
 	if strings.Contains(nsName, "-ns-") {
-		// New format: e.g., "inst1-ns-abc" -> "inst1-vh-abc"
 		hostVeth = strings.Replace(nsName, "-ns-", "-vh-", 1)
 	} else if len(nsName) > 3 {
-		// Legacy format: e.g., "vr-abc123" -> "veth-h-abc123"
 		suffix := nsName[3:] // strip "vr-" prefix
 		hostVeth = "veth-h-" + suffix
 	}
@@ -278,4 +276,3 @@ func EnsureTapBridge(nsName, tapName string) error {
 	}
 	return nil
 }
-
