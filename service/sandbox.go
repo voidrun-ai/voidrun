@@ -346,12 +346,12 @@ func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID,
 		return err
 	}
 
-	// Update database status to snapshotted and set snapshottedAt
-	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "snapshotted"); err != nil {
-		return fmt.Errorf("failed to update status: %w", err)
+	ok, err := s.repo.SetSnapshottedAtAndOrg(ctx, sandbox.ID, orgID)
+	if err != nil {
+		return fmt.Errorf("failed to persist snapshotted state for %s: %w", id, err)
 	}
-	if err := s.repo.SetSnapshottedAt(ctx, sandbox.ID); err != nil {
-		log.Printf("[WARN] Failed to set snapshottedAt for %s: %v", id, err)
+	if !ok {
+		return ErrSandboxNotFound
 	}
 
 	if s.metrics != nil {

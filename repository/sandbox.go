@@ -35,6 +35,7 @@ type ISandboxRepository interface {
 	// Lifecycle management methods
 	TouchActivity(ctx context.Context, id primitive.ObjectID) error
 	SetSnapshottedAt(ctx context.Context, id primitive.ObjectID) error
+	SetSnapshottedAtAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	FindIdleRunning(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 	FindStaleSnapshotted(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 	FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
@@ -307,6 +308,19 @@ func (r *SandboxRepository) SetSnapshottedAt(ctx context.Context, id primitive.O
 		"updatedAt":     now,
 	}})
 	return err
+}
+
+func (r *SandboxRepository) SetSnapshottedAtAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
+	now := time.Now()
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": bson.M{
+		"status":        "snapshotted",
+		"snapshottedAt": now,
+		"updatedAt":     now,
+	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // FindIdleRunning finds running sandboxes that have been idle since before the threshold
