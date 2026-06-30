@@ -91,3 +91,62 @@ func TestForceKillByPIDFile(t *testing.T) {
 		}
 	}
 }
+
+// TestForceKillByPIDFile_RefusesNonCH verifies SEC-04: if the pidfile points
+// at a process whose cmdline is not the configured cloud-hypervisor binary
+// (e.g. PID was reused after the real CLH exited), forceKillByPIDFile must
+// refuse to SIGKILL it.
+func TestForceKillByPIDFile_RefusesNonCH(t *testing.T) {
+	// Save and restore CHBinary so we don't leak state into other tests.
+	prev := CHBinary
+	CHBinary = "/nonexistent/path/to/cloud-hypervisor"
+	defer func() { CHBinary = prev }()
+
+	cmd := exec.Command("sleep", "300")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Failed to start sleep: %v", err)
+	}
+	pid := cmd.Process.Pid
+	cmd.Process.Release()
+	defer func() {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	}()
+
+	SetInstancesRoot("/tmp/voidrun-test-sec04")
+	if err := os.MkdirAll("/tmp/voidrun-test-sec04/sec04-sandbox", 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	defer os.RemoveAll("/tmp/voidrun-test-sec04")
+
+	pidFile := GetPIDPath("sec04-sandbox")
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {
+		t.Fatalf("Failed to write pid file: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if err := forceKillByPIDFile("sec04-sandbox"); err != nil {
+		t.Errorf("forceKillByPIDFile should swallow PID-mismatch and return nil, got: %v", err)
+	}
+
+	// The sleep process must STILL be alive — the cmdline check should have
+	// stopped the SIGKILL.
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatalf("process %d unexpectedly gone: %v", pid, err)
+	}
+	if err := p.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("process %d unexpectedly dead: %v", pid, err)
+	}
+	statData, _ := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	fields := strings.Fields(string(statData))
+	if len(fields) >= 3 {
+		state := fields[2]
+		if state == "Z" || state == "X" {
+			t.Errorf("Process should be alive, but is %s — SEC-04 check failed to protect it", state)
+		}
+	}
+}

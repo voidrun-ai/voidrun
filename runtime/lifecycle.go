@@ -477,6 +477,38 @@ func Stop(id string) error {
 	return nil
 }
 
+// pidMatchesCH returns true iff /proc/<pid>/cmdline's argv[0] resolves to the
+// configured cloud-hypervisor binary (matched by absolute path or by basename).
+//
+// Used as a defensive check before SIGKILL: a stale pidfile combined with PID
+// reuse on a dense host can make us target an unrelated process. If we don't
+// recognize the cmdline, the real CLH has already exited and the kernel reused
+// its PID — there is nothing for us to kill.
+//
+// Returns true when CHBinary is unset (e.g. unit tests that bypass server.New)
+// so legacy behavior is preserved.
+//
+// Returns false when /proc/<pid>/cmdline cannot be read or is empty (process
+// already gone, kernel thread, or insufficient permissions) — in all of these
+// cases SIGKILL would be useless or unsafe.
+func pidMatchesCH(pid int) bool {
+	if CHBinary == "" {
+		return true
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(data) == 0 {
+		return false
+	}
+	s := string(data)
+	if nul := strings.IndexByte(s, 0); nul >= 0 {
+		s = s[:nul]
+	}
+	if s == "" {
+		return false
+	}
+	return s == CHBinary || filepath.Base(s) == filepath.Base(CHBinary)
+}
+
 // forceKillByPIDFile reads the PID file and forcefully kills the process if it's still alive.
 func forceKillByPIDFile(id string) error {
 	pidPath := GetPIDPath(id)
@@ -493,6 +525,13 @@ func forceKillByPIDFile(id string) error {
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return nil // Process already gone
+	}
+
+	// SEC-04 stopgap: never SIGKILL a PID whose cmdline isn't cloud-hypervisor.
+	// Stale pidfile + PID reuse would otherwise kill an unrelated process.
+	if !pidMatchesCH(pid) {
+		log.Printf("[forceKill] sandbox %s pid %d cmdline does not match %q — skipping SIGKILL (PID likely reused)", id, pid, CHBinary)
+		return nil
 	}
 
 	if err := process.Signal(syscall.SIGKILL); err != nil {

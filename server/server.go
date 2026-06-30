@@ -35,6 +35,7 @@ type Server struct {
 func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Server, error) {
 	// Initialize machine package with config paths
 	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
+	runtime.SetCHBinary(cfg.CHBinary)
 	var metricsManager *metrics.Manager
 	var stopFn context.CancelFunc
 	if cfg.Metrics.Enabled {
