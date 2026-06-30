@@ -47,6 +47,21 @@ func TestNetworkNSCreationAndIptables(t *testing.T) {
 	if idxDNS < idx169 {
 		t.Errorf("DNS rules should be AFTER the drops! idx169: %d, idxDNS: %d", idx169, idxDNS)
 	}
+
+	// SEC-01: conntrack ESTABLISHED,RELATED ACCEPT must sit AFTER the
+	// destination DROPs. Otherwise a stale conntrack entry would let a
+	// pre-existing flow reach a destination that became forbidden after
+	// the entry was created.
+	idxEstablished := strings.Index(outStr, "ESTABLISHED")
+	if idxEstablished < 0 {
+		t.Errorf("ESTABLISHED rule missing from FORWARD chain")
+	}
+	if idxEstablished < idx169 {
+		t.Errorf("ESTABLISHED rule must come AFTER destination DROPs (SEC-01). idxEstablished=%d, idx169=%d", idxEstablished, idx169)
+	}
+	if idxEstablished < idxDNS {
+		t.Errorf("ESTABLISHED rule must come AFTER DNS ACCEPTs (SEC-01). idxEstablished=%d, idxDNS=%d", idxEstablished, idxDNS)
+	}
 }
 
 func TestForceKillByPIDFile(t *testing.T) {
