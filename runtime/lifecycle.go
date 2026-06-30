@@ -163,6 +163,17 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 		},
 	}
 
+	// Attach a virtio-balloon device so the guest can return freed pages to
+	// the host (free_page_reporting). Starts fully deflated (size=0) and
+	// can grow back on guest OOM. Gated by SANDBOX_BALLOON_ENABLED.
+	if cfg.Sandbox.BalloonEnabled {
+		vmCfg.Balloon = &BalloonConfig{
+			Size:           0,
+			DeflateOnOOM:   true,
+			FreePageReport: true,
+		}
+	}
+
 	// A. Send Config using new CLHClient
 	clhClient := NewCLHClient(socketPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -232,6 +243,13 @@ func BuildCLIArgs(cfg config.Config, spec model.SandboxSpec, overlayPath string)
 	if cfg.Paths.InitrdPath != "" {
 		initrdPath, _ := filepath.Abs(cfg.Paths.InitrdPath)
 		args = append(args, "--initramfs", initrdPath)
+	}
+
+	// Attach virtio-balloon (gated by SANDBOX_BALLOON_ENABLED). Starts
+	// deflated; guest reports free pages back to host so RSS tracks real
+	// working set instead of the full guest RAM ceiling.
+	if cfg.Sandbox.BalloonEnabled {
+		args = append(args, "--balloon", "size=0,deflate_on_oom=on,free_page_reporting=on")
 	}
 
 	// 3. Build Dynamic Landlock Rules
@@ -389,36 +407,34 @@ func Snapshot(id string) error {
 	// 2. Take Snapshot
 	snapshotUrl := "file://" + snapshotDir + "/"
 	if err := client.VmSnapshot(ctx, snapshotUrl); err != nil {
+		// snapshot failed while the VM is paused. `VmSnapshot` failures
+		// are almost always environmental (disk full, NFS hiccup, throttled
+		// IO) — CLH's internal VM state is not mutated by a failed dump, so
+		// resuming the guest puts the caller back in a retry-friendly state.
+		// Only tear the VMM down if the resume itself fails, which signals an
+		// unrecoverable CLH state. The partial snapshot dir is removed either
+		// way so the next attempt starts clean.
+		if resumeErr := client.VmResume(ctx); resumeErr != nil {
+			log.Printf("[Snapshot] VmResume after VmSnapshot failure for %s also failed (%v); tearing VMM down", id, resumeErr)
+			if shutdownErr := shutdownVMM(ctx, client, id, socketPath, "Snapshot cleanup"); shutdownErr != nil {
+				log.Printf("[Snapshot] cleanup: %v", shutdownErr)
+			}
+		}
+		if rmErr := os.RemoveAll(snapshotDir); rmErr != nil {
+			log.Printf("[Snapshot] cleanup: removing partial snapshot dir %s: %v", snapshotDir, rmErr)
+		}
 		return fmt.Errorf("VmSnapshot failed: %w", err)
 	}
 
-	// 3. Shutdown VMM (kills the process)
-	if err := client.VmmShutdown(ctx); err != nil {
-		log.Printf("[Snapshot] Warning: VmmShutdown failed for %s: %v", id, err)
+	// 3. Shut down the VMM and confirm it's gone before the caller writes DB
+	// state. Synchronous so the old-snapshot cleanup at the bottom can't race
+	// with a concurrent Restore's GetLatestSnapshotDir.
+	if err := shutdownVMM(ctx, client, id, socketPath, "Snapshot"); err != nil {
+		return err
 	}
-
-	// 4. Wait for socket to disappear (process dead) — synchronous so the caller
-	// knows the VMM is truly gone before DB state is written, and so that old-
-	// snapshot cleanup doesn't race with a concurrent Restore's GetLatestSnapshotDir.
-	for i := 0; i < 20; i++ {
-		if !client.IsSocketAvailable() {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if client.IsSocketAvailable() {
-		log.Printf("[Snapshot] WARNING: VMM %s still alive after 2s, force-killing", id)
-		if err := forceKillByPIDFile(id); err != nil {
-			os.Remove(socketPath)
-			return fmt.Errorf("VMM %s hung and force-kill failed: %w", id, err)
-		}
-	}
-
-	os.Remove(socketPath)
 	log.Printf("[Snapshot] VM %s snapshotted successfully to %s", id, snapshotDir)
 
-	// 5. Clean up older snapshots synchronously to avoid racing with Restore's
+	// 4. Clean up older snapshots synchronously to avoid racing with Restore's
 	// GetLatestSnapshotDir. Best-effort: log failures but don't fail the snapshot.
 	if entries, err := os.ReadDir(baseSnapshotDir); err == nil {
 		for _, entry := range entries {
@@ -452,45 +468,38 @@ func Stop(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := client.VmmShutdown(ctx); err != nil {
-		log.Printf("[Stop] Warning: VmmShutdown failed for %s: %v", id, err)
+	if err := shutdownVMM(ctx, client, id, socketPath, "Stop"); err != nil {
+		return err
 	}
-
-	for i := 0; i < 20; i++ {
-		if !client.IsSocketAvailable() {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if client.IsSocketAvailable() {
-		log.Printf("[Stop] WARNING: VMM %s still alive after 2s, force-killing", id)
-		if err := forceKillByPIDFile(id); err != nil {
-			os.Remove(socketPath)
-			return fmt.Errorf("VMM %s hung and force-kill failed: %w", id, err)
-		}
-	}
-
-	os.Remove(socketPath)
-
 	log.Printf("[Stop] VM %s stopped successfully", id)
 	return nil
 }
 
-// pidMatchesCH returns true iff /proc/<pid>/cmdline's argv[0] resolves to the
-// configured cloud-hypervisor binary (matched by absolute path or by basename).
-//
-// Used as a defensive check before SIGKILL: a stale pidfile combined with PID
-// reuse on a dense host can make us target an unrelated process. If we don't
-// recognize the cmdline, the real CLH has already exited and the kernel reused
-// its PID — there is nothing for us to kill.
-//
-// Returns true when CHBinary is unset (e.g. unit tests that bypass server.New)
-// so legacy behavior is preserved.
-//
-// Returns false when /proc/<pid>/cmdline cannot be read or is empty (process
-// already gone, kernel thread, or insufficient permissions) — in all of these
-// cases SIGKILL would be useless or unsafe.
+// shutdownVMM asks CLH to shut down, polls up to 2s for the socket to disappear,
+// and SIGKILLs via PID file if it doesn't. Socket is unlinked on the way out.
+func shutdownVMM(ctx context.Context, client *CLHClient, id, socketPath, logPrefix string) error {
+	if err := client.VmmShutdown(ctx); err != nil {
+		log.Printf("[%s] VmmShutdown for %s: %v", logPrefix, id, err)
+	}
+	for i := 0; i < 40; i++ {
+		if !client.IsSocketAvailable() {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if client.IsSocketAvailable() {
+		log.Printf("[%s] VMM %s still alive after 2s, force-killing", logPrefix, id)
+		if err := forceKillByPIDFile(id); err != nil {
+			_ = os.Remove(socketPath)
+			return fmt.Errorf("VMM %s hung and force-kill failed: %w", id, err)
+		}
+	}
+	_ = os.Remove(socketPath)
+	return nil
+}
+
+// pidMatchesCH returns true iff /proc/<pid>/cmdline's argv[0] matches CHBinary
+// by absolute path or basename. Defensive check against PID-reuse before SIGKILL.
 func pidMatchesCH(pid int) bool {
 	if CHBinary == "" {
 		return true
@@ -527,10 +536,8 @@ func forceKillByPIDFile(id string) error {
 		return nil // Process already gone
 	}
 
-	// SEC-04 stopgap: never SIGKILL a PID whose cmdline isn't cloud-hypervisor.
-	// Stale pidfile + PID reuse would otherwise kill an unrelated process.
 	if !pidMatchesCH(pid) {
-		log.Printf("[forceKill] sandbox %s pid %d cmdline does not match %q — skipping SIGKILL (PID likely reused)", id, pid, CHBinary)
+		log.Printf("[forceKill] sandbox %s pid %d cmdline does not match %q — skipping SIGKILL", id, pid, CHBinary)
 		return nil
 	}
 
@@ -540,8 +547,7 @@ func forceKillByPIDFile(id string) error {
 
 	time.Sleep(200 * time.Millisecond)
 
-	// Check if it's still alive. A zombie process will respond to Signal(0),
-	// so we must read its state from /proc to see if it's actually dead.
+	// Zombies respond to Signal(0); check /proc/<pid>/stat state to confirm death.
 	if err := process.Signal(syscall.Signal(0)); err == nil {
 		statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 		if err == nil {
@@ -549,7 +555,6 @@ func forceKillByPIDFile(id string) error {
 			if len(fields) >= 3 {
 				state := fields[2]
 				if state == "Z" || state == "X" {
-					// It's a zombie, so it's dead
 					return nil
 				}
 			}

@@ -84,9 +84,19 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		monitor.SetRootContext(context.Background())
 	}
 
+	// Shared per-sandbox lifecycle locks. Both SandboxService and LifecycleManager
+	// receive the same instance so manual API ops and the background sweeper
+	// serialize on the same sandbox ID.
+	lifecycleLocks := service.NewSandboxLifecycleLocks()
+
+	// Build the sandbox service eagerly so the lifecycle manager can reuse its
+	// Snapshot implementation directly. This keeps the manual /snapshot API
+	// and the auto-snapshot sweep on a single shared code path.
+	sandboxSvc := service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor, lifecycleLocks)
+
 	return &Services{
 		User:             service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),
-		Sandbox:          service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor),
+		Sandbox:          sandboxSvc,
 		Image:            service.NewImageService(cfg, repos.Image),
 		Exec:             service.NewExecService(cfg),
 		Session:          service.NewSessionExecService(cfg),
@@ -100,7 +110,7 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		Clerk:            clerkSvc,
 		AuthCache:        authCache,
 		Monitor:          monitor,
-		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager),
+		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager, lifecycleLocks, sandboxSvc),
 	}
 }
 

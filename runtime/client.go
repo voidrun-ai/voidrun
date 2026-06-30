@@ -28,26 +28,15 @@ func SetInstancesRoot(path string) {
 	}
 }
 
-// CHBinary is the absolute path of the cloud-hypervisor binary used to spawn
-// VMM processes. Set once at process startup from cfg.CHBinary via SetCHBinary.
-//
-// Used as a safety check by forceKillByPIDFile to verify a process identity
-// before SIGKILL — protecting against stale-pidfile + PID-reuse killing an
-// unrelated process on dense hosts.
-//
-// When empty (e.g. unit tests that don't initialize the runtime), the safety
-// check is skipped to preserve legacy behavior.
+// CHBinary is the absolute path of the cloud-hypervisor binary; used by
+// forceKillByPIDFile to verify a process before SIGKILL.
 var CHBinary string
 
-// SetCHBinary sets the absolute path of the cloud-hypervisor binary.
 func SetCHBinary(path string) {
 	if path != "" {
 		CHBinary = path
 	}
 }
-
-// KernelPath is the path to the kernel image
-// var KernelPath = DefaultKernelPath
 
 // APIClient handles communication with Cloud Hypervisor API
 type APIClient struct {

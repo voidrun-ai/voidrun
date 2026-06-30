@@ -65,14 +65,7 @@ func NewSandboxRepository(cfg *config.Config, db *mongo.Database) *SandboxReposi
 
 // Init initializes the repository by loading all allocated IPs from the database
 func (r *SandboxRepository) Init(ctx context.Context) error {
-	// Indexes:
-	//   {orgId}                          — list-by-org queries
-	//   {status, lastActivityAt}         — FindIdleRunning sweep (LifecycleManager.autoSnapshot)
-	//   {status, snapshottedAt}          — FindStaleSnapshotted sweep (LifecycleManager.autoDelete)
-	//
-	// The two compound indexes turn the auto-lifecycle sweeps from full collection
-	// scans into index range scans. Without them, at 10k sandboxes the sweeps do
-	// two full collection scans every 30s tick (default CheckIntervalSec).
+	// Compound indexes turn the auto-lifecycle sweeps into index range scans.
 	indexes := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "orgId", Value: 1}}, Options: options.Index().SetUnique(false)},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "lastActivityAt", Value: 1}}, Options: options.Index().SetUnique(false)},
@@ -231,11 +224,17 @@ func (r *SandboxRepository) DeleteByIDAndOrg(ctx context.Context, id, orgID prim
 	return res.DeletedCount > 0, nil
 }
 
+// UpdateStatusForHealth transitions a "running" row to a new status.
+// CAS-guarded so concurrent lifecycle ops are not overwritten.
 func (r *SandboxRepository) UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error {
-	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
-		"status":    status,
-		"updatedAt": time.Now(),
-	}})
+	_, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{"_id": id, "status": "running"},
+		bson.M{"$set": bson.M{
+			"status":    status,
+			"updatedAt": time.Now(),
+		}},
+	)
 	return err
 }
 

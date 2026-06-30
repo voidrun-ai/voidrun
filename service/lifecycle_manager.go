@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -11,28 +12,47 @@ import (
 	"voidrun/metrics"
 	"voidrun/repository"
 	"voidrun/runtime"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// LifecycleManager runs periodic scans to auto-pause, auto-stop, and auto-delete sandboxes.
-type LifecycleManager struct {
-	repo    repository.ISandboxRepository
-	cfg     config.AutoLifecycleConfig
-	monitor *runtime.EventMonitor
-	metrics *metrics.Manager
+// Snapshotter is the subset of SandboxService used by auto-snapshot.
+// Implementations must be goroutine-safe and acquire their own per-sandbox lock.
+type Snapshotter interface {
+	Snapshot(ctx context.Context, orgID primitive.ObjectID, id string) error
 }
 
-// NewLifecycleManager creates a new lifecycle manager.
+// LifecycleManager runs periodic scans to auto-snapshot and auto-delete sandboxes.
+type LifecycleManager struct {
+	repo           repository.ISandboxRepository
+	cfg            config.AutoLifecycleConfig
+	monitor        *runtime.EventMonitor
+	metrics        *metrics.Manager
+	lifecycleLocks *SandboxLifecycleLocks
+	snapshotter    Snapshotter
+}
+
+// NewLifecycleManager wires the sweeper. lifecycleLocks and snapshotter must
+// be the same instances used by SandboxService so manual and auto flows serialize.
 func NewLifecycleManager(
 	cfg config.AutoLifecycleConfig,
 	repo repository.ISandboxRepository,
 	monitor *runtime.EventMonitor,
 	metricsManager *metrics.Manager,
+	lifecycleLocks *SandboxLifecycleLocks,
+	snapshotter Snapshotter,
 ) *LifecycleManager {
+	if lifecycleLocks == nil {
+		lifecycleLocks = NewSandboxLifecycleLocks()
+	}
 	return &LifecycleManager{
-		repo:    repo,
-		cfg:     cfg,
-		monitor: monitor,
-		metrics: metricsManager,
+		repo:           repo,
+		cfg:            cfg,
+		monitor:        monitor,
+		metrics:        metricsManager,
+		lifecycleLocks: lifecycleLocks,
+		snapshotter:    snapshotter,
 	}
 }
 
@@ -111,25 +131,20 @@ func (m *LifecycleManager) autoSnapshot(ctx context.Context) {
 		
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			
+
 			id := sb.ID.Hex()
 
-			// Stop event monitor BEFORE snapshotting so it can do a final sync
-			// while the CLH API socket is still alive.
-			if m.monitor != nil {
-				m.monitor.Stop(ctx, id)
-			}
-
-			if err := runtime.Snapshot(id); err != nil {
-				log.Printf("[lifecycle] auto-snapshot runtime failed for %s (%s): %v", sb.Name, id, err)
-				return
-			}
-			if m.metrics != nil {
-				m.metrics.UnregisterSandbox(id)
-			}
-			if err := m.repo.SetSnapshottedAt(ctx, sb.ID); err != nil {
-				log.Printf("[lifecycle] auto-snapshot DB update failed for %s (%s): %v", sb.Name, id, err)
-				return
+			// Delegate to the public Snapshot path so manual + auto flows can't drift.
+			// Races against concurrent transitions surface as ErrSandboxNotFound /
+			// ErrSandboxNotRunning and are expected here.
+			if err := m.snapshotter.Snapshot(ctx, sb.OrgID, id); err != nil {
+				switch {
+				case errors.Is(err, ErrSandboxNotFound), errors.Is(err, ErrSandboxNotRunning):
+					return
+				default:
+					log.Printf("[lifecycle] auto-snapshot failed for %s (%s): %v", sb.Name, id, err)
+					return
+				}
 			}
 			log.Printf("[lifecycle] auto-snapshotted sandbox %s (%s) after %ds idle", sb.Name, id, m.cfg.SnapshotAfterIdleSec)
 		}()
@@ -164,25 +179,34 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 		
 		go func() {
 			defer func() { <-sem; wg.Done() }()
-			
+
 			id := sb.ID.Hex()
+
+			// Serialize with manual lifecycle ops and the auto-snapshot sweep.
+			release := m.lifecycleLocks.Acquire(id)
+			defer release()
+
+			current, err := m.repo.FindByID(ctx, sb.ID, options.FindOneOptions{})
+			if err != nil {
+				log.Printf("[lifecycle] auto-delete lookup failed for %s (%s): %v", sb.Name, id, err)
+				return
+			}
+			if current == nil || current.Status != "snapshotted" {
+				return
+			}
 
 			if err := runtime.Delete(id, sb.TapName, sb.NetNSName); err != nil {
 				log.Printf("[lifecycle] auto-delete runtime failed for %s (%s): %v", sb.Name, id, err)
-				// Continue with cleanup anyway — the VM may already be gone
 			}
 
-			// Stop event monitor (final sync)
 			if m.monitor != nil {
 				m.monitor.Stop(ctx, id)
 			}
 
-			// Physical cleanup
 			if err := runtime.Cleanup(id); err != nil {
 				fmt.Printf("[lifecycle] auto-delete cleanup failed for %s (%s): %v\n", sb.Name, id, err)
 			}
 
-			// Mark as deleted in DB
 			if err := m.repo.UpdateStatusForHealth(ctx, sb.ID, "deleted"); err != nil {
 				log.Printf("[lifecycle] auto-delete DB update failed for %s (%s): %v", sb.Name, id, err)
 				return

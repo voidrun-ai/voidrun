@@ -114,6 +114,7 @@ type SandboxConfig struct {
 	DefaultHostname     string
 	DiskFormat          string
 	Seccomp             bool
+	BalloonEnabled      bool
 }
 
 // Health monitor configuration
@@ -186,6 +187,7 @@ const (
 	DefaultAuthLocalMode           = false
 	DefaultSandboxDiskFormat       = "qcow2"
 	DefaultSandboxSeccomp          = true
+	DefaultSandboxBalloonEnabled   = true
 	// Health monitor defaults
 	DefaultHealthEnabled          = true
 	DefaultHealthIntervalSec      = 60
@@ -294,6 +296,7 @@ func New() *Config {
 			DefaultHostname:     getEnv("SANDBOX_DEFAULT_HOSTNAME", DefaultSandboxHostname),
 			DiskFormat:          getEnv("SANDBOX_DISK_FORMAT", DefaultSandboxDiskFormat),
 			Seccomp:             getEnvBool("SANDBOX_SECCOMP", DefaultSandboxSeccomp),
+			BalloonEnabled:      getEnvBool("SANDBOX_BALLOON_ENABLED", DefaultSandboxBalloonEnabled),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),
@@ -341,7 +344,40 @@ func New() *Config {
 		log.Fatalf("Network.Prefix (NET_PREFIX) must be 4 characters or fewer, got %d chars: %s", len(c.Network.Prefix), c.Network.Prefix)
 	}
 
+	// Validate DNS_NAMESERVERS strictly: these values are interpolated verbatim
+	// into the per-sandbox iptables-restore ruleset (see runtime/network.go).
+	// An invalid or attacker-shaped value (newline, CIDR, blank, etc.) would
+	// either break sandbox networking or weaken egress isolation fleet-wide.
+	if err := validateNameservers(c.Network.Nameservers); err != nil {
+		log.Fatalf("DNS_NAMESERVERS invalid: %v", err)
+	}
+
 	return c
+}
+
+// validateNameservers enforces that each entry is a single, well-formed,
+// public unicast IP literal. It rejects CIDRs, blank entries, multicast,
+// loopback, link-local, private-range, and unspecified addresses so a
+// misconfigured env var cannot silently broaden sandbox egress.
+func validateNameservers(nameservers []string) error {
+	if len(nameservers) == 0 {
+		return fmt.Errorf("at least one nameserver is required")
+	}
+	for _, ns := range nameservers {
+		if ns != strings.TrimSpace(ns) || ns == "" {
+			return fmt.Errorf("nameserver %q must be a non-empty, trimmed IP literal", ns)
+		}
+		ip := net.ParseIP(ns)
+		if ip == nil {
+			return fmt.Errorf("nameserver %q is not a valid IP literal (CIDRs and hostnames are not allowed)", ns)
+		}
+		if ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() ||
+			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsPrivate() {
+			return fmt.Errorf("nameserver %q must be a public unicast address", ns)
+		}
+	}
+	return nil
 }
 
 // Address returns the server address string

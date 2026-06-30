@@ -27,27 +27,44 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-var ErrSandboxNotFound = errors.New("sandbox not found")
+var (
+	ErrSandboxNotFound   = errors.New("sandbox not found")
+	ErrSandboxNotRunning = errors.New("sandbox is not running")
+)
 
 // SandboxService handles sandbox business logic
 type SandboxService struct {
-	repo         repository.ISandboxRepository
-	imageRepo    repository.IImageRepository
-	cfg          *config.Config
-	metrics      *metrics.Manager
-	monitor      *runtime.EventMonitor
-	projection   primitive.M
-	restoreGroup singleflight.Group // deduplicates concurrent auto-restore calls per sandbox
+	repo           repository.ISandboxRepository
+	imageRepo      repository.IImageRepository
+	cfg            *config.Config
+	metrics        *metrics.Manager
+	monitor        *runtime.EventMonitor
+	projection     primitive.M
+	restoreGroup   singleflight.Group     // deduplicates concurrent auto-restore calls per sandbox
+	lifecycleLocks *SandboxLifecycleLocks // serializes Snapshot/Restore/Delete per sandbox ID
 }
 
-// NewSandboxService creates a new sandbox service
-func NewSandboxService(cfg *config.Config, repo repository.ISandboxRepository, imageRepo repository.IImageRepository, metricsManager *metrics.Manager, monitor *runtime.EventMonitor) *SandboxService {
+// NewSandboxService creates a new sandbox service. The lifecycleLocks instance is
+// shared with LifecycleManager so manual and automatic lifecycle operations serialize
+// against each other on the same sandbox ID.
+func NewSandboxService(
+	cfg *config.Config,
+	repo repository.ISandboxRepository,
+	imageRepo repository.IImageRepository,
+	metricsManager *metrics.Manager,
+	monitor *runtime.EventMonitor,
+	lifecycleLocks *SandboxLifecycleLocks,
+) *SandboxService {
+	if lifecycleLocks == nil {
+		lifecycleLocks = NewSandboxLifecycleLocks()
+	}
 	return &SandboxService{
-		repo:      repo,
-		imageRepo: imageRepo,
-		cfg:       cfg,
-		metrics:   metricsManager,
-		monitor:   monitor,
+		repo:           repo,
+		imageRepo:      imageRepo,
+		cfg:            cfg,
+		metrics:        metricsManager,
+		monitor:        monitor,
+		lifecycleLocks: lifecycleLocks,
 		projection: bson.M{
 			"_id":            1,
 			"name":           1,
@@ -291,6 +308,9 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 }
 
 func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	release := s.lifecycleLocks.Acquire(id)
+	defer release()
+
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
@@ -328,22 +348,34 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 }
 
 func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	release := s.lifecycleLocks.Acquire(id)
+	defer release()
+
+	// Fetch under the lock so the status check is authoritative — no other
+	// path can transition this sandbox until we release.
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
 	}
 
 	if sandbox.Status != "running" {
-		return fmt.Errorf("sandbox is not running (current status: %s)", sandbox.Status)
+		return fmt.Errorf("%w (current status: %s)", ErrSandboxNotRunning, sandbox.Status)
 	}
 
-	// Stop event monitor BEFORE snapshot so it can do a final sync while the CLH socket is alive.
-	if s.monitor != nil {
-		s.monitor.Stop(ctx, id)
-	}
-
+	// Take the snapshot first while the monitor is still running, so any
+	// CLH events emitted during pause/snapshot/shutdown are tailed into the
+	// event file. If the snapshot errors out, the monitor stays attached and
+	// keeps watching the (possibly still-alive) VM — no "running but
+	// unmonitored" state.
 	if err := runtime.Snapshot(id); err != nil {
 		return err
+	}
+
+	// VMM is now gone, but the event file persists on disk. monitor.Stop
+	// performs one final poll of that file (capturing the final shutdown
+	// events) and then detaches the watcher.
+	if s.monitor != nil {
+		s.monitor.Stop(ctx, id)
 	}
 
 	ok, err := s.repo.SetSnapshottedAtAndOrg(ctx, sandbox.ID, orgID)
@@ -362,15 +394,27 @@ func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID,
 }
 
 func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	release := s.lifecycleLocks.Acquire(id)
+	defer release()
+
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
 	}
 
-	// Verify it's snapshotted
+	// Verify it's snapshotted (status read is now authoritative under the lock).
 	if sandbox.Status != "snapshotted" {
 		return fmt.Errorf("sandbox is not snapshotted (current status: %s)", sandbox.Status)
 	}
+
+	return s.restoreLocked(ctx, orgID, sandbox)
+}
+
+// restoreLocked performs the runtime+DB work for restoring a sandbox. The caller
+// MUST hold the lifecycle lock for sandbox.ID and MUST have verified that the
+// sandbox's status is "snapshotted" under that lock.
+func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.ObjectID, sandbox *model.Sandbox) error {
+	id := sandbox.ID.Hex()
 
 	imageName := sandbox.Image
 	if !strings.Contains(imageName, ":") {
@@ -463,39 +507,56 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 }
 
 // EnsureRunning checks if sandbox is running and restores it if snapshotted (auto-restore feature).
+//
 // Uses singleflight to deduplicate concurrent restore calls — if 100 exec requests arrive for the
-// same snapshotted sandbox, only 1 will actually call Restore(); the other 99 block and share the result.
+// same snapshotted sandbox, only 1 will actually run the restore; the other 99 share the result.
+// Inside the singleflight callback we additionally acquire the per-sandbox lifecycle lock and
+// re-read the sandbox under that lock. This handles the case where a manual /restore (or another
+// lifecycle op) finished between our initial status check and the lock acquisition.
 func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	// Get sandbox from DB to check status
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
 	}
 
-	// If already running, return immediately
 	if sandbox.Status == "running" {
 		return nil
 	}
-
-	// If snapshotted, restore it via singleflight to prevent thundering herd
-	if sandbox.Status == "snapshotted" {
-		_, err, shared := s.restoreGroup.Do(id, func() (interface{}, error) {
-			log.Printf("[Auto-Restore] Sandbox %s is snapshotted, restoring...\n", id)
-			bgCtx := context.WithoutCancel(ctx)
-			if err := s.Restore(bgCtx, orgID, id); err != nil {
-				return nil, fmt.Errorf("failed to auto-restore sandbox: %w", err)
-			}
-			log.Printf("[Auto-Restore] Sandbox %s restored and ready\n", id)
-			return nil, nil
-		})
-		if shared {
-			log.Printf("[Auto-Restore] Sandbox %s restore was shared with concurrent caller\n", id)
-		}
-		return err
+	if sandbox.Status != "snapshotted" {
+		return fmt.Errorf("sandbox in unexpected state for auto-restore: %s", sandbox.Status)
 	}
 
-	// Other states
-	return fmt.Errorf("sandbox in unexpected state for auto-restore: %s", sandbox.Status)
+	_, err, shared := s.restoreGroup.Do(id, func() (interface{}, error) {
+		bgCtx := context.WithoutCancel(ctx)
+
+		release := s.lifecycleLocks.Acquire(id)
+		defer release()
+
+		// Re-fetch under the lock: another path (manual /restore, /snapshot, or
+		// auto-* sweep) may have transitioned this sandbox while we were queued
+		// for either singleflight or the lock.
+		cur, cerr := s.getOrgScopedSandbox(bgCtx, orgID, id)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if cur.Status == "running" {
+			return nil, nil
+		}
+		if cur.Status != "snapshotted" {
+			return nil, fmt.Errorf("sandbox in unexpected state for auto-restore: %s", cur.Status)
+		}
+
+		log.Printf("[Auto-Restore] Sandbox %s is snapshotted, restoring...\n", id)
+		if rerr := s.restoreLocked(bgCtx, orgID, cur); rerr != nil {
+			return nil, fmt.Errorf("failed to auto-restore sandbox: %w", rerr)
+		}
+		log.Printf("[Auto-Restore] Sandbox %s restored and ready\n", id)
+		return nil, nil
+	})
+	if shared {
+		log.Printf("[Auto-Restore] Sandbox %s restore was shared with concurrent caller\n", id)
+	}
+	return err
 }
 
 func (s *SandboxService) Info(id string) (string, error) {
