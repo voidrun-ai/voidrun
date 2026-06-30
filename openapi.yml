@@ -1222,13 +1222,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sandboxes/{id}/snapshot:
+  /sandboxes/{id}/sleep:
     post:
       tags:
         - Sandboxes
-      summary: Snapshot sandbox
-      description: Snapshot a running sandbox and stop the VM process
-      operationId: snapshotSandbox
+      summary: Sleep sandbox
+      description: Put a running sandbox to sleep (state is persisted, VM process exits).
+      operationId: sleepSandbox
       security:
         - ApiKeyAuth: []
       parameters:
@@ -1258,13 +1258,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sandboxes/{id}/restore:
+  /sandboxes/{id}/wake:
     post:
       tags:
         - Sandboxes
-      summary: Restore sandbox
-      description: Restore a snapshotted sandbox from its latest snapshot
-      operationId: restoreSandbox
+      summary: Wake sandbox
+      description: Wake a sleeping sandbox from its persisted state.
+      operationId: wakeSandbox
       security:
         - ApiKeyAuth: []
       parameters:
