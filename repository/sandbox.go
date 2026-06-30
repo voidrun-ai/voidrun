@@ -65,14 +65,21 @@ func NewSandboxRepository(cfg *config.Config, db *mongo.Database) *SandboxReposi
 
 // Init initializes the repository by loading all allocated IPs from the database
 func (r *SandboxRepository) Init(ctx context.Context) error {
-	// Create index on orgId for faster list queries
-	indexOpts := options.Index().SetUnique(false)
-	indexModel := mongo.IndexModel{
-		Keys:    bson.D{bson.E{Key: "orgId", Value: 1}},
-		Options: indexOpts,
+	// Indexes:
+	//   {orgId}                          — list-by-org queries
+	//   {status, lastActivityAt}         — FindIdleRunning sweep (LifecycleManager.autoSnapshot)
+	//   {status, snapshottedAt}          — FindStaleSnapshotted sweep (LifecycleManager.autoDelete)
+	//
+	// The two compound indexes turn the auto-lifecycle sweeps from full collection
+	// scans into index range scans. Without them, at 10k sandboxes the sweeps do
+	// two full collection scans every 30s tick (default CheckIntervalSec).
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "orgId", Value: 1}}, Options: options.Index().SetUnique(false)},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "lastActivityAt", Value: 1}}, Options: options.Index().SetUnique(false)},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "snapshottedAt", Value: 1}}, Options: options.Index().SetUnique(false)},
 	}
-	if _, err := r.collection.Indexes().CreateOne(ctx, indexModel); err != nil {
-		fmt.Printf("[warn] failed to create orgId index: %v\n", err)
+	if _, err := r.collection.Indexes().CreateMany(ctx, indexes); err != nil {
+		fmt.Printf("[warn] failed to create sandbox indexes: %v\n", err)
 	}
 
 	r.mu.Lock()
