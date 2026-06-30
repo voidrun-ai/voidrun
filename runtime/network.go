@@ -155,25 +155,6 @@ func setupNetNS(nsName, hostVeth, nsVeth, bridgeName, macAddr string, nameserver
 		dnsRules += fmt.Sprintf("-A FORWARD -m physdev --physdev-in tap0 -p tcp --dport 53 -d %s -j ACCEPT\n", ns)
 	}
 
-	// SEC-01: the conntrack ESTABLISHED,RELATED ACCEPT must sit *after* the
-	// destination DROPs, not before them. iptables is first-match-wins, so a
-	// stale conntrack entry would otherwise short-circuit policy updates and
-	// keep a guest's existing flow alive to a destination that became
-	// forbidden after the entry was created (e.g. 169.254.169.254, or a
-	// private range added to the blocklist later).
-	//
-	// With the ACCEPT at the end:
-	//   - Anti-spoofing MAC check still runs first (always).
-	//   - Destination DROPs run next; any packet from the guest to a forbidden
-	//     destination is dropped regardless of conntrack state.
-	//   - DNS ACCEPTs whitelist the explicit DNS resolvers.
-	//   - ESTABLISHED,RELATED ACCEPT is the final fall-through for legitimate
-	//     return traffic, ready for the day we tighten the default policy from
-	//     ACCEPT to DROP.
-	//
-	// Note: this reapplication is per-netns-creation. Existing snapshotted
-	// sandboxes keep their old (vulnerable) rule order until SEC-02 (reapply
-	// on restore) ships.
 	script := fmt.Sprintf(`
 set -e
 ip link add br0 type bridge
@@ -190,13 +171,13 @@ iptables-restore <<EOF
 :INPUT ACCEPT [0:0]
 :FORWARD ACCEPT [0:0]
 :OUTPUT ACCEPT [0:0]
+-A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 -A FORWARD -m physdev --physdev-in tap0 -m mac ! --mac-source %s -j DROP
 -A FORWARD -m physdev --physdev-in tap0 -d 169.254.169.254 -j DROP
 -A FORWARD -m physdev --physdev-in tap0 -d 10.0.0.0/8 -j DROP
 -A FORWARD -m physdev --physdev-in tap0 -d 172.16.0.0/12 -j DROP
 -A FORWARD -m physdev --physdev-in tap0 -d 192.168.0.0/16 -j DROP
-%s-A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-COMMIT
+%sCOMMIT
 EOF
 `,
 		nsVeth, nsVeth, macAddr, dnsRules)
