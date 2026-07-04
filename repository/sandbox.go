@@ -31,6 +31,7 @@ type ISandboxRepository interface {
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 	FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error)
 	UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error
+	UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) error
 	NextAvailableIP() (string, error)
 	// Lifecycle management methods
 	TouchActivity(ctx context.Context, id primitive.ObjectID) error
@@ -232,6 +233,20 @@ func (r *SandboxRepository) UpdateStatusForHealth(ctx context.Context, id primit
 		bson.M{"_id": id, "status": "running"},
 		bson.M{"$set": bson.M{
 			"status":    status,
+			"updatedAt": time.Now(),
+		}},
+	)
+	return err
+}
+
+// UpdateStatusFrom transitions a row from one status to another.
+// CAS-guarded on from; returns nil when the row was already in a different state (concurrent transition).
+func (r *SandboxRepository) UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) error {
+	_, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{"_id": id, "status": from},
+		bson.M{"$set": bson.M{
+			"status":    to,
 			"updatedAt": time.Now(),
 		}},
 	)

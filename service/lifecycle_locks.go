@@ -45,3 +45,35 @@ func (s *SandboxLifecycleLocks) Acquire(id string) func() {
 		s.mu.Unlock()
 	}
 }
+
+// TryAcquire is non-blocking Acquire; nil means the lock is held elsewhere.
+func (s *SandboxLifecycleLocks) TryAcquire(id string) func() {
+	s.mu.Lock()
+	entry, ok := s.locks[id]
+	if !ok {
+		entry = &lifecycleLockEntry{}
+		s.locks[id] = entry
+	}
+	entry.refCount++
+	s.mu.Unlock()
+
+	if !entry.mu.TryLock() {
+		s.mu.Lock()
+		entry.refCount--
+		if entry.refCount == 0 {
+			delete(s.locks, id)
+		}
+		s.mu.Unlock()
+		return nil
+	}
+
+	return func() {
+		entry.mu.Unlock()
+		s.mu.Lock()
+		entry.refCount--
+		if entry.refCount == 0 {
+			delete(s.locks, id)
+		}
+		s.mu.Unlock()
+	}
+}

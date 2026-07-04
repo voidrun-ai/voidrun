@@ -155,3 +155,18 @@ func (h *SandboxHandler) Restore(c *gin.Context) error {
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox restored", nil))
 	return nil
 }
+
+func (h *SandboxHandler) Start(c *gin.Context) error {
+	id := c.Param("id")
+
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		return err
+	}
+
+	if err := h.sandboxService.Start(c.Request.Context(), orgID, id); err != nil {
+		return util.ErrInternal("Start failed", err)
+	}
+	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox started", nil))
+	return nil
+}

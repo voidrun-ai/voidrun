@@ -410,6 +410,110 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 	return s.restoreLocked(ctx, orgID, sandbox)
 }
 
+// Start boots a stopped sandbox back into "running". Accepts snapshotted, killed,
+// or error statuses and restores from the latest on-disk snapshot. Sandboxes
+// that were killed before ever being snapshotted have no recoverable state and
+// must be recreated instead.
+func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	release := s.lifecycleLocks.Acquire(id)
+	defer release()
+
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
+	if err != nil {
+		return err
+	}
+
+	switch sandbox.Status {
+	case "running":
+		return nil
+	case "snapshotted", "killed", "error":
+	default:
+		return fmt.Errorf("sandbox cannot be started from status: %s", sandbox.Status)
+	}
+
+	if runtime.GetLatestSnapshotDir(id) != "" {
+		return s.restoreLocked(ctx, orgID, sandbox)
+	}
+
+	overlayPath := runtime.GetOverlayPath(id)
+	if s.cfg.Sandbox.DiskFormat == "raw" {
+		overlayPath = runtime.GetRawOverlayPath(id)
+	}
+	if _, err := os.Stat(overlayPath); err == nil {
+		return s.bootFromDiskLocked(ctx, orgID, sandbox, overlayPath)
+	}
+
+	return fmt.Errorf("no snapshot or disk image available to start from; delete and recreate the sandbox")
+}
+
+// bootFromDiskLocked boots a sandbox from its existing overlay disk without a snapshot (memory state lost).
+// The caller MUST hold the lifecycle lock for sandbox.ID.
+func (s *SandboxService) bootFromDiskLocked(ctx context.Context, orgID primitive.ObjectID, sandbox *model.Sandbox, overlayPath string) error {
+	id := sandbox.ID.Hex()
+
+	macAddr := sandbox.MacAddress
+	if macAddr == "" {
+		macAddr = runtime.GenerateMAC(sandbox.IP)
+	}
+
+	spec := model.SandboxSpec{
+		ID:         id,
+		Type:       sandbox.Image,
+		CPUs:       sandbox.CPU,
+		MemoryMB:   sandbox.Mem,
+		IPAddress:  sandbox.IP,
+		TapName:    sandbox.TapName,
+		MacAddress: macAddr,
+		NetNSName:  sandbox.NetNSName,
+	}
+
+	if err := runtime.BootFromDisk(*s.cfg, spec, overlayPath); err != nil {
+		return fmt.Errorf("failed to boot VM from disk: %w", err)
+	}
+
+	cleanup := func() {
+		log.Printf("[BootFromDisk] Rolling back: stopping VM %s", id)
+		if stopErr := runtime.Stop(id); stopErr != nil {
+			log.Printf("[BootFromDisk] Rollback stop failed for %s: %v", id, stopErr)
+		}
+	}
+
+	if err := waitForAgent(ctx, id, 30*time.Second); err != nil {
+		cleanup()
+		return fmt.Errorf("agent not ready after disk boot: %w", err)
+	}
+
+	go func() {
+		defer util.Track("configureAgentNetwork - " + id)()
+		netCfg := buildAgentNetConfig(s.cfg, sandbox.IP, sandbox.Name)
+		if cfgErr := configureAgentNetwork(id, &netCfg); cfgErr != nil {
+			log.Printf("   [BootFromDisk] network re-config failed on %s: %v\n", id, cfgErr)
+		} else {
+			log.Printf("   [BootFromDisk] network re-config done on %s\n", id)
+		}
+		syncSandboxClock(id)
+	}()
+
+	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
+		cleanup()
+		return fmt.Errorf("VM booted but failed to update DB status: %w", err)
+	}
+
+	if err := s.repo.TouchActivity(ctx, sandbox.ID); err != nil {
+		log.Printf("[WARN] Failed to touch activity on disk boot for %s: %v", id, err)
+	}
+
+	if s.metrics != nil {
+		s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
+	}
+
+	if s.monitor != nil {
+		s.monitor.Start(ctx, sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
+	}
+
+	return nil
+}
+
 // restoreLocked performs the runtime+DB work for restoring a sandbox. The caller
 // MUST hold the lifecycle lock for sandbox.ID and MUST have verified that the
 // sandbox's status is "snapshotted" under that lock.
@@ -585,23 +689,12 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		sb := sb
 		id := sb.ID.Hex()
 
-		// --- FAST PATH CHECKS ---
-		client := runtime.NewAPIClientForSandbox(id)
-		socketExists := client.IsSocketAvailable() // Fast os.Stat check
-
-		// Case 1: DB says Snapshotted.
-		// Conclusion: It is either snapshotted (socket gone) or in the process of restoring (socket exists).
-		// In either case, the health check should not touch its status.
-		if sb.Status == "snapshotted" {
+		// Health monitor only concerns itself with "did a running VM die?" — skip
+		// any non-running status. Any transition into/out of running is owned by
+		// the lifecycle ops (Snapshot/Restore/Start/Delete) under lifecycleLocks.
+		if sb.Status != "running" {
 			continue
 		}
-
-		// Case 2: DB says Running + Socket is GONE.
-		// Conclusion: It crashed. We must update DB to stopped. (Proceeds to update logic)
-
-		// Case 3: Socket Exists (Your specific scenario).
-		// Conclusion: It could be Running, Paused, or Loaded (Stopped).
-		// We MUST call the API to find out.
 
 		wg.Add(1)
 		sem <- struct{}{}
@@ -609,36 +702,50 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		go func() {
 			defer func() { <-sem; wg.Done() }()
 
+			// Skip if a lifecycle op (Snapshot/Restore/Delete) is currently in flight —
+			// its DB write is authoritative, and health will re-check on the next tick.
+			// Prevents the running -> killed -> snapshotted flicker during long snapshot tear-downs.
+			release := s.lifecycleLocks.TryAcquire(id)
+			if release == nil {
+				return
+			}
+			defer release()
+
+			// Re-read under the lock in case a lifecycle op finished between our list
+			// query and TryAcquire (e.g. Snapshot just released).
+			cur, err := s.repo.FindByID(ctx, sb.ID, options.FindOneOptions{})
+			if err != nil || cur == nil || cur.Status != "running" {
+				return
+			}
+
 			newState := "killed"
 
-			if socketExists {
+			client := runtime.NewAPIClientForSandbox(id)
+			if client.IsSocketAvailable() {
 				apiCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 				defer cancel()
 
 				sbxState, err := client.GetStateWithContext(apiCtx)
 				if err == nil {
-					// Map Cloud Hypervisor States to your App States
 					switch strings.ToLower(sbxState) {
 					case "running", "runningvirtualized":
 						newState = "running"
 					default:
-						// If the socket is somehow still there but state is not running
-						// it might be a zombie, so map it to killed.
+						// Socket present but VM not running — treat as zombie.
 						newState = "killed"
 					}
 				} else {
-					// Socket exists, but API refused connection or timed out.
-					// Process is likely zombie or unresponsive. Treat as killed.
 					fmt.Printf("[health] Sandbox %s unresponsive (socket exists): %v\n", id, err)
 					newState = "killed"
 				}
 			}
 
-			// Only write to DB if state actually changed
-			if sb.Status != newState {
-				if err := s.repo.UpdateStatusForHealth(ctx, sb.ID, newState); err != nil {
-					fmt.Printf("[health] failed to update status for %s: %v\n", id, err)
-				}
+			if newState == "running" {
+				return
+			}
+
+			if err := s.repo.UpdateStatusForHealth(ctx, sb.ID, newState); err != nil {
+				fmt.Printf("[health] failed to update status for %s: %v\n", id, err)
 			}
 		}()
 	}

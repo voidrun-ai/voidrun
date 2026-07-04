@@ -124,6 +124,49 @@ func TestSandboxLifecycleLocks_RefcountUnderChurn(t *testing.T) {
 	}
 }
 
+func TestSandboxLifecycleLocks_TryAcquireBusyReturnsNil(t *testing.T) {
+	locks := NewSandboxLifecycleLocks()
+
+	releaseA := locks.Acquire("sbx-1")
+	defer releaseA()
+
+	if release := locks.TryAcquire("sbx-1"); release != nil {
+		release()
+		t.Fatal("TryAcquire returned non-nil while lock was held")
+	}
+
+	if n := locks.size(); n != 1 {
+		t.Fatalf("locks map size = %d after failed TryAcquire, want 1", n)
+	}
+}
+
+func TestSandboxLifecycleLocks_TryAcquireFreeSucceeds(t *testing.T) {
+	locks := NewSandboxLifecycleLocks()
+
+	release := locks.TryAcquire("sbx-1")
+	if release == nil {
+		t.Fatal("TryAcquire returned nil on an unheld lock")
+	}
+	release()
+
+	if n := locks.size(); n != 0 {
+		t.Fatalf("locks map size = %d after release, want 0", n)
+	}
+}
+
+func TestSandboxLifecycleLocks_TryAcquireAcrossIDs(t *testing.T) {
+	locks := NewSandboxLifecycleLocks()
+
+	releaseA := locks.Acquire("sbx-a")
+	defer releaseA()
+
+	release := locks.TryAcquire("sbx-b")
+	if release == nil {
+		t.Fatal("TryAcquire on a different id returned nil while another id was held")
+	}
+	release()
+}
+
 // size returns the current number of tracked lock entries. Test-only helper.
 func (s *SandboxLifecycleLocks) size() int {
 	s.mu.Lock()

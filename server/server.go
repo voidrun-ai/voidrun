@@ -36,6 +36,7 @@ func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Ser
 	// Initialize machine package with config paths
 	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
 	runtime.SetCHBinary(cfg.CHBinary)
+	runtime.SetDecoupledSnapshot(cfg.Sandbox.DecoupledSnapshot, cfg.Sandbox.MemoryBackingMode)
 	var metricsManager *metrics.Manager
 	var stopFn context.CancelFunc
 	if cfg.Metrics.Enabled {
@@ -238,6 +239,7 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, 
 		sandboxByID.DELETE("", handler.Handle(h.Sandbox.Delete))
 		sandboxByID.POST("/sleep", handler.Handle(h.Sandbox.Snapshot))
 		sandboxByID.POST("/wake", handler.Handle(h.Sandbox.Restore))
+		sandboxByID.POST("/start", handler.Handle(h.Sandbox.Start))
 		sandboxByID.POST("/exec", handler.Handle(h.Exec.Exec))
 		sandboxByID.POST("/exec-stream", handler.Handle(h.Exec.ExecStream))
 		sandboxByID.POST("/session-exec", handler.Handle(h.Exec.SessionExec))

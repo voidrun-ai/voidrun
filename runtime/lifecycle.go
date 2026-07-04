@@ -45,6 +45,9 @@ func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {
 
 // Create handles Fresh Boot (API Injection)
 func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+	if DecoupledSnapshotEnabled {
+		return createDecoupled(cfg, spec, overlayPath)
+	}
 	defer util.Track("Sandbox Start (Total)")()
 
 	overlayPath, _ = filepath.Abs(overlayPath)
@@ -136,9 +139,10 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 		},
 		Memory: &MemoryConfig{
 			Size:      int64(spec.MemoryMB) * 1024 * 1024,
-			Shared:    false,
+			Shared:    cfg.Sandbox.MemoryShared,
+			Hugepages: cfg.Sandbox.MemoryHugepages,
 			Mergeable: false,
-			Prefault:  false,
+			Prefault:  cfg.Sandbox.MemoryPrefault,
 		},
 		Disks: []DiskConfig{
 			{Path: overlayPath},
@@ -196,6 +200,9 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 
 // BuildCLIArgs constructs the Cloud Hypervisor CLI arguments from the sandbox configuration
 func BuildCLIArgs(cfg config.Config, spec model.SandboxSpec, overlayPath string) []string {
+	if DecoupledSnapshotEnabled {
+		return buildCLIArgsDecoupled(cfg, spec, overlayPath)
+	}
 	// Use centralized path helpers
 	socketPath := GetSocketPath(spec.ID)
 	logPath := GetLogPath(spec.ID)
@@ -223,6 +230,17 @@ func BuildCLIArgs(cfg config.Config, spec model.SandboxSpec, overlayPath string)
 		backingFiles = "off"
 	}
 
+	memoryArg := fmt.Sprintf("size=%dM", spec.MemoryMB)
+	if cfg.Sandbox.MemoryShared {
+		memoryArg += ",shared=on"
+	}
+	if cfg.Sandbox.MemoryHugepages {
+		memoryArg += ",hugepages=on"
+	}
+	if cfg.Sandbox.MemoryPrefault {
+		memoryArg += ",prefault=on"
+	}
+
 	// 2. Build the Base CLI Arguments
 	args := []string{
 		"--api-socket", socketPath,
@@ -231,7 +249,7 @@ func BuildCLIArgs(cfg config.Config, spec model.SandboxSpec, overlayPath string)
 		"--kernel", cfg.Paths.KernelPath,
 		"--cmdline", cmdLine,
 		"--cpus", fmt.Sprintf("boot=%d,max=%d", spec.CPUs, spec.CPUs),
-		"--memory", fmt.Sprintf("size=%dM", spec.MemoryMB),
+		"--memory", memoryArg,
 		"--disk", fmt.Sprintf("path=%s,backing_files=%s,image_type=%s", overlayPath, backingFiles, imageType),
 		"--net", fmt.Sprintf("tap=%s,mac=%s", tapName, macAddr),
 		"--vsock", fmt.Sprintf("cid=%d,socket=%s", getCidFromIP(spec.IPAddress), vsockPath),
@@ -324,6 +342,9 @@ func buildLandlockRules(cfg config.Config, spec model.SandboxSpec, overlayPath, 
 }
 
 func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+	if DecoupledSnapshotEnabled {
+		return createCLIDecoupled(cfg, spec, overlayPath)
+	}
 	defer util.Track("Sandbox Start (Total CLI)")()
 
 	overlayPath, _ = filepath.Abs(overlayPath)
@@ -377,6 +398,9 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 // Snapshot creates a snapshot of the VM and terminates the hypervisor.
 // It is safe to call concurrently for different sandbox IDs.
 func Snapshot(id string) error {
+	if DecoupledSnapshotEnabled {
+		return snapshotDecoupled(id)
+	}
 	defer util.Track("lifecycle: Sandbox Snapshot")()
 	socketPath := GetSocketPath(id)
 	baseSnapshotDir := GetSnapshotBaseDir(id)
@@ -384,11 +408,13 @@ func Snapshot(id string) error {
 	// Generate a unique timestamped directory for this snapshot
 	snapshotDir := filepath.Join(baseSnapshotDir, fmt.Sprintf("snap-%d", time.Now().UnixNano()))
 
-	client := NewCLHClientWithTimeout(socketPath, 30*time.Second)
+	const snapshotTimeout = 120 * time.Second
+
+	client := NewCLHClientWithTimeout(socketPath, snapshotTimeout)
 	if !client.IsSocketAvailable() {
 		return fmt.Errorf("Sandbox not running")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeout)
 	defer cancel()
 
 	// Ensure base directory exists
@@ -407,13 +433,6 @@ func Snapshot(id string) error {
 	// 2. Take Snapshot
 	snapshotUrl := "file://" + snapshotDir + "/"
 	if err := client.VmSnapshot(ctx, snapshotUrl); err != nil {
-		// snapshot failed while the VM is paused. `VmSnapshot` failures
-		// are almost always environmental (disk full, NFS hiccup, throttled
-		// IO) — CLH's internal VM state is not mutated by a failed dump, so
-		// resuming the guest puts the caller back in a retry-friendly state.
-		// Only tear the VMM down if the resume itself fails, which signals an
-		// unrecoverable CLH state. The partial snapshot dir is removed either
-		// way so the next attempt starts clean.
 		if resumeErr := client.VmResume(ctx); resumeErr != nil {
 			log.Printf("[Snapshot] VmResume after VmSnapshot failure for %s also failed (%v); tearing VMM down", id, resumeErr)
 			if shutdownErr := shutdownVMM(ctx, client, id, socketPath, "Snapshot cleanup"); shutdownErr != nil {
@@ -457,6 +476,9 @@ func Snapshot(id string) error {
 // Stop gracefully shuts down a VM process via the API and waits for the socket to disappear.
 // This is used for cleanup when VM creation/boot fails.
 func Stop(id string) error {
+	if DecoupledSnapshotEnabled {
+		return stopDecoupled(id)
+	}
 	defer util.Track("lifecycle: Sandbox Stop")()
 	socketPath := GetSocketPath(id)
 
@@ -566,7 +588,12 @@ func forceKillByPIDFile(id string) error {
 }
 
 func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir string) error {
-	defer util.Track("lifecycle: Sandbox Restore (API OnDemand)")()
+	if DecoupledSnapshotEnabled {
+		return restoreDecoupled(cfg, spec, overlayPath, snapshotDir)
+	}
+	memoryRestoreMode := "OnDemand"
+
+	defer util.Track("lifecycle: Sandbox Restore (" + memoryRestoreMode + ")")()
 
 	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
 		return fmt.Errorf("ensure netns: %w", err)
@@ -593,7 +620,7 @@ func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir
 		args = append(args, "--seccomp", "true")
 	}
 
-	fmt.Printf(">> [API-OnDemand] Spawning empty CLH process for restore of %s inside NetNS %s...\n", spec.ID, spec.NetNSName)
+	fmt.Printf(">> [Restore/%s] Spawning empty CLH process for restore of %s inside NetNS %s...\n", memoryRestoreMode, spec.ID, spec.NetNSName)
 
 	netnsArgs := append([]string{"netns", "exec", spec.NetNSName, cfg.CHBinary}, args...)
 	cmd := exec.Command("ip", netnsArgs...)
@@ -637,20 +664,44 @@ func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir
 
 	if err := clhClient.VmRestore(ctx, &RestoreConfig{
 		SourceURL:         sourceURL,
-		Prefault:          false,
+		Prefault:          cfg.Sandbox.MemoryPrefault,
 		Resume:            true,
-		MemoryRestoreMode: "OnDemand",
+		MemoryRestoreMode: memoryRestoreMode,
 	}); err != nil {
 		Stop(spec.ID)
 		return fmt.Errorf("vm.restore API call failed: %w", err)
 	}
 
-	fmt.Printf("   [+] VM %s Restored via API! PID: %d\n", spec.ID, pid)
+	fmt.Printf("   [+] VM %s Restored via API (%s)! PID: %d\n", spec.ID, memoryRestoreMode, pid)
 	return nil
+}
+
+// BootFromDisk boots a VM using its existing overlay disk image without a snapshot.
+// Memory state is not restored; the guest starts fresh but with its previous disk data intact.
+// It is safe to call concurrently for different sandbox IDs.
+func BootFromDisk(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+	if DecoupledSnapshotEnabled {
+		return bootFromDiskDecoupled(cfg, spec, overlayPath)
+	}
+	defer util.Track("lifecycle: BootFromDisk")()
+
+	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
+		return fmt.Errorf("ensure netns: %w", err)
+	}
+
+	os.Remove(GetSocketPath(spec.ID))
+	os.Remove(GetEventPath(spec.ID))
+	os.Remove(GetEventOffsetPath(spec.ID))
+	os.Remove(GetVsockPath(spec.ID))
+
+	return CreateCLI(cfg, spec, overlayPath)
 }
 
 // Delete shuts down and kills the VM process, but leaves the files on disk for the monitor to sync.
 func Delete(id, tapName, nsName string) error {
+	if DecoupledSnapshotEnabled {
+		return deleteDecoupled(id, tapName, nsName)
+	}
 	socketPath := GetSocketPath(id)
 	pidPath := GetPIDPath(id)
 

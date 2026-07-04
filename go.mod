@@ -71,5 +71,5 @@ require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/vishvananda/netns v0.0.5
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/sys v0.41.0
 )

@@ -115,6 +115,12 @@ type SandboxConfig struct {
 	DiskFormat          string
 	Seccomp             bool
 	BalloonEnabled      bool
+	MemoryShared        bool   // sparse snapshot dump when true (shared=on)
+	MemoryHugepages     bool   // host hugetlbfs must be configured
+	MemoryPrefault      bool   // touch all pages at boot/restore
+	MemoryRestoreMode   string // "auto", "copy", or "ondemand"
+	DecoupledSnapshot   bool   // metadata-only snapshot + external RAM file
+	MemoryBackingMode   string // "legacy", "shared-shm", or "private-tmpfs"
 }
 
 // Health monitor configuration
@@ -168,26 +174,35 @@ const (
 	DefaultMongoDB     = "vr-db"
 	DefaultJWTSecret   = "change-me-in-production"
 	// Clerk defaults
-	DefaultClerkSecretKey          = ""
-	DefaultClerkPublishableKey     = ""
-	DefaultClerkJWKSURL            = ""
-	DefaultClerkEnabled            = false
-	DefaultLocalMode               = false
-	DefaultSystemUserName          = "System"
-	DefaultSystemUserEmail         = "system@local"
-	DefaultSandboxVCPUs            = 1
-	DefaultSandboxMemoryMB         = 1024
-	DefaultSandboxDiskMB           = 5120 // 5GB
-	DefaultSandboxImage            = "code"
-	DefaultSandboxKernelCmdline    = "root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0"
-	DefaultSandboxSyncTimeoutSec   = 10
-	DefaultSandboxDebugBootConsole = false
-	DefaultOverlayImage            = "overlay.qcow2"
-	DefaultSandboxHostname         = "voidrun"
-	DefaultAuthLocalMode           = false
-	DefaultSandboxDiskFormat       = "qcow2"
-	DefaultSandboxSeccomp          = true
-	DefaultSandboxBalloonEnabled   = true
+	DefaultClerkSecretKey           = ""
+	DefaultClerkPublishableKey      = ""
+	DefaultClerkJWKSURL             = ""
+	DefaultClerkEnabled             = false
+	DefaultLocalMode                = false
+	DefaultSystemUserName           = "System"
+	DefaultSystemUserEmail          = "system@local"
+	DefaultSandboxVCPUs             = 1
+	DefaultSandboxMemoryMB          = 1024
+	DefaultSandboxDiskMB            = 5120 // 5GB
+	DefaultSandboxImage             = "code"
+	DefaultSandboxKernelCmdline     = "root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0"
+	DefaultSandboxSyncTimeoutSec    = 10
+	DefaultSandboxDebugBootConsole  = false
+	DefaultOverlayImage             = "overlay.qcow2"
+	DefaultSandboxHostname          = "voidrun"
+	DefaultAuthLocalMode            = false
+	DefaultSandboxDiskFormat        = "qcow2"
+	DefaultSandboxSeccomp           = true
+	DefaultSandboxBalloonEnabled    = true
+	DefaultSandboxMemoryShared      = false
+	DefaultSandboxMemoryHugepages   = false
+	DefaultSandboxMemoryPrefault    = false
+	DefaultSandboxMemoryRestoreMode = "auto"
+	DefaultSandboxDecoupledSnapshot = false
+	DefaultSandboxMemoryBackingMode = "legacy"
+	MemBackingLegacy                = "legacy"
+	MemBackingSharedShm             = "shared-shm"
+	MemBackingPrivateTmpfs          = "private-tmpfs"
 	// Health monitor defaults
 	DefaultHealthEnabled          = true
 	DefaultHealthIntervalSec      = 60
@@ -297,6 +312,12 @@ func New() *Config {
 			DiskFormat:          getEnv("SANDBOX_DISK_FORMAT", DefaultSandboxDiskFormat),
 			Seccomp:             getEnvBool("SANDBOX_SECCOMP", DefaultSandboxSeccomp),
 			BalloonEnabled:      getEnvBool("SANDBOX_BALLOON_ENABLED", DefaultSandboxBalloonEnabled),
+			MemoryShared:        getEnvBool("SANDBOX_MEMORY_SHARED", DefaultSandboxMemoryShared),
+			MemoryHugepages:     getEnvBool("SANDBOX_MEMORY_HUGEPAGES", DefaultSandboxMemoryHugepages),
+			MemoryPrefault:      getEnvBool("SANDBOX_MEMORY_PREFAULT", DefaultSandboxMemoryPrefault),
+			MemoryRestoreMode:   getEnv("SANDBOX_MEMORY_RESTORE_MODE", DefaultSandboxMemoryRestoreMode),
+			DecoupledSnapshot:   getEnvBool("SANDBOX_DECOUPLED_SNAPSHOT", DefaultSandboxDecoupledSnapshot),
+			MemoryBackingMode:   getEnv("SANDBOX_MEMORY_BACKING_MODE", DefaultSandboxMemoryBackingMode),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),
@@ -352,7 +373,26 @@ func New() *Config {
 		log.Fatalf("DNS_NAMESERVERS invalid: %v", err)
 	}
 
+	if err := validateMemoryBackingMode(c.Sandbox.MemoryBackingMode, c.Sandbox.DecoupledSnapshot); err != nil {
+		log.Fatalf("SANDBOX_MEMORY_BACKING_MODE invalid: %v", err)
+	}
+
 	return c
+}
+
+// validateMemoryBackingMode rejects unknown modes; decoupled snapshot needs file-backed RAM.
+func validateMemoryBackingMode(mode string, decoupled bool) error {
+	switch mode {
+	case MemBackingLegacy, MemBackingSharedShm, MemBackingPrivateTmpfs:
+	default:
+		return fmt.Errorf("unknown backing mode %q (want one of %q,%q,%q)",
+			mode, MemBackingLegacy, MemBackingSharedShm, MemBackingPrivateTmpfs)
+	}
+	if decoupled && mode == MemBackingLegacy {
+		return fmt.Errorf("SANDBOX_DECOUPLED_SNAPSHOT=true requires SANDBOX_MEMORY_BACKING_MODE=%q or %q, got %q",
+			MemBackingSharedShm, MemBackingPrivateTmpfs, mode)
+	}
+	return nil
 }
 
 // validateNameservers enforces that each entry is a single, well-formed,

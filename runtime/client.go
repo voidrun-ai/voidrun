@@ -38,6 +38,20 @@ func SetCHBinary(path string) {
 	}
 }
 
+// DecoupledSnapshotEnabled gates lifecycle_decoupled.go (SANDBOX_DECOUPLED_SNAPSHOT).
+var DecoupledSnapshotEnabled bool
+
+// MemoryBackingModeName is the host RAM file backend when decoupled snapshot is on.
+var MemoryBackingModeName string
+
+// SetDecoupledSnapshot initializes runtime globals from config at server boot.
+func SetDecoupledSnapshot(enabled bool, mode string) {
+	DecoupledSnapshotEnabled = enabled
+	if mode != "" {
+		MemoryBackingModeName = mode
+	}
+}
+
 // APIClient handles communication with Cloud Hypervisor API
 type APIClient struct {
 	socketPath string

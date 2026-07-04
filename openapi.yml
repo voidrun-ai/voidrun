@@ -1294,6 +1294,52 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sandboxes/{id}/start:
+    post:
+      tags:
+        - Sandboxes
+      summary: Start sandbox
+      description: |
+        Boot a stopped sandbox back into a running state. Accepts sandboxes in
+        `snapshotted`, `killed`, or `error` status and restores from the latest
+        on-disk snapshot. Returns 500 if no snapshot is available (the sandbox
+        must then be deleted and recreated).
+      operationId: startSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Start failed (e.g. no snapshot available, or restore error)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sandboxes/{id}/exec:
     post:
       tags:

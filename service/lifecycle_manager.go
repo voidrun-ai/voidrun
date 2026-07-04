@@ -207,7 +207,7 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 				fmt.Printf("[lifecycle] auto-delete cleanup failed for %s (%s): %v\n", sb.Name, id, err)
 			}
 
-			if err := m.repo.UpdateStatusForHealth(ctx, sb.ID, "deleted"); err != nil {
+			if err := m.repo.UpdateStatusFrom(ctx, sb.ID, "snapshotted", "deleted"); err != nil {
 				log.Printf("[lifecycle] auto-delete DB update failed for %s (%s): %v", sb.Name, id, err)
 				return
 			}
