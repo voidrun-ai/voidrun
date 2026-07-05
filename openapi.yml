@@ -278,7 +278,7 @@ components:
           description: >-
             Lifecycle state. Terminal states `killed` and `deleted` may still appear
             in list responses for historical or cleanup rows.
-          enum: [running, stopped, paused, error, killed, deleted]
+          enum: [running, snapshotted, error, killed, deleted]
           example: running
         createdAt:
           type: string
@@ -1222,12 +1222,88 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sandboxes/{id}/sleep:
+    post:
+      tags:
+        - Sandboxes
+      summary: Sleep sandbox
+      description: Put a running sandbox to sleep (state is persisted, VM process exits).
+      operationId: sleepSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox snapshotted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sandboxes/{id}/wake:
+    post:
+      tags:
+        - Sandboxes
+      summary: Wake sandbox
+      description: Wake a sleeping sandbox from its persisted state.
+      operationId: wakeSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      responses:
+        "200":
+          description: Sandbox restored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sandboxes/{id}/start:
     post:
       tags:
         - Sandboxes
       summary: Start sandbox
-      description: Start a stopped sandbox
+      description: |
+        Boot a stopped sandbox back into a running state. Accepts sandboxes in
+        `snapshotted`, `killed`, or `error` status and restores from the latest
+        on-disk snapshot. Returns 500 if no snapshot is available (the sandbox
+        must then be deleted and recreated).
       operationId: startSandbox
       security:
         - ApiKeyAuth: []
@@ -1245,12 +1321,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessResponse"
-        "400":
-          description: Invalid request (sandbox not stopped)
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Unauthorized
           content:
@@ -1263,110 +1333,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-
-  /sandboxes/{id}/stop:
-    post:
-      tags:
-        - Sandboxes
-      summary: Stop sandbox
-      description: Stop a running sandbox
-      operationId: stopSandbox
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
-      responses:
-        "200":
-          description: Sandbox stopped
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Sandbox not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sandboxes/{id}/pause:
-    post:
-      tags:
-        - Sandboxes
-      summary: Pause sandbox
-      description: Pause a running sandbox
-      operationId: pauseSandbox
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
-      responses:
-        "200":
-          description: Sandbox paused
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Sandbox not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sandboxes/{id}/resume:
-    post:
-      tags:
-        - Sandboxes
-      summary: Resume sandbox
-      description: Resume a paused sandbox
-      operationId: resumeSandbox
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 65ae1234567890abcdef1234
-      responses:
-        "200":
-          description: Sandbox resumed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
-        "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Sandbox not found
+        "500":
+          description: Start failed (e.g. no snapshot available, or restore error)
           content:
             application/json:
               schema:

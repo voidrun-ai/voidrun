@@ -63,11 +63,11 @@ type SystemUserConfig struct {
 
 // AutoLifecycleConfig controls automatic sandbox lifecycle transitions
 type AutoLifecycleConfig struct {
-	Enabled               bool
-	PauseAfterIdleSec     int // auto-pause after N seconds of inactivity (default: 60)
-	StopAfterPausedSec    int // auto-stop after N seconds of being paused (default: 900)
-	DeleteAfterStoppedSec int // auto-delete after N seconds of being stopped (default: 604800)
-	CheckIntervalSec      int // how often the manager scans (default: 30)
+	Enabled                   bool
+	SnapshotAfterIdleSec      int // auto-snapshot after N seconds of inactivity (default: 60)
+	DeleteAfterSnapshottedSec int // auto-delete after N seconds of being snapshotted (default: 604800)
+	CheckIntervalSec          int // how often the manager scans (default: 30)
+	Concurrency               int // max concurrent snapshot/delete operations (default: 10)
 }
 
 // Config holds all application configuration
@@ -114,6 +114,13 @@ type SandboxConfig struct {
 	DefaultHostname     string
 	DiskFormat          string
 	Seccomp             bool
+	BalloonEnabled      bool
+	MemoryShared        bool   // sparse snapshot dump when true (shared=on)
+	MemoryHugepages     bool   // host hugetlbfs must be configured
+	MemoryPrefault      bool   // touch all pages at boot/restore
+	MemoryRestoreMode   string // "auto", "copy", or "ondemand"
+	DecoupledSnapshot   bool   // metadata-only snapshot + external RAM file
+	MemoryBackingMode   string // "legacy", "shared-shm", or "private-tmpfs"
 }
 
 // Health monitor configuration
@@ -167,25 +174,35 @@ const (
 	DefaultMongoDB     = "vr-db"
 	DefaultJWTSecret   = "change-me-in-production"
 	// Clerk defaults
-	DefaultClerkSecretKey          = ""
-	DefaultClerkPublishableKey     = ""
-	DefaultClerkJWKSURL            = ""
-	DefaultClerkEnabled            = false
-	DefaultLocalMode               = false
-	DefaultSystemUserName          = "System"
-	DefaultSystemUserEmail         = "system@local"
-	DefaultSandboxVCPUs            = 1
-	DefaultSandboxMemoryMB         = 1024
-	DefaultSandboxDiskMB           = 5120 // 5GB
-	DefaultSandboxImage            = "code"
-	DefaultSandboxKernelCmdline    = "root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0"
-	DefaultSandboxSyncTimeoutSec   = 10
-	DefaultSandboxDebugBootConsole = false
-	DefaultOverlayImage            = "overlay.qcow2"
-	DefaultSandboxHostname         = "voidrun"
-	DefaultAuthLocalMode           = false
-	DefaultSandboxDiskFormat       = "qcow2"
-	DefaultSandboxSeccomp          = true
+	DefaultClerkSecretKey           = ""
+	DefaultClerkPublishableKey      = ""
+	DefaultClerkJWKSURL             = ""
+	DefaultClerkEnabled             = false
+	DefaultLocalMode                = false
+	DefaultSystemUserName           = "System"
+	DefaultSystemUserEmail          = "system@local"
+	DefaultSandboxVCPUs             = 1
+	DefaultSandboxMemoryMB          = 1024
+	DefaultSandboxDiskMB            = 5120 // 5GB
+	DefaultSandboxImage             = "code"
+	DefaultSandboxKernelCmdline     = "root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0"
+	DefaultSandboxSyncTimeoutSec    = 10
+	DefaultSandboxDebugBootConsole  = false
+	DefaultOverlayImage             = "overlay.qcow2"
+	DefaultSandboxHostname          = "voidrun"
+	DefaultAuthLocalMode            = false
+	DefaultSandboxDiskFormat        = "qcow2"
+	DefaultSandboxSeccomp           = true
+	DefaultSandboxBalloonEnabled    = true
+	DefaultSandboxMemoryShared      = false
+	DefaultSandboxMemoryHugepages   = false
+	DefaultSandboxMemoryPrefault    = false
+	DefaultSandboxMemoryRestoreMode = "auto"
+	DefaultSandboxDecoupledSnapshot = false
+	DefaultSandboxMemoryBackingMode = "legacy"
+	MemBackingLegacy                = "legacy"
+	MemBackingSharedShm             = "shared-shm"
+	MemBackingPrivateTmpfs          = "private-tmpfs"
 	// Health monitor defaults
 	DefaultHealthEnabled          = true
 	DefaultHealthIntervalSec      = 60
@@ -214,11 +231,11 @@ const (
 	DefaultRedisPassword       = ""
 	DefaultRedisDB             = 0
 	// Auto-lifecycle defaults
-	DefaultAutoLifecycleEnabled               = true
-	DefaultAutoLifecyclePauseAfterIdleSec     = 60     // 1 minute
-	DefaultAutoLifecycleStopAfterPausedSec    = 300    // 5 minutes
-	DefaultAutoLifecycleDeleteAfterStoppedSec = 604800 // 1 week
-	DefaultAutoLifecycleCheckIntervalSec      = 30     // 30 seconds
+	DefaultAutoLifecycleEnabled                   = true
+	DefaultAutoLifecycleSnapshotAfterIdleSec      = 60     // 1 minute
+	DefaultAutoLifecycleDeleteAfterSnapshottedSec = 604800 // 1 week
+	DefaultAutoLifecycleCheckIntervalSec          = 30     // 30 seconds
+	DefaultAutoLifecycleConcurrency               = 10
 	// Monitor defaults
 	DefaultMonitorEnabled = true
 	// Pagination defaults
@@ -294,6 +311,13 @@ func New() *Config {
 			DefaultHostname:     getEnv("SANDBOX_DEFAULT_HOSTNAME", DefaultSandboxHostname),
 			DiskFormat:          getEnv("SANDBOX_DISK_FORMAT", DefaultSandboxDiskFormat),
 			Seccomp:             getEnvBool("SANDBOX_SECCOMP", DefaultSandboxSeccomp),
+			BalloonEnabled:      getEnvBool("SANDBOX_BALLOON_ENABLED", DefaultSandboxBalloonEnabled),
+			MemoryShared:        getEnvBool("SANDBOX_MEMORY_SHARED", DefaultSandboxMemoryShared),
+			MemoryHugepages:     getEnvBool("SANDBOX_MEMORY_HUGEPAGES", DefaultSandboxMemoryHugepages),
+			MemoryPrefault:      getEnvBool("SANDBOX_MEMORY_PREFAULT", DefaultSandboxMemoryPrefault),
+			MemoryRestoreMode:   getEnv("SANDBOX_MEMORY_RESTORE_MODE", DefaultSandboxMemoryRestoreMode),
+			DecoupledSnapshot:   getEnvBool("SANDBOX_DECOUPLED_SNAPSHOT", DefaultSandboxDecoupledSnapshot),
+			MemoryBackingMode:   getEnv("SANDBOX_MEMORY_BACKING_MODE", DefaultSandboxMemoryBackingMode),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),
@@ -317,11 +341,11 @@ func New() *Config {
 			MaxAgeSec:        getEnvInt("CORS_MAX_AGE_SEC", DefaultCORSMaxAgeSec),
 		},
 		AutoLifecycle: AutoLifecycleConfig{
-			Enabled:               getEnvBool("AUTO_LIFECYCLE_ENABLED", DefaultAutoLifecycleEnabled),
-			PauseAfterIdleSec:     getEnvInt("AUTO_LIFECYCLE_PAUSE_AFTER_IDLE_SEC", DefaultAutoLifecyclePauseAfterIdleSec),
-			StopAfterPausedSec:    getEnvInt("AUTO_LIFECYCLE_STOP_AFTER_PAUSED_SEC", DefaultAutoLifecycleStopAfterPausedSec),
-			DeleteAfterStoppedSec: getEnvInt("AUTO_LIFECYCLE_DELETE_AFTER_STOPPED_SEC", DefaultAutoLifecycleDeleteAfterStoppedSec),
-			CheckIntervalSec:      getEnvInt("AUTO_LIFECYCLE_CHECK_INTERVAL_SEC", DefaultAutoLifecycleCheckIntervalSec),
+			Enabled:                   getEnvBool("AUTO_LIFECYCLE_ENABLED", DefaultAutoLifecycleEnabled),
+			SnapshotAfterIdleSec:      getEnvInt("AUTO_LIFECYCLE_SNAPSHOT_AFTER_IDLE_SEC", DefaultAutoLifecycleSnapshotAfterIdleSec),
+			DeleteAfterSnapshottedSec: getEnvInt("AUTO_LIFECYCLE_DELETE_AFTER_SNAPSHOTTED_SEC", DefaultAutoLifecycleDeleteAfterSnapshottedSec),
+			CheckIntervalSec:          getEnvInt("AUTO_LIFECYCLE_CHECK_INTERVAL_SEC", DefaultAutoLifecycleCheckIntervalSec),
+			Concurrency:               getEnvInt("AUTO_LIFECYCLE_CONCURRENCY", DefaultAutoLifecycleConcurrency),
 		},
 		Monitor: MonitorConfig{
 			Enabled: getEnvBool("MONITOR_ENABLED", DefaultMonitorEnabled),
@@ -341,7 +365,59 @@ func New() *Config {
 		log.Fatalf("Network.Prefix (NET_PREFIX) must be 4 characters or fewer, got %d chars: %s", len(c.Network.Prefix), c.Network.Prefix)
 	}
 
+	// Validate DNS_NAMESERVERS strictly: these values are interpolated verbatim
+	// into the per-sandbox iptables-restore ruleset (see runtime/network.go).
+	// An invalid or attacker-shaped value (newline, CIDR, blank, etc.) would
+	// either break sandbox networking or weaken egress isolation fleet-wide.
+	if err := validateNameservers(c.Network.Nameservers); err != nil {
+		log.Fatalf("DNS_NAMESERVERS invalid: %v", err)
+	}
+
+	if err := validateMemoryBackingMode(c.Sandbox.MemoryBackingMode, c.Sandbox.DecoupledSnapshot); err != nil {
+		log.Fatalf("SANDBOX_MEMORY_BACKING_MODE invalid: %v", err)
+	}
+
 	return c
+}
+
+// validateMemoryBackingMode rejects unknown modes; decoupled snapshot needs file-backed RAM.
+func validateMemoryBackingMode(mode string, decoupled bool) error {
+	switch mode {
+	case MemBackingLegacy, MemBackingSharedShm, MemBackingPrivateTmpfs:
+	default:
+		return fmt.Errorf("unknown backing mode %q (want one of %q,%q,%q)",
+			mode, MemBackingLegacy, MemBackingSharedShm, MemBackingPrivateTmpfs)
+	}
+	if decoupled && mode == MemBackingLegacy {
+		return fmt.Errorf("SANDBOX_DECOUPLED_SNAPSHOT=true requires SANDBOX_MEMORY_BACKING_MODE=%q or %q, got %q",
+			MemBackingSharedShm, MemBackingPrivateTmpfs, mode)
+	}
+	return nil
+}
+
+// validateNameservers enforces that each entry is a single, well-formed,
+// public unicast IP literal. It rejects CIDRs, blank entries, multicast,
+// loopback, link-local, private-range, and unspecified addresses so a
+// misconfigured env var cannot silently broaden sandbox egress.
+func validateNameservers(nameservers []string) error {
+	if len(nameservers) == 0 {
+		return fmt.Errorf("at least one nameserver is required")
+	}
+	for _, ns := range nameservers {
+		if ns != strings.TrimSpace(ns) || ns == "" {
+			return fmt.Errorf("nameserver %q must be a non-empty, trimmed IP literal", ns)
+		}
+		ip := net.ParseIP(ns)
+		if ip == nil {
+			return fmt.Errorf("nameserver %q is not a valid IP literal (CIDRs and hostnames are not allowed)", ns)
+		}
+		if ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() ||
+			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsPrivate() {
+			return fmt.Errorf("nameserver %q must be a public unicast address", ns)
+		}
+	}
+	return nil
 }
 
 // Address returns the server address string

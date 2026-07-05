@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -78,8 +79,9 @@ func (s *SessionExecService) Send(sbxID string, req model.SessionExecRequest) (*
 		return nil, err
 	}
 
-	// Use common DialVsock helper
-	conn, err := machine.DialVsock(sbxID, 1024, 2*time.Second)
+	// Retry the dial on transient vsock handshake errors (post-restore /
+	// post-create-async warmup window).
+	conn, err := machine.DialVsockWithRetry(context.Background(), sbxID, 1024, 2*time.Second, machine.VsockDialRetryAttempts)
 	if err != nil {
 		return nil, fmt.Errorf("Sandbox not reachable: %w", err)
 	}
@@ -112,8 +114,9 @@ func (s *SessionExecService) Send(sbxID string, req model.SessionExecRequest) (*
 
 // StreamExec sends an exec_stream action and proxies NDJSON chunks to the client
 func (s *SessionExecService) StreamExec(sbxID, sessionID, command string, writer io.Writer, flush func()) error {
-	// Use common DialVsock helper
-	conn, err := machine.DialVsock(sbxID, 1024, 2*time.Second)
+	// Retry the dial on transient vsock handshake errors (post-restore /
+	// post-create-async warmup window).
+	conn, err := machine.DialVsockWithRetry(context.Background(), sbxID, 1024, 2*time.Second, machine.VsockDialRetryAttempts)
 	if err != nil {
 		return fmt.Errorf("Sandbox not reachable: %w", err)
 	}

@@ -37,7 +37,7 @@ func toolCreateSandbox() mcp.Tool {
 			mcp.Description("Unique name for the sandbox (DNS-1123 subdomain format: lowercase alphanumeric and hyphens)"),
 		),
 		mcp.WithString("image",
-			mcp.Description("Image name in name or name:ver form (e.g. code, max, docker). Defaults to code if omitted."),
+			mcp.Description("Image name in name or name:ver form (e.g. code, docker-lite, max, docker). Defaults to code if omitted."),
 		),
 		mcp.WithNumber("cpu",
 			mcp.Description("Number of vCPUs (1-8). Defaults to 1."),
@@ -58,7 +58,7 @@ func toolCreateSandbox() mcp.Tool {
 			mcp.Description("Environment variables for the sandbox (string map)."),
 		),
 		mcp.WithBoolean("autoSleep",
-			mcp.Description("If true, auto-pause the VM after idle time."),
+			mcp.Description("If true, auto-snapshot the VM after idle time."),
 		),
 		mcp.WithString("region",
 			mcp.Description("Target region when supported by your account."),
@@ -109,7 +109,7 @@ func toolDeleteSandbox() mcp.Tool {
 func toolExecuteCommand() mcp.Tool {
 	return mcp.NewTool(
 		"execute_command",
-		mcp.WithDescription("Execute a shell command in a sandbox and return the output. The sandbox must be running (it will be auto-resumed if paused)."),
+		mcp.WithDescription("Execute a shell command in a sandbox and return the output. The sandbox must be running (it will be auto-restored if snapshotted)."),
 		mcp.WithString("id",
 			mcp.Required(),
 			mcp.Description("The sandbox ID"),

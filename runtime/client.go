@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -27,8 +28,29 @@ func SetInstancesRoot(path string) {
 	}
 }
 
-// KernelPath is the path to the kernel image
-// var KernelPath = DefaultKernelPath
+// CHBinary is the absolute path of the cloud-hypervisor binary; used by
+// forceKillByPIDFile to verify a process before SIGKILL.
+var CHBinary string
+
+func SetCHBinary(path string) {
+	if path != "" {
+		CHBinary = path
+	}
+}
+
+// DecoupledSnapshotEnabled gates lifecycle_decoupled.go (SANDBOX_DECOUPLED_SNAPSHOT).
+var DecoupledSnapshotEnabled bool
+
+// MemoryBackingModeName is the host RAM file backend when decoupled snapshot is on.
+var MemoryBackingModeName string
+
+// SetDecoupledSnapshot initializes runtime globals from config at server boot.
+func SetDecoupledSnapshot(enabled bool, mode string) {
+	DecoupledSnapshotEnabled = enabled
+	if mode != "" {
+		MemoryBackingModeName = mode
+	}
+}
 
 // APIClient handles communication with Cloud Hypervisor API
 type APIClient struct {
@@ -251,14 +273,29 @@ func GetEventOffsetPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/vm.evt_offset", InstancesRoot, sbxID)
 }
 
-func GetSnapshotsRoot() string {
-	return fmt.Sprintf("%s/snapshots", InstancesRoot)
+// GetSnapshotBaseDir returns the root directory for all snapshots for a sandbox.
+func GetSnapshotBaseDir(sbxID string) string {
+	return fmt.Sprintf("%s/%s/snapshots", InstancesRoot, sbxID)
 }
 
-func GetSnapshotsDir(sbxID string) string {
-	return fmt.Sprintf("%s/%s", GetSnapshotsRoot(), sbxID)
+// GetLatestSnapshotDir finds the newest timestamped snapshot directory for a sandbox.
+func GetLatestSnapshotDir(sbxID string) string {
+	baseDir := GetSnapshotBaseDir(sbxID)
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return ""
+	}
+	var latest string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), "snap-") {
+			if entry.Name() > latest {
+				latest = entry.Name()
+			}
+		}
+	}
+	if latest != "" {
+		return filepath.Join(baseDir, latest)
+	}
+	return ""
 }
 
-func GetSnapshotTempDir(sbxID string) string {
-	return fmt.Sprintf("%s/%s/.tmp", GetSnapshotsRoot(), sbxID)
-}

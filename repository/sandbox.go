@@ -31,14 +31,14 @@ type ISandboxRepository interface {
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 	FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error)
 	UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error
+	UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) error
 	NextAvailableIP() (string, error)
 	// Lifecycle management methods
 	TouchActivity(ctx context.Context, id primitive.ObjectID) error
-	SetPausedAt(ctx context.Context, id primitive.ObjectID) error
-	SetStoppedAt(ctx context.Context, id primitive.ObjectID) error
+	SetSnapshottedAt(ctx context.Context, id primitive.ObjectID) error
+	SetSnapshottedAtAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	FindIdleRunning(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
-	FindStalePaused(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
-	FindStaleStopped(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
+	FindStaleSnapshotted(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 	FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
 	FreeIP(ctx context.Context, ip string)
 }
@@ -66,14 +66,14 @@ func NewSandboxRepository(cfg *config.Config, db *mongo.Database) *SandboxReposi
 
 // Init initializes the repository by loading all allocated IPs from the database
 func (r *SandboxRepository) Init(ctx context.Context) error {
-	// Create index on orgId for faster list queries
-	indexOpts := options.Index().SetUnique(false)
-	indexModel := mongo.IndexModel{
-		Keys:    bson.D{bson.E{Key: "orgId", Value: 1}},
-		Options: indexOpts,
+	// Compound indexes turn the auto-lifecycle sweeps into index range scans.
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "orgId", Value: 1}}, Options: options.Index().SetUnique(false)},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "lastActivityAt", Value: 1}}, Options: options.Index().SetUnique(false)},
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "snapshottedAt", Value: 1}}, Options: options.Index().SetUnique(false)},
 	}
-	if _, err := r.collection.Indexes().CreateOne(ctx, indexModel); err != nil {
-		fmt.Printf("[warn] failed to create orgId index: %v\n", err)
+	if _, err := r.collection.Indexes().CreateMany(ctx, indexes); err != nil {
+		fmt.Printf("[warn] failed to create sandbox indexes: %v\n", err)
 	}
 
 	r.mu.Lock()
@@ -225,11 +225,31 @@ func (r *SandboxRepository) DeleteByIDAndOrg(ctx context.Context, id, orgID prim
 	return res.DeletedCount > 0, nil
 }
 
+// UpdateStatusForHealth transitions a "running" row to a new status.
+// CAS-guarded so concurrent lifecycle ops are not overwritten.
 func (r *SandboxRepository) UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error {
-	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
-		"status":    status,
-		"updatedAt": time.Now(),
-	}})
+	_, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{"_id": id, "status": "running"},
+		bson.M{"$set": bson.M{
+			"status":    status,
+			"updatedAt": time.Now(),
+		}},
+	)
+	return err
+}
+
+// UpdateStatusFrom transitions a row from one status to another.
+// CAS-guarded on from; returns nil when the row was already in a different state (concurrent transition).
+func (r *SandboxRepository) UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) error {
+	_, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{"_id": id, "status": from},
+		bson.M{"$set": bson.M{
+			"status":    to,
+			"updatedAt": time.Now(),
+		}},
+	)
 	return err
 }
 
@@ -300,26 +320,28 @@ func (r *SandboxRepository) TouchActivity(ctx context.Context, id primitive.Obje
 	return err
 }
 
-// SetPausedAt sets the pausedAt timestamp and status to paused
-func (r *SandboxRepository) SetPausedAt(ctx context.Context, id primitive.ObjectID) error {
+// SetSnapshottedAt sets the snapshottedAt timestamp and status to snapshotted
+func (r *SandboxRepository) SetSnapshottedAt(ctx context.Context, id primitive.ObjectID) error {
 	now := time.Now()
 	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
-		"status":    "paused",
-		"pausedAt":  now,
-		"updatedAt": now,
+		"status":        "snapshotted",
+		"snapshottedAt": now,
+		"updatedAt":     now,
 	}})
 	return err
 }
 
-// SetStoppedAt sets the stoppedAt timestamp and status to stopped
-func (r *SandboxRepository) SetStoppedAt(ctx context.Context, id primitive.ObjectID) error {
+func (r *SandboxRepository) SetSnapshottedAtAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
 	now := time.Now()
-	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
-		"status":    "stopped",
-		"stoppedAt": now,
-		"updatedAt": now,
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": bson.M{
+		"status":        "snapshotted",
+		"snapshottedAt": now,
+		"updatedAt":     now,
 	}})
-	return err
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // FindIdleRunning finds running sandboxes that have been idle since before the threshold
@@ -346,34 +368,14 @@ func (r *SandboxRepository) FindIdleRunning(ctx context.Context, threshold time.
 	return sandboxes, nil
 }
 
-// FindStalePaused finds paused sandboxes that have been paused since before the threshold
-func (r *SandboxRepository) FindStalePaused(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error) {
+// FindStaleSnapshotted finds snapshotted sandboxes that have been snapshotted since before the threshold
+func (r *SandboxRepository) FindStaleSnapshotted(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error) {
 	filter := bson.M{
-		"status":   "paused",
-		"pausedAt": bson.M{"$lt": threshold},
+		"status":        "snapshotted",
+		"snapshottedAt": bson.M{"$lt": threshold},
 	}
 	cursor, err := r.collection.Find(ctx, filter, &options.FindOptions{
-		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-	var sandboxes []*model.Sandbox
-	if err = cursor.All(ctx, &sandboxes); err != nil {
-		return nil, err
-	}
-	return sandboxes, nil
-}
-
-// FindStaleStopped finds stopped sandboxes that have been stopped since before the threshold
-func (r *SandboxRepository) FindStaleStopped(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error) {
-	filter := bson.M{
-		"status":    "stopped",
-		"stoppedAt": bson.M{"$lt": threshold},
-	}
-	cursor, err := r.collection.Find(ctx, filter, &options.FindOptions{
-		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1, "createdBy": 1, "tapName": 1},
+		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1, "createdBy": 1, "tapName": 1, "netnsName": 1},
 	})
 	if err != nil {
 		return nil, err

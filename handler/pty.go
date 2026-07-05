@@ -39,6 +39,12 @@ var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { re
 func (h *PTYHandler) Proxy(c *gin.Context) error {
 	sbxInstance := c.Param("id")
 
+	id := c.Param("id")
+
+	if err := ensureSandboxRunning(c, h.sandboxService, id); err != nil {
+		return err
+	}
+
 	clientConn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		// Upgrader already wrote an HTTP error response; WriteError will no-op.

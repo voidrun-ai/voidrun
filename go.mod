@@ -6,6 +6,7 @@ toolchain go1.24.11
 
 require (
 	github.com/3th1nk/cidr v0.3.0
+	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/clerk/clerk-sdk-go/v2 v2.5.1
 	github.com/gorilla/websocket v1.5.1
 	github.com/joho/godotenv v1.5.1
@@ -14,6 +15,7 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	go.mongodb.org/mongo-driver v1.16.1
 	golang.org/x/crypto v0.46.0
+	golang.org/x/sync v0.19.0
 )
 
 require (
@@ -60,7 +62,6 @@ require (
 	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
@@ -70,5 +71,5 @@ require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/prometheus/client_golang v1.20.5
 	github.com/vishvananda/netns v0.0.5
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/sys v0.41.0
 )

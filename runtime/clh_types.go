@@ -160,9 +160,11 @@ type VmCoredumpData struct {
 
 // RestoreConfig is used for restoring from snapshots
 type RestoreConfig struct {
-	SourceURL string      `json:"source_url"`
-	Prefault  bool        `json:"prefault,omitempty"`
-	Net       []NetConfig `json:"net_fds,omitempty"`
+	SourceURL         string      `json:"source_url"`
+	Prefault          bool        `json:"prefault,omitempty"`
+	Net               []NetConfig `json:"net_fds,omitempty"`
+	Resume            bool        `json:"resume,omitempty"`
+	MemoryRestoreMode string      `json:"memory_restore_mode,omitempty"`
 }
 
 // ReceiveMigrationData is used for receiving migrations
