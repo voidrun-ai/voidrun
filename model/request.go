@@ -14,7 +14,11 @@ type CreateSandboxRequest struct {
 	EnvVars      map[string]string  `json:"envVars,omitempty"`
 	AutoSleep    *bool              `json:"autoSleep,omitempty"`
 	Region       string             `json:"region,omitempty"`
-	RefID        string             `json:"refId,omitempty"`
+	PublishPorts []int              `json:"publishPorts,omitempty"`
+}
+
+type UpdatePublishPortsRequest struct {
+	PublishPorts []int `json:"publishPorts" binding:"required"`
 }
 
 // ExecRequest represents a command execution request

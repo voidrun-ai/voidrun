@@ -63,8 +63,10 @@ func toolCreateSandbox() mcp.Tool {
 		mcp.WithString("region",
 			mcp.Description("Target region when supported by your account."),
 		),
-		mcp.WithString("refId",
-			mcp.Description("External reference id for your workflows."),
+		mcp.WithArray("publishPorts",
+			mcp.Description("Sandbox TCP ports to expose via the public gateway (voidrun-ee). Up to 4 ports (1-65535), no duplicates. Omit for no public ports."),
+			mcp.Items(map[string]any{"type": "integer"}),
+			mcp.MaxItems(4),
 		),
 	)
 }

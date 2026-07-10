@@ -81,13 +81,37 @@ func NewSandboxService(
 			"orgId":          1,
 			"createdBy":      1,
 			"region":         1,
-			"refId":          1,
+			"nodeId":         1,
 			"tapName":        1,
 			"tapDeleted":     1,
 			"netnsName":      1,
 			"macAddress":     1,
+			"publishPorts":   1,
 		},
 	}
+}
+
+// UpdatePublishPorts replaces the ports exposed through the public gateway.
+func (s *SandboxService) UpdatePublishPorts(ctx context.Context, orgID primitive.ObjectID, id string, ports []int) (*model.Sandbox, error) {
+	if err := util.ValidatePublishPorts(ports); err != nil {
+		return nil, err
+	}
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	if sandbox.Status == "deleted" {
+		return nil, ErrSandboxNotFound
+	}
+	ok, err := s.repo.UpdatePublishPortsByIDAndOrg(ctx, sandbox.ID, orgID, ports)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrSandboxNotFound
+	}
+	sandbox.PublishPorts = ports
+	return sandbox, nil
 }
 
 func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive.ObjectID, page, pageSize int) ([]*model.Sandbox, int64, int, error) {
@@ -277,7 +301,8 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		EnvVars:        req.EnvVars,
 		AutoSleep:      autoSleep,
 		Region:         req.Region,
-		RefID:          req.RefID,
+		NodeID:         s.cfg.HostID,
+		PublishPorts:   req.PublishPorts,
 		TapName:        spec.TapName,
 		NetNSName:      spec.NetNSName,
 		MacAddress:     spec.MacAddress, // persist so Restore doesn't need to re-derive it

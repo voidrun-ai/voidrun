@@ -243,10 +243,16 @@ components:
           type: string
           description: "Target region for the sandbox"
           example: eu
-        refId:
-          type: string
-          description: "External reference ID for tracking"
-          example: "ftr4dr"
+        publishPorts:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          description: >-
+            Sandbox ports to expose through the public gateway (voidrun-ee).
+            Each entry is published as a separate route once the VM is running.
+          example: [8080, 3000]
 
     Sandbox:
       type: object
@@ -307,10 +313,20 @@ components:
           type: string
           description: "Region where the sandbox is hosted"
           example: us-east-1
-        refId:
+        nodeId:
           type: string
-          description: "External reference ID"
-          example: "ref-123456"
+          description: "Voidrun host that created this sandbox"
+          example: "host-fra-01"
+        publishPorts:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          description: >-
+            Ports exposed through the public gateway (voidrun-ee). Empty when
+            the sandbox is not publicly reachable.
+          example: [8080]
 
     # Generic API Response for list with pagination
     ApiResponseSandboxesList:
