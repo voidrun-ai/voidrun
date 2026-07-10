@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -65,7 +66,7 @@ func (h *SandboxHandler) Create(c *gin.Context) error {
 		return util.ErrBadRequest(err.Error())
 	}
 
-	if err := util.ValidateCreateSandboxRequest(req.Name, req.CPU, req.Mem); err != nil {
+	if err := util.ValidateCreateSandboxRequest(req.Name, req.CPU, req.Mem, req.PublishPorts); err != nil {
 		return util.ErrBadRequest(err.Error())
 	}
 
@@ -103,6 +104,9 @@ func (h *SandboxHandler) Get(c *gin.Context) error {
 
 	sandbox, err := h.sandboxService.Get(c.Request.Context(), orgID, id)
 	if err != nil {
+		if errors.Is(err, service.ErrSandboxNotFound) {
+			return util.ErrNotFound("Sandbox not found")
+		}
 		return util.ErrInternal("Failed to fetch", err)
 	}
 
@@ -153,6 +157,38 @@ func (h *SandboxHandler) Restore(c *gin.Context) error {
 		return util.ErrInternal("Restore failed", err)
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox restored", nil))
+	return nil
+}
+
+func (h *SandboxHandler) UpdatePublishPorts(c *gin.Context) error {
+	id := c.Param("id")
+
+	var req model.UpdatePublishPortsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return util.ErrBadRequest(err.Error())
+	}
+	if err := util.ValidatePublishPorts(req.PublishPorts); err != nil {
+		return util.ErrBadRequest(err.Error())
+	}
+
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		return err
+	}
+
+	sandbox, err := h.sandboxService.UpdatePublishPorts(c.Request.Context(), orgID, id, req.PublishPorts)
+	if err != nil {
+		if errors.Is(err, service.ErrSandboxNotFound) {
+			return util.ErrNotFound("Sandbox not found")
+		}
+		var inv *util.InvalidSandboxRequestError
+		if errors.As(err, &inv) {
+			return util.ErrBadRequest(inv.Error())
+		}
+		return util.ErrInternal("Failed to update publish ports", err)
+	}
+
+	c.JSON(http.StatusOK, model.NewSuccessResponse("Publish ports updated", sandbox))
 	return nil
 }
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"voidrun/config"
@@ -31,9 +32,8 @@ type Server struct {
 	middlewares *Middlewares
 }
 
-// New creates a new server instance
-func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Server, error) {
-	// Initialize machine package with config paths
+// New creates a new server instance.
+func New(cfg *config.Config, routeMws RouteMiddlewares) (*Server, error) {
 	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
 	runtime.SetCHBinary(cfg.CHBinary)
 	runtime.SetDecoupledSnapshot(cfg.Sandbox.DecoupledSnapshot, cfg.Sandbox.MemoryBackingMode)
@@ -62,7 +62,10 @@ func New(cfg *config.Config, extraProtectedMiddlewares ...gin.HandlerFunc) (*Ser
 
 	middlewares := InitMiddlewares(cfg, services)
 
-	router := setupRouter(cfg, handlers, services, middlewares, extraProtectedMiddlewares...)
+	router, err := setupRouter(cfg, handlers, services, middlewares, routeMws)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Server{
 		cfg:         cfg,
@@ -182,7 +185,7 @@ func (s *Server) resumeEventWatchers() {
 	s.services.Monitor.ResumeAll(ctx, meta)
 }
 
-func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, extraProtectedMiddlewares ...gin.HandlerFunc) *gin.Engine {
+func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, routeMws RouteMiddlewares) (*gin.Engine, error) {
 	r := gin.Default()
 	r.SetTrustedProxies(nil)
 
@@ -224,99 +227,131 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, 
 	// Protected routes require API key or JWT auth
 	protected := api.Group("")
 	protected.Use(mw.Auth)
-	for _, extra := range extraProtectedMiddlewares {
-		protected.Use(extra)
+	for _, global := range routeMws[RouteAll] {
+		protected.Use(global)
+	}
+
+	registered := make(map[RouteID]struct{})
+	track := func(id RouteID) {
+		if _, dup := registered[id]; dup {
+			panic(fmt.Sprintf("server: route ID %q registered more than once", id))
+		}
+		registered[id] = struct{}{}
+	}
+
+	mount := func(g *gin.RouterGroup, method, path string, fn handler.HandlerFunc) {
+		id := RouteIDFor(method, g.BasePath()+path)
+		track(id)
+		g.Handle(method, path, routeMws.Wrap(id, handler.Handle(fn))...)
+	}
+	mountAny := func(g *gin.RouterGroup, path string, fn handler.HandlerFunc) {
+		id := RouteIDFor(AnyMethod, g.BasePath()+path)
+		track(id)
+		g.Any(path, routeMws.Wrap(id, handler.Handle(fn))...)
 	}
 
 	// Sandbox routes
 	sandboxes := protected.Group("/sandboxes")
 	{
-		sandboxes.GET("", handler.Handle(h.Sandbox.List))
-		sandboxes.POST("", handler.Handle(h.Sandbox.Create))
+		mount(sandboxes, "GET", "", h.Sandbox.List)
+		mount(sandboxes, "POST", "", h.Sandbox.Create)
 
 		sandboxByID := sandboxes.Group("/:id")
-		sandboxByID.GET("", handler.Handle(h.Sandbox.Get))
-		sandboxByID.DELETE("", handler.Handle(h.Sandbox.Delete))
-		sandboxByID.POST("/sleep", handler.Handle(h.Sandbox.Snapshot))
-		sandboxByID.POST("/wake", handler.Handle(h.Sandbox.Restore))
-		sandboxByID.POST("/start", handler.Handle(h.Sandbox.Start))
-		sandboxByID.POST("/exec", handler.Handle(h.Exec.Exec))
-		sandboxByID.POST("/exec-stream", handler.Handle(h.Exec.ExecStream))
-		sandboxByID.POST("/session-exec", handler.Handle(h.Exec.SessionExec))
-		sandboxByID.POST("/session-exec-stream", handler.Handle(h.Exec.SessionExecStream))
+		mount(sandboxByID, "GET", "", h.Sandbox.Get)
+		mount(sandboxByID, "DELETE", "", h.Sandbox.Delete)
+		mount(sandboxByID, "POST", "/sleep", h.Sandbox.Snapshot)
+		mount(sandboxByID, "POST", "/wake", h.Sandbox.Restore)
+		mount(sandboxByID, "POST", "/start", h.Sandbox.Start)
+		mount(sandboxByID, "PATCH", "/publish-ports", h.Sandbox.UpdatePublishPorts)
+
+		mount(sandboxByID, "POST", "/exec", h.Exec.Exec)
+		mount(sandboxByID, "POST", "/exec-stream", h.Exec.ExecStream)
+		mount(sandboxByID, "POST", "/session-exec", h.Exec.SessionExec)
+		mount(sandboxByID, "POST", "/session-exec-stream", h.Exec.SessionExecStream)
 
 		// Commands (Process Management)
-		sandboxByID.POST("/commands/run", handler.Handle(h.Commands.Run))
-		sandboxByID.GET("/commands/list", handler.Handle(h.Commands.List))
-		sandboxByID.POST("/commands/kill", handler.Handle(h.Commands.Kill))
-		sandboxByID.POST("/commands/attach", handler.Handle(h.Commands.Attach))
-		sandboxByID.POST("/commands/wait", handler.Handle(h.Commands.Wait))
+		mount(sandboxByID, "POST", "/commands/run", h.Commands.Run)
+		mount(sandboxByID, "GET", "/commands/list", h.Commands.List)
+		mount(sandboxByID, "POST", "/commands/kill", h.Commands.Kill)
+		mount(sandboxByID, "POST", "/commands/attach", h.Commands.Attach)
+		mount(sandboxByID, "POST", "/commands/wait", h.Commands.Wait)
 
 		// PTY Session Management
-		sandboxByID.GET("/pty", handler.Handle(h.PTY.Proxy))
-		sandboxByID.POST("/pty/sessions", handler.Handle(h.PTY.CreateSession))
-		sandboxByID.GET("/pty/sessions", handler.Handle(h.PTY.ListSessions))
-		sandboxByID.GET("/pty/sessions/:sessionId", handler.Handle(h.PTY.ConnectSession))
-		sandboxByID.DELETE("/pty/sessions/:sessionId", handler.Handle(h.PTY.DeleteSession))
-		sandboxByID.POST("/pty/sessions/:sessionId/execute", handler.Handle(h.PTY.ExecuteCommand))
-		sandboxByID.GET("/pty/sessions/:sessionId/buffer", handler.Handle(h.PTY.GetBuffer))
-		sandboxByID.POST("/pty/sessions/:sessionId/resize", handler.Handle(h.PTY.ResizeTerminal))
+		mount(sandboxByID, "GET", "/pty", h.PTY.Proxy)
+		mount(sandboxByID, "POST", "/pty/sessions", h.PTY.CreateSession)
+		mount(sandboxByID, "GET", "/pty/sessions", h.PTY.ListSessions)
+		mount(sandboxByID, "GET", "/pty/sessions/:sessionId", h.PTY.ConnectSession)
+		mount(sandboxByID, "DELETE", "/pty/sessions/:sessionId", h.PTY.DeleteSession)
+		mount(sandboxByID, "POST", "/pty/sessions/:sessionId/execute", h.PTY.ExecuteCommand)
+		mount(sandboxByID, "GET", "/pty/sessions/:sessionId/buffer", h.PTY.GetBuffer)
+		mount(sandboxByID, "POST", "/pty/sessions/:sessionId/resize", h.PTY.ResizeTerminal)
 
-		sandboxByID.GET("/files", handler.Handle(h.FS.ListFiles))
-		sandboxByID.GET("/files/download", handler.Handle(h.FS.DownloadFile))
-		sandboxByID.POST("/files/upload", handler.Handle(h.FS.UploadFile))
-		sandboxByID.POST("/files/mkdir", handler.Handle(h.FS.CreateDirectory))
-		sandboxByID.POST("/files/create", handler.Handle(h.FS.CreateFile))
-		sandboxByID.POST("/files/copy", handler.Handle(h.FS.CopyFile))
-		sandboxByID.GET("/files/head-tail", handler.Handle(h.FS.HeadTail))
-		sandboxByID.POST("/files/chmod", handler.Handle(h.FS.ChangePermissions))
-		sandboxByID.GET("/files/du", handler.Handle(h.FS.DiskUsage))
-		sandboxByID.GET("/files/search", handler.Handle(h.FS.SearchFiles))
-		sandboxByID.POST("/files/compress", handler.Handle(h.FS.CompressFile))
-		sandboxByID.POST("/files/extract", handler.Handle(h.FS.ExtractArchive))
-		sandboxByID.DELETE("/files", handler.Handle(h.FS.DeleteFile))
-		sandboxByID.POST("/files/move", handler.Handle(h.FS.MoveFile))
-		sandboxByID.GET("/files/stat", handler.Handle(h.FS.StatFile))
+		// File operations
+		mount(sandboxByID, "GET", "/files", h.FS.ListFiles)
+		mount(sandboxByID, "GET", "/files/download", h.FS.DownloadFile)
+		mount(sandboxByID, "POST", "/files/upload", h.FS.UploadFile)
+		mount(sandboxByID, "POST", "/files/mkdir", h.FS.CreateDirectory)
+		mount(sandboxByID, "POST", "/files/create", h.FS.CreateFile)
+		mount(sandboxByID, "POST", "/files/copy", h.FS.CopyFile)
+		mount(sandboxByID, "GET", "/files/head-tail", h.FS.HeadTail)
+		mount(sandboxByID, "POST", "/files/chmod", h.FS.ChangePermissions)
+		mount(sandboxByID, "GET", "/files/du", h.FS.DiskUsage)
+		mount(sandboxByID, "GET", "/files/search", h.FS.SearchFiles)
+		mount(sandboxByID, "POST", "/files/compress", h.FS.CompressFile)
+		mount(sandboxByID, "POST", "/files/extract", h.FS.ExtractArchive)
+		mount(sandboxByID, "DELETE", "/files", h.FS.DeleteFile)
+		mount(sandboxByID, "POST", "/files/move", h.FS.MoveFile)
+		mount(sandboxByID, "GET", "/files/stat", h.FS.StatFile)
 
-		// File watch routes
-		sandboxByID.POST("/files/watch", handler.Handle(h.FS.StartWatch))
-		sandboxByID.GET("/files/watch/:sessionId/stream", handler.Handle(h.FS.StreamWatchEvents))
+		mount(sandboxByID, "POST", "/files/watch", h.FS.StartWatch)
+		mount(sandboxByID, "GET", "/files/watch/:sessionId/stream", h.FS.StreamWatchEvents)
 	}
 
 	// Image routes
 	images := protected.Group("/images")
 	{
-		images.GET("", handler.Handle(h.Image.List))
-		// images.POST("", handler.Handle(h.Image.Create))
-		images.GET("/:id", handler.Handle(h.Image.Get))
-		// images.DELETE("/:id", handler.Handle(h.Image.Delete))
-		images.GET("/name/:name", handler.Handle(h.Image.GetByName))
+		mount(images, "GET", "", h.Image.List)
+		mount(images, "GET", "/:id", h.Image.Get)
+		mount(images, "GET", "/name/:name", h.Image.GetByName)
 	}
 
-	// Org routes with auth middleware (API Key required)
+	// Org routes
 	org := protected.Group("/orgs")
 	{
-		org.GET("/users", handler.Handle(h.Org.GetOrgUsers))
+		mount(org, "GET", "/users", h.Org.GetOrgUsers)
 
-		// API key routes under org
 		apiKeys := org.Group("/apikeys")
-		apiKeys.GET("", handler.Handle(h.Org.ListAPIKeys))
-		apiKeys.POST("", handler.Handle(h.Org.GenerateAPIKey))
-		apiKeys.DELETE("/:keyId", handler.Handle(h.Org.DeleteAPIKey))
-		apiKeys.POST("/:keyId/activate", handler.Handle(h.Org.ActivateAPIKey))
-		apiKeys.PATCH("/:keyId/touch", handler.Handle(h.Org.TouchAPIKey))
+		mount(apiKeys, "GET", "", h.Org.ListAPIKeys)
+		mount(apiKeys, "POST", "", h.Org.GenerateAPIKey)
+		mount(apiKeys, "DELETE", "/:keyId", h.Org.DeleteAPIKey)
+		mount(apiKeys, "POST", "/:keyId/activate", h.Org.ActivateAPIKey)
+		mount(apiKeys, "PATCH", "/:keyId/touch", h.Org.TouchAPIKey)
 	}
 
 	// User routes
 	user := protected.Group("/users")
 	{
-		user.GET("/me", handler.Handle(h.User.GetMe))
+		mount(user, "GET", "/me", h.User.GetMe)
 	}
 
-	// MCP (Model Context Protocol) endpoint — single route handles all MCP methods
-	protected.Any("/mcp", handler.Handle(h.MCP.Handle))
+	// MCP (Model Context Protocol) endpoint — single route handles all methods.
+	mountAny(protected, "/mcp", h.MCP.Handle)
 
-	return r
+	var unknown []string
+	for id := range routeMws {
+		if id == RouteAll {
+			continue
+		}
+		if _, ok := registered[id]; !ok {
+			unknown = append(unknown, string(id))
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, fmt.Errorf("route middlewares: unknown route ID(s): %v", unknown)
+	}
+
+	return r, nil
 }
 
 func (s *Server) Router() *gin.Engine {

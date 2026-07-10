@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ type ISandboxRepository interface {
 	UpdateStatusByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, status string) (bool, error)
 	UpdateTapNameByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName string) (bool, error)
 	UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error)
+	UpdatePublishPortsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, ports []int) (bool, error)
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 	FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error)
@@ -41,6 +43,8 @@ type ISandboxRepository interface {
 	FindStaleSnapshotted(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
 	FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
 	FreeIP(ctx context.Context, ip string)
+	ListWithPublishPorts(ctx context.Context, statuses []string) ([]*model.Sandbox, error)
+	ListWithPublishPortsForNode(ctx context.Context, nodeID string, statuses []string) ([]*model.Sandbox, error)
 }
 
 // SandboxRepository handles sandbox persistence in MongoDB
@@ -275,6 +279,17 @@ func (r *SandboxRepository) UpdateTapNameByIDAndOrg(ctx context.Context, id, org
 	return res.MatchedCount > 0, nil
 }
 
+func (r *SandboxRepository) UpdatePublishPortsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, ports []int) (bool, error) {
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": bson.M{
+		"publishPorts": ports,
+		"updatedAt":    time.Now(),
+	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
 func (r *SandboxRepository) UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error) {
 	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": bson.M{
 		"tapName":   tapName,
@@ -404,4 +419,42 @@ func (r *SandboxRepository) FreeIP(ctx context.Context, ip string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.allocatedIPs, ip)
+}
+
+func (r *SandboxRepository) ListWithPublishPorts(ctx context.Context, statuses []string) ([]*model.Sandbox, error) {
+	return r.ListWithPublishPortsForNode(ctx, "", statuses)
+}
+
+func (r *SandboxRepository) ListWithPublishPortsForNode(ctx context.Context, nodeID string, statuses []string) ([]*model.Sandbox, error) {
+	if len(statuses) == 0 {
+		statuses = []string{"running", "snapshotted", "paused"}
+	}
+	filter := bson.M{
+		"status":       bson.M{"$in": statuses},
+		"publishPorts": bson.M{"$exists": true, "$ne": bson.A{}},
+	}
+	if nodeID = strings.TrimSpace(nodeID); nodeID != "" {
+		filter["nodeId"] = nodeID
+	}
+	opts := &options.FindOptions{
+		Projection: bson.M{
+			"_id":          1,
+			"orgId":        1,
+			"ip":           1,
+			"status":       1,
+			"nodeId":       1,
+			"publishPorts": 1,
+			"updatedAt":    1,
+		},
+	}
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var out []*model.Sandbox
+	if err := cursor.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

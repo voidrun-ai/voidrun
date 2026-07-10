@@ -20,16 +20,18 @@ type Sandbox struct {
 	LastActivityAt   *time.Time         `bson:"lastActivityAt,omitempty" json:"-"`
 	SnapshottedAt    *time.Time         `bson:"snapshottedAt,omitempty" json:"-"`
 	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
+	UpdatedAt        time.Time          `bson:"updatedAt,omitempty" json:"updatedAt,omitempty"`
 	CreatedBy        primitive.ObjectID `bson:"createdBy" json:"createdBy"`
 	OrgID            primitive.ObjectID `bson:"orgId" json:"orgId"`
 	EnvVars          map[string]string  `bson:"envVars,omitempty" json:"-"`
 	Region           string             `bson:"region,omitempty" json:"region,omitempty"`
-	RefID            string             `bson:"refId,omitempty" json:"refId,omitempty"`
+	NodeID           string             `bson:"nodeId,omitempty" json:"nodeId,omitempty"`
 	TapName          string             `bson:"tapName,omitempty" json:"-"`
 	NetNSName        string             `bson:"netnsName,omitempty" json:"-"`
 	MacAddress       string             `bson:"macAddress,omitempty" json:"-"`
 	TapDeleted       bool               `bson:"tapDeleted,omitempty" json:"-"`
 	BillingCompleted bool               `bson:"billingCompleted,omitempty" json:"-"`
+	PublishPorts     []int              `bson:"publishPorts,omitempty" json:"publishPorts,omitempty"`
 }
 
 type SandboxSpec struct {

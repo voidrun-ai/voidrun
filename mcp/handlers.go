@@ -157,6 +157,48 @@ func optionalBoolPtr(req mcp.CallToolRequest, key string) *bool {
 	return nil
 }
 
+func optionalIntSlice(req mcp.CallToolRequest, key string) ([]int, error) {
+	v, ok := req.GetArguments()[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	switch arr := v.(type) {
+	case []int:
+		out := make([]int, len(arr))
+		copy(out, arr)
+		return out, nil
+	case []interface{}:
+		out := make([]int, 0, len(arr))
+		for i, elem := range arr {
+			n, err := parseIntArg(elem)
+			if err != nil {
+				return nil, fmt.Errorf("argument %s[%d]: %w", key, i, err)
+			}
+			out = append(out, n)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("argument %s must be an array of integers", key)
+	}
+}
+
+func parseIntArg(v any) (int, error) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), nil
+	case int:
+		return n, nil
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("must be an integer")
+		}
+		return int(i), nil
+	default:
+		return 0, fmt.Errorf("must be an integer")
+	}
+}
+
 func optionalStringMap(req mcp.CallToolRequest, key string) map[string]string {
 	v, ok := req.GetArguments()[key]
 	if !ok || v == nil {
@@ -226,24 +268,28 @@ func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequ
 	autoSleep := optionalBoolPtr(req, "autoSleep")
 	envVars := optionalStringMap(req, "envVars")
 	region := optionalString(req, "region", "")
-	refID := optionalString(req, "refId", "")
 
-	if err := util.ValidateCreateSandboxRequest(name, cpu, mem); err != nil {
+	publishPorts, err := optionalIntSlice(req, "publishPorts")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	if err := util.ValidateCreateSandboxRequest(name, cpu, mem, publishPorts); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
 	createReq := model.CreateSandboxRequest{
-		Name:      name,
-		Image:     image,
-		CPU:       cpu,
-		Mem:       mem,
-		OrgID:     orgID,
-		UserID:    userID,
-		Sync:      sync,
-		EnvVars:   envVars,
-		AutoSleep: autoSleep,
-		Region:    region,
-		RefID:     refID,
+		Name:         name,
+		Image:        image,
+		CPU:          cpu,
+		Mem:          mem,
+		OrgID:        orgID,
+		UserID:       userID,
+		Sync:         sync,
+		EnvVars:      envVars,
+		AutoSleep:    autoSleep,
+		Region:       region,
+		PublishPorts: publishPorts,
 	}
 
 	sandbox, err := h.SandboxService.Create(ctx, createReq)

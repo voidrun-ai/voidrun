@@ -88,6 +88,7 @@ type Config struct {
 	Monitor               MonitorConfig
 	APIKeyCacheTTLSeconds int
 	ClerkCacheTTLSeconds  int
+	HostID                string
 }
 
 // Auth configuration
@@ -352,6 +353,7 @@ func New() *Config {
 		},
 		APIKeyCacheTTLSeconds: getEnvInt("API_KEY_CACHE_TTL_SECONDS", DefaultAPIKeyCacheTTLSeconds),
 		ClerkCacheTTLSeconds:  getEnvInt("CLERK_CACHE_TTL_SECONDS", DefaultClerkCacheTTLSeconds),
+		HostID:                hostIDFromEnv(),
 	}
 
 	chPath, err := resolveCHBinaryPath(c.Paths.CHPath)
@@ -423,6 +425,22 @@ func validateNameservers(nameservers []string) error {
 // Address returns the server address string
 func (c *ServerConfig) Address() string {
 	return c.Host + ":" + c.Port
+}
+
+func hostIDFromEnv() string {
+	if v := strings.TrimSpace(os.Getenv("NODE_ID")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("HOST_ID")); v != "" {
+		return v
+	}
+
+	// Fallback to hostname if NODE_ID and HOST_ID are not set
+	h, err := os.Hostname()
+	if err != nil || strings.TrimSpace(h) == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(h)
 }
 
 func getEnv(key, defaultValue string) string {
