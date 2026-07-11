@@ -72,32 +72,32 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 	}
 }
 
-// handleClerkAuth handles authentication with Clerk JWT tokens
+// handleClerkAuth handles authentication with Clerk JWT tokens.
+//
+// orgID is always taken from the request's X-Org-ID header, never from the
+// auth cache. The cache stores only the (token → userID) mapping, because a
+// single Clerk session may be reused across requests that target different
+// orgs (or none at all, e.g. /users/me). Caching orgID caused stale-empty-org
+// 401s when a request without X-Org-ID populated the cache first.
 func handleClerkAuth(c *gin.Context, userSvc *service.UserService, clerkSvc *service.ClerkService, authCache *service.AuthCache, token string) (string, string) {
 	ctx := c.Request.Context()
 	orgID := c.GetHeader("X-Org-ID")
 
-	// Try cache first
 	if authCache != nil {
 		cachedEntry, err := authCache.GetClerkToken(ctx, token)
 		if err != nil {
 			fmt.Printf("[Auth] Clerk cache get error: %v\n", err)
-		} else if cachedEntry != nil {
-			// Cache hit - use cached userID and orgID
-			// fmt.Printf("[Auth] Clerk cache HIT - userID: %s, orgID: %s\n", cachedEntry.UserID, cachedEntry.OrgID)
-			c.Set("orgID", cachedEntry.OrgID)
-			return cachedEntry.OrgID, cachedEntry.UserID
+		} else if cachedEntry != nil && cachedEntry.UserID != "" {
+			return orgID, cachedEntry.UserID
 		}
 		fmt.Printf("[Auth] Clerk cache MISS - validating token\n")
 	} else {
 		fmt.Printf("[Auth] Clerk cache DISABLED - validating token directly\n")
 	}
 
-	// Cache miss - validate and provision user
 	claims, err := clerkSvc.ValidateToken(c.Request.Context(), token)
 	if err != nil || claims == nil {
 		fmt.Printf("[Auth] Clerk token validation failed: %v\n", err)
-		// Clerk was enabled but token validation failed
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid clerk token"})
 		return "", ""
 	}
@@ -111,15 +111,13 @@ func handleClerkAuth(c *gin.Context, userSvc *service.UserService, clerkSvc *ser
 
 	userID := user.ID.Hex()
 
-	// Cache the result
 	if authCache != nil {
 		if err := authCache.SetClerkToken(ctx, token, &service.AuthCacheEntry{
 			UserID: userID,
-			OrgID:  orgID,
 		}); err != nil {
 			fmt.Printf("[Auth] Clerk cache set error: %v\n", err)
 		} else {
-			fmt.Printf("[Auth] Clerk cache SET - userID: %s, orgID: %s\n", userID, orgID)
+			fmt.Printf("[Auth] Clerk cache SET - userID: %s\n", userID)
 		}
 	}
 
