@@ -237,7 +237,7 @@ components:
             LOG_LEVEL: "info"
         autoSleep:
           type: boolean
-          description: "If true, the sandbox will be auto-paused due to inactivity"
+          description: "If true, the sandbox is auto-snapshotted after idle and wakes on the next request"
           example: true
         region:
           type: string
@@ -250,8 +250,8 @@ components:
             minimum: 1
             maximum: 65535
           description: >-
-            Sandbox ports to expose through the public gateway (voidrun-ee).
-            Each entry is published as a separate route once the VM is running.
+            Sandbox ports to expose through the public gateway. Each entry is
+            published as a separate public URL once the VM is running.
           example: [8080, 3000]
 
     Sandbox:
@@ -324,8 +324,8 @@ components:
             minimum: 1
             maximum: 65535
           description: >-
-            Ports exposed through the public gateway (voidrun-ee). Empty when
-            the sandbox is not publicly reachable.
+            Ports exposed through the public gateway. Empty when the sandbox is
+            not publicly reachable.
           example: [8080]
 
     # Generic API Response for list with pagination
