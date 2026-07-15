@@ -82,6 +82,11 @@ func AuthMiddleware(cfg *config.Config, apiKeySvc *service.APIKeyService, userSv
 func handleClerkAuth(c *gin.Context, userSvc *service.UserService, clerkSvc *service.ClerkService, authCache *service.AuthCache, token string) (string, string) {
 	ctx := c.Request.Context()
 	orgID := c.GetHeader("X-Org-ID")
+	// Browsers cannot set custom headers on the WebSocket handshake, so
+	// WS clients pass the org context as ?orgId= instead of X-Org-ID.
+	if orgID == "" && c.IsWebsocket() {
+		orgID = c.Query("orgId")
+	}
 
 	if authCache != nil {
 		cachedEntry, err := authCache.GetClerkToken(ctx, token)
