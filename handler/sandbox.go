@@ -41,7 +41,12 @@ func (h *SandboxHandler) List(c *gin.Context) error {
 		}
 	}
 
-	sbxList, total, actualPageSize, err := h.sandboxService.ListByOrgPaginated(c.Request.Context(), orgID, page, pageSize)
+	labels, err := util.ParseLabelSelector(c.Query("labels"))
+	if err != nil {
+		return util.ErrBadRequest(err.Error())
+	}
+
+	sbxList, total, actualPageSize, err := h.sandboxService.ListByOrgPaginated(c.Request.Context(), orgID, page, pageSize, labels)
 	if err != nil {
 		return util.ErrInternal("Failed to list sandboxes", err)
 	}
@@ -66,7 +71,7 @@ func (h *SandboxHandler) Create(c *gin.Context) error {
 		return util.ErrBadRequest(err.Error())
 	}
 
-	if err := util.ValidateCreateSandboxRequest(req.Name, req.CPU, req.Mem, req.PublishPorts); err != nil {
+	if err := util.ValidateCreateSandboxRequest(req.Name, req.CPU, req.Mem, req.PublishPorts, req.Labels); err != nil {
 		return util.ErrBadRequest(err.Error())
 	}
 

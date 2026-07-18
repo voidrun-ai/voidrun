@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -18,7 +19,21 @@ const (
 	APIKeyLength = 32
 	// BCryptCost is the cost factor for bcrypt hashing
 	BCryptCost = 12
+	// APIKeyNameMaxLength is the maximum API key display-name length in characters.
+	APIKeyNameMaxLength = 25
 )
+
+// ValidateAPIKeyName validates the human-readable name assigned at key creation.
+func ValidateAPIKeyName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("API key name is required")
+	}
+	if utf8.RuneCountInString(name) > APIKeyNameMaxLength {
+		return fmt.Errorf("API key name must be %d characters or fewer", APIKeyNameMaxLength)
+	}
+	return nil
+}
 
 // GenerateAPIKey generates a new secure API key with format: org_<random_base64>
 func GenerateAPIKey() (string, error) {
