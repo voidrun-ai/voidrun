@@ -15,8 +15,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-const maxKeyNameLength = 100
-
 // OrgHandler handles organization-scoped endpoints (including API keys)
 type OrgHandler struct {
 	apiKeyService *service.APIKeyService
@@ -124,11 +122,8 @@ func (h *OrgHandler) GenerateAPIKey(c *gin.Context) error {
 	}
 
 	req.KeyName = strings.TrimSpace(req.KeyName)
-	if req.KeyName == "" {
-		return util.ErrBadRequest("Key name cannot be empty")
-	}
-	if len(req.KeyName) > maxKeyNameLength {
-		return util.ErrBadRequest("Key name exceeds maximum length")
+	if err := util.ValidateAPIKeyName(req.KeyName); err != nil {
+		return util.ErrBadRequest(err.Error())
 	}
 
 	orgID, err := util.GetOrgIDFromContext(c)

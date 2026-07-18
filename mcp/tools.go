@@ -68,6 +68,9 @@ func toolCreateSandbox() mcp.Tool {
 			mcp.Items(map[string]any{"type": "integer"}),
 			mcp.MaxItems(4),
 		),
+		mcp.WithObject("labels",
+			mcp.Description("Key-value labels attached at creation (immutable). Max 5 labels; keys are up to 20 lowercase alphanumeric characters with '-' or '_' only; values are up to 20 characters."),
+		),
 	)
 }
 
@@ -80,6 +83,9 @@ func toolListSandboxes() mcp.Tool {
 		),
 		mcp.WithNumber("limit",
 			mcp.Description("Number of results per page. Defaults to server config."),
+		),
+		mcp.WithString("labels",
+			mcp.Description("Filter by labels as \"key=value,key2=value2\" (AND semantics: sandbox must match all given pairs)."),
 		),
 	)
 }

@@ -15,6 +15,7 @@ type CreateSandboxRequest struct {
 	AutoSleep    *bool              `json:"autoSleep,omitempty"`
 	Region       string             `json:"region,omitempty"`
 	PublishPorts []int              `json:"publishPorts,omitempty"`
+	Labels       map[string]string  `json:"labels,omitempty"`
 }
 
 type UpdatePublishPortsRequest struct {

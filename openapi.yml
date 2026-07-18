@@ -122,6 +122,8 @@ components:
           example: 65ae1234567890abcdef1234
         keyName:
           type: string
+          minLength: 1
+          maxLength: 25
           example: CI/CD Key
 
     GeneratedAPIKeyResponse:
@@ -253,6 +255,21 @@ components:
             Sandbox ports to expose through the public gateway. Each entry is
             published as a separate public URL once the VM is running.
           example: [8080, 3000]
+        labels:
+          type: object
+          maxProperties: 5
+          additionalProperties:
+            type: string
+            maxLength: 20
+          description: >-
+            Key-value labels attached at creation. Immutable after the sandbox
+            is created. Max 5 labels; keys and values may each contain up to
+            20 characters. Keys match
+            `^[a-z0-9]([-a-z0-9_]*[a-z0-9])?$`; neither keys nor values may
+            contain `,` or `=`.
+          example:
+            env: prod
+            team: backend
 
     Sandbox:
       type: object
@@ -327,6 +344,16 @@ components:
             Ports exposed through the public gateway. Empty when the sandbox is
             not publicly reachable.
           example: [8080]
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Key-value labels attached at creation (immutable). Only present if
+            set. See `GET /sandboxes` `labels` query parameter for filtering.
+          example:
+            env: prod
+            team: backend
 
     # Generic API Response for list with pagination
     ApiResponseSandboxesList:
@@ -889,8 +916,10 @@ paths:
               properties:
                 keyName:
                   type: string
+                  minLength: 1
+                  maxLength: 25
                   example: CI/CD Key
-                  description: A descriptive name for the API key
+                  description: A descriptive name for the API key, up to 25 characters
       responses:
         "200":
           description: API key generated
@@ -1105,6 +1134,16 @@ paths:
             maximum: 100
           example: 50
           description: Number of sandboxes per page (min 1, max 100, default from server config)
+        - name: labels
+          in: query
+          schema:
+            type: string
+          example: "env=prod,team=backend"
+          description: >-
+            Filter by labels as comma-separated `key=value` pairs. Sandboxes
+            must match **all** given pairs (AND semantics); extra labels on
+            the sandbox are ignored. Omit to return sandboxes regardless of
+            labels.
       responses:
         "200":
           description: List of sandboxes with pagination metadata
@@ -1112,6 +1151,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiResponseSandboxesList"
+        "400":
+          description: Malformed labels selector (bad `key=value` syntax, invalid key format, or too many pairs)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Unauthorized
           content:

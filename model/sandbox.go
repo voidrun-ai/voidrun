@@ -32,6 +32,7 @@ type Sandbox struct {
 	TapDeleted       bool               `bson:"tapDeleted,omitempty" json:"-"`
 	BillingCompleted bool               `bson:"billingCompleted,omitempty" json:"-"`
 	PublishPorts     []int              `bson:"publishPorts,omitempty" json:"publishPorts,omitempty"`
+	Labels           map[string]string  `bson:"labels,omitempty" json:"labels,omitempty"`
 }
 
 type SandboxSpec struct {

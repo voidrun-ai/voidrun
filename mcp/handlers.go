@@ -268,13 +268,14 @@ func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequ
 	autoSleep := optionalBoolPtr(req, "autoSleep")
 	envVars := optionalStringMap(req, "envVars")
 	region := optionalString(req, "region", "")
+	labels := optionalStringMap(req, "labels")
 
 	publishPorts, err := optionalIntSlice(req, "publishPorts")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	if err := util.ValidateCreateSandboxRequest(name, cpu, mem, publishPorts); err != nil {
+	if err := util.ValidateCreateSandboxRequest(name, cpu, mem, publishPorts, labels); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
@@ -290,6 +291,7 @@ func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequ
 		AutoSleep:    autoSleep,
 		Region:       region,
 		PublishPorts: publishPorts,
+		Labels:       labels,
 	}
 
 	sandbox, err := h.SandboxService.Create(ctx, createReq)
@@ -310,7 +312,12 @@ func (h *Handlers) HandleListSandboxes(ctx context.Context, req mcp.CallToolRequ
 	page := optionalNumber(req, "page", 1)
 	limit := optionalNumber(req, "limit", 0)
 
-	sandboxes, total, _, err := h.SandboxService.ListByOrgPaginated(ctx, orgID, page, limit)
+	labels, err := util.ParseLabelSelector(optionalString(req, "labels", ""))
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	sandboxes, total, _, err := h.SandboxService.ListByOrgPaginated(ctx, orgID, page, limit, labels)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list sandboxes: %s", err.Error())), nil
 	}

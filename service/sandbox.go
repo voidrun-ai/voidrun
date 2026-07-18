@@ -87,6 +87,7 @@ func NewSandboxService(
 			"netnsName":      1,
 			"macAddress":     1,
 			"publishPorts":   1,
+			"labels":         1,
 		},
 	}
 }
@@ -114,7 +115,7 @@ func (s *SandboxService) UpdatePublishPorts(ctx context.Context, orgID primitive
 	return sandbox, nil
 }
 
-func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive.ObjectID, page, pageSize int) ([]*model.Sandbox, int64, int, error) {
+func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive.ObjectID, page, pageSize int, labels map[string]string) ([]*model.Sandbox, int64, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -124,7 +125,7 @@ func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive
 		pageSize = config.MaxPageSize
 	}
 
-	filter := bson.M{"orgId": orgID}
+	filter := sandboxListFilter(orgID, labels)
 
 	// Get total count
 	total, err := s.repo.Count(ctx, orgID, filter)
@@ -303,6 +304,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		Region:         req.Region,
 		NodeID:         s.cfg.HostID,
 		PublishPorts:   req.PublishPorts,
+		Labels:         req.Labels,
 		TapName:        spec.TapName,
 		NetNSName:      spec.NetNSName,
 		MacAddress:     spec.MacAddress, // persist so Restore doesn't need to re-derive it
@@ -330,6 +332,14 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	}
 
 	return sandbox, nil
+}
+
+func sandboxListFilter(orgID primitive.ObjectID, labels map[string]string) bson.M {
+	filter := bson.M{"orgId": orgID}
+	for key, value := range labels {
+		filter["labels."+key] = value
+	}
+	return filter
 }
 
 func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, id string) error {

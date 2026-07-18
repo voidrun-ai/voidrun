@@ -84,7 +84,7 @@ func (h *resourceHandlers) handleSandboxesList(
 		return nil, err
 	}
 
-	sandboxes, total, _, err := h.sandboxSvc.ListByOrgPaginated(ctx, orgID, 1, 0)
+	sandboxes, total, _, err := h.sandboxSvc.ListByOrgPaginated(ctx, orgID, 1, 0, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sandboxes: %w", err)
 	}

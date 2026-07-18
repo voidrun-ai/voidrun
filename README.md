@@ -4,7 +4,7 @@ VoidRun is a Go API server for managing sandboxes with file operations, command 
 
 ## Highlights
 
-- Sandbox lifecycle management (create, list, delete)
+- Sandbox lifecycle management (create, list, delete) with immutable labels and label filtering
 - Command execution (sync + streaming) and background processes
 - File system operations (upload, download, list, compress, watch)
 - PTY sessions (ephemeral and persistent)
@@ -74,6 +74,27 @@ curl -X POST http://localhost:8080/api/register \
 curl http://localhost:8080/api/sandboxes \
 	-H 'X-API-Key: hf_your_key_here'
 ```
+
+Create a sandbox with immutable labels:
+
+```bash
+curl -X POST http://localhost:8080/api/sandboxes \
+	-H 'X-API-Key: hf_your_key_here' \
+	-H 'Content-Type: application/json' \
+	-d '{"name":"api-prod","labels":{"env":"prod","team":"api"}}'
+```
+
+Filter by labels (all pairs must match):
+
+```bash
+curl 'http://localhost:8080/api/sandboxes?labels=env%3Dprod%2Cteam%3Dapi' \
+	-H 'X-API-Key: hf_your_key_here'
+```
+
+Labels are set only at creation. A sandbox supports at most 5 labels. Keys and
+values are each at most 20 characters. Keys use lowercase letters or numbers
+with optional `-` or `_`, and must start and end with a letter or number. Keys
+and values cannot contain `,` or `=`.
 
 ```bash
 curl http://localhost:8080/api/sandboxes \
@@ -174,8 +195,8 @@ JWT_SECRET=change-me-in-production
 ## Key Endpoints (Summary)
 
 - `POST /api/register` - create user, org, and API key
-- `GET /api/sandboxes` - list sandboxes
-- `POST /api/sandboxes` - create sandbox
+- `GET /api/sandboxes` - list sandboxes; optional `labels=key=value,key2=value2` filter uses AND semantics
+- `POST /api/sandboxes` - create sandbox with optional immutable `labels`
 - `GET /api/sandboxes/{id}` - get sandbox
 - `DELETE /api/sandboxes/{id}` - delete sandbox
 - `POST /api/sandboxes/{id}/exec` - execute command

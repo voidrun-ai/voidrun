@@ -75,6 +75,10 @@ func (r *SandboxRepository) Init(ctx context.Context) error {
 		{Keys: bson.D{{Key: "orgId", Value: 1}}, Options: options.Index().SetUnique(false)},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "lastActivityAt", Value: 1}}, Options: options.Index().SetUnique(false)},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "snapshottedAt", Value: 1}}, Options: options.Index().SetUnique(false)},
+		{
+			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "labels.$**", Value: 1}},
+			Options: options.Index().SetName("orgId_1_labels_wildcard").SetUnique(false),
+		},
 	}
 	if _, err := r.collection.Indexes().CreateMany(ctx, indexes); err != nil {
 		fmt.Printf("[warn] failed to create sandbox indexes: %v\n", err)
