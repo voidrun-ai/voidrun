@@ -32,6 +32,17 @@ var (
 	ErrSandboxNotRunning = errors.New("sandbox is not running")
 )
 
+func (s *SandboxService) recordLifecycleOp(sbxID, operation string, start time.Time, err error) {
+	if s.metrics == nil || sbxID == "" {
+		return
+	}
+	status := "ok"
+	if err != nil {
+		status = "error"
+	}
+	s.metrics.RecordSandboxOperation(sbxID, "lifecycle", operation, status, time.Since(start).Seconds())
+}
+
 // SandboxService handles sandbox business logic
 type SandboxService struct {
 	repo           repository.ISandboxRepository
@@ -342,7 +353,7 @@ func sandboxListFilter(orgID primitive.ObjectID, labels map[string]string) bson.
 	return filter
 }
 
-func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, id string) error {
+func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, id string) (err error) {
 	release := s.lifecycleLocks.Acquire(id)
 	defer release()
 
@@ -350,6 +361,9 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 	if err != nil {
 		return err
 	}
+
+	start := time.Now()
+	defer func() { s.recordLifecycleOp(id, "delete", start, err) }()
 
 	s.repo.FreeIP(ctx, sandbox.IP)
 
@@ -363,6 +377,7 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 
 	if s.metrics != nil {
 		s.metrics.UnregisterSandbox(id)
+		s.metrics.ClearSandboxStatus(id)
 	}
 
 	if err := runtime.Delete(id, sandbox.TapName, sandbox.NetNSName); err != nil {
@@ -382,7 +397,7 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 	return nil
 }
 
-func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID, id string) error {
+func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID, id string) (err error) {
 	release := s.lifecycleLocks.Acquire(id)
 	defer release()
 
@@ -397,12 +412,15 @@ func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID,
 		return fmt.Errorf("%w (current status: %s)", ErrSandboxNotRunning, sandbox.Status)
 	}
 
+	start := time.Now()
+	defer func() { s.recordLifecycleOp(id, "sleep", start, err) }()
+
 	// Take the snapshot first while the monitor is still running, so any
 	// CLH events emitted during pause/snapshot/shutdown are tailed into the
 	// event file. If the snapshot errors out, the monitor stays attached and
 	// keeps watching the (possibly still-alive) VM — no "running but
 	// unmonitored" state.
-	if err := runtime.Snapshot(id); err != nil {
+	if err = runtime.Snapshot(id); err != nil {
 		return err
 	}
 
@@ -422,13 +440,14 @@ func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID,
 	}
 
 	if s.metrics != nil {
+		s.metrics.SetSandboxStatus(sandbox.ID.Hex(), sandbox.Name, "snapshotted")
 		s.metrics.UnregisterSandbox(sandbox.ID.Hex())
 	}
 
 	return nil
 }
 
-func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, id string) error {
+func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, id string) (err error) {
 	release := s.lifecycleLocks.Acquire(id)
 	defer release()
 
@@ -442,6 +461,9 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 		return fmt.Errorf("sandbox is not snapshotted (current status: %s)", sandbox.Status)
 	}
 
+	start := time.Now()
+	defer func() { s.recordLifecycleOp(id, "wake", start, err) }()
+
 	return s.restoreLocked(ctx, orgID, sandbox)
 }
 
@@ -449,7 +471,7 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 // or error statuses and restores from the latest on-disk snapshot. Sandboxes
 // that were killed before ever being snapshotted have no recoverable state and
 // must be recreated instead.
-func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id string) error {
+func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id string) (err error) {
 	release := s.lifecycleLocks.Acquire(id)
 	defer release()
 
@@ -465,6 +487,9 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 	default:
 		return fmt.Errorf("sandbox cannot be started from status: %s", sandbox.Status)
 	}
+
+	start := time.Now()
+	defer func() { s.recordLifecycleOp(id, "start", start, err) }()
 
 	if runtime.GetLatestSnapshotDir(id) != "" {
 		return s.restoreLocked(ctx, orgID, sandbox)
@@ -781,6 +806,11 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 
 			if err := s.repo.UpdateStatusForHealth(ctx, sb.ID, newState); err != nil {
 				fmt.Printf("[health] failed to update status for %s: %v\n", id, err)
+			} else if s.metrics != nil {
+				s.metrics.SetSandboxStatus(id, sb.Name, newState)
+				if newState != "running" {
+					s.metrics.UnregisterSandbox(id)
+				}
 			}
 		}()
 	}

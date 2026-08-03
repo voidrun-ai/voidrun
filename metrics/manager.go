@@ -38,6 +38,7 @@ type Manager struct {
 	allocDiskBytes int64
 	diskDevs       map[string]map[string]struct{}
 	netDevs        map[string]map[string]struct{}
+	statusByID     map[string]string
 	once           sync.Once
 
 	registry           *prometheus.Registry
@@ -50,6 +51,7 @@ type Manager struct {
 	httpReqDur         *prometheus.HistogramVec
 	sbxOperationReqs   *prometheus.CounterVec
 	sbxOperationDur    *prometheus.HistogramVec
+	sbxStatusGauge     *prometheus.GaugeVec
 	diskReadBytes      *prometheus.GaugeVec
 	diskWriteBytes     *prometheus.GaugeVec
 	diskReadOps        *prometheus.GaugeVec
@@ -205,6 +207,13 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		},
 		[]string{"sbx_id", "category", "operation", "status", "voidrun_host"},
 	)
+	sbxStatus := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "voidrun_sbx_status",
+			Help: "Sandbox lifecycle status as a numbered gauge (1=running, 2=snapshotted/sleeping, 3=paused, 4=killed, 5=error, 0=deleted); status label carries the DB value",
+		},
+		[]string{"sbx_id", "sbx_name", "status", "voidrun_host"},
+	)
 
 	hostAllocVcpu := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -338,6 +347,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		httpDur,
 		sbxOperationReqs,
 		sbxOperationDur,
+		sbxStatus,
 		hostAllocVcpu,
 		hostAllocMemBytes,
 		hostAllocDiskBytes,
@@ -372,6 +382,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		alloc:              map[string]allocSpec{},
 		diskDevs:           map[string]map[string]struct{}{},
 		netDevs:            map[string]map[string]struct{}{},
+		statusByID:         map[string]string{},
 		registry:           registry,
 		cpuUsageGauge:      cpuUsage,
 		memUsedGauge:       memUsed,
@@ -382,6 +393,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		httpReqDur:         httpDur,
 		sbxOperationReqs:   sbxOperationReqs,
 		sbxOperationDur:    sbxOperationDur,
+		sbxStatusGauge:     sbxStatus,
 		diskReadBytes:      diskReadBytes,
 		diskWriteBytes:     diskWriteBytes,
 		diskReadOps:        diskReadOps,
@@ -449,14 +461,6 @@ func (m *Manager) Middleware() gin.HandlerFunc {
 
 func classifySandboxOperation(method, path string) (category, operation string, ok bool) {
 	switch method + " " + path {
-	case http.MethodDelete + " /api/sandboxes/:id":
-		return "lifecycle", "delete", true
-	case http.MethodPost + " /api/sandboxes/:id/sleep":
-		return "lifecycle", "sleep", true
-	case http.MethodPost + " /api/sandboxes/:id/wake":
-		return "lifecycle", "wake", true
-	case http.MethodPost + " /api/sandboxes/:id/start":
-		return "lifecycle", "start", true
 	case http.MethodPost + " /api/sandboxes/:id/exec":
 		return "command", "exec", true
 	case http.MethodPost + " /api/sandboxes/:id/exec-stream":
@@ -478,6 +482,22 @@ func classifySandboxOperation(method, path string) (category, operation string, 
 	default:
 		return "", "", false
 	}
+}
+
+// RecordSandboxOperation records a lifecycle or command op from the service layer
+// (covers auto-sleep and activator in-process calls that never hit HTTP middleware).
+func (m *Manager) RecordSandboxOperation(sbxID, category, operation, status string, durationSec float64) {
+	if m == nil || sbxID == "" || category == "" || operation == "" {
+		return
+	}
+	if status == "" {
+		status = "ok"
+	}
+	if durationSec < 0 {
+		durationSec = 0
+	}
+	m.sbxOperationReqs.WithLabelValues(sbxID, category, operation, status, m.host).Inc()
+	m.sbxOperationDur.WithLabelValues(sbxID, category, operation, status, m.host).Observe(durationSec)
 }
 
 func (m *Manager) RegisterSandbox(vmID, sbxName, socketPath string, cpu, memMB, diskMB int) {
@@ -519,6 +539,55 @@ func (m *Manager) RegisterSandbox(vmID, sbxName, socketPath string, cpu, memMB, 
 	m.hostAllocVcpu.WithLabelValues(m.host).Set(float64(allocVcpu))
 	m.hostAllocMemBytes.WithLabelValues(m.host).Set(float64(allocMemBytes))
 	m.hostAllocDiskBytes.WithLabelValues(m.host).Set(float64(allocDiskBytes))
+	m.SetSandboxStatus(vmID, sbxName, "running")
+}
+
+// sandboxStatusValue maps DB status strings to stable numeric codes for Grafana mappings.
+func sandboxStatusValue(status string) float64 {
+	switch status {
+	case "deleted":
+		return 0
+	case "running":
+		return 1
+	case "snapshotted":
+		return 2
+	case "paused":
+		return 3
+	case "killed":
+		return 4
+	case "error":
+		return 5
+	default:
+		return -1
+	}
+}
+
+// SetSandboxStatus records the sandbox lifecycle status; replaces any previous status series for sbxID.
+func (m *Manager) SetSandboxStatus(sbxID, sbxName, status string) {
+	if sbxID == "" || status == "" {
+		return
+	}
+	if sbxName == "" {
+		sbxName = "unknown"
+	}
+	m.mu.Lock()
+	m.statusByID[sbxID] = status
+	m.sbxNames[sbxID] = sbxName
+	m.mu.Unlock()
+
+	m.sbxStatusGauge.DeletePartialMatch(prometheus.Labels{"sbx_id": sbxID})
+	m.sbxStatusGauge.WithLabelValues(sbxID, sbxName, status, m.host).Set(sandboxStatusValue(status))
+}
+
+// ClearSandboxStatus drops the status series for a sandbox (delete / final cleanup).
+func (m *Manager) ClearSandboxStatus(sbxID string) {
+	if sbxID == "" {
+		return
+	}
+	m.mu.Lock()
+	delete(m.statusByID, sbxID)
+	m.mu.Unlock()
+	m.sbxStatusGauge.DeletePartialMatch(prometheus.Labels{"sbx_id": sbxID})
 }
 
 func (m *Manager) UnregisterSandbox(vmID string) {
