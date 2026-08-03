@@ -180,6 +180,15 @@ func (s *Server) resumeEventWatchers() {
 			OrgID:     sb.OrgID,
 			UserID:    sb.CreatedBy,
 		})
+		if s.metrics == nil {
+			continue
+		}
+		id := sb.ID.Hex()
+		if sb.Status == "running" {
+			s.metrics.RegisterSandbox(id, sb.Name, runtime.GetSocketPath(id), sb.CPU, sb.Mem, sb.DiskMB)
+		} else {
+			s.metrics.SetSandboxStatus(id, sb.Name, sb.Status)
+		}
 	}
 
 	s.services.Monitor.ResumeAll(ctx, meta)

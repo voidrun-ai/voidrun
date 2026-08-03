@@ -211,6 +211,9 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 				log.Printf("[lifecycle] auto-delete DB update failed for %s (%s): %v", sb.Name, id, err)
 				return
 			}
+			if m.metrics != nil {
+				m.metrics.ClearSandboxStatus(id)
+			}
 			log.Printf("[lifecycle] auto-deleted sandbox %s (%s) after %ds snapshotted", sb.Name, id, m.cfg.DeleteAfterSnapshottedSec)
 		}()
 	}

@@ -70,10 +70,11 @@ func TestClassifySandboxOperation(t *testing.T) {
 		operation string
 		ok        bool
 	}{
-		{http.MethodDelete, "/api/sandboxes/:id", "lifecycle", "delete", true},
-		{http.MethodPost, "/api/sandboxes/:id/sleep", "lifecycle", "sleep", true},
-		{http.MethodPost, "/api/sandboxes/:id/wake", "lifecycle", "wake", true},
-		{http.MethodPost, "/api/sandboxes/:id/start", "lifecycle", "start", true},
+		// Lifecycle is recorded in the service layer (covers auto-sleep + activator).
+		{http.MethodDelete, "/api/sandboxes/:id", "", "", false},
+		{http.MethodPost, "/api/sandboxes/:id/sleep", "", "", false},
+		{http.MethodPost, "/api/sandboxes/:id/wake", "", "", false},
+		{http.MethodPost, "/api/sandboxes/:id/start", "", "", false},
 		{http.MethodPost, "/api/sandboxes/:id/exec", "command", "exec", true},
 		{http.MethodPost, "/api/sandboxes/:id/exec-stream", "command", "exec_stream", true},
 		{http.MethodPost, "/api/sandboxes/:id/session-exec", "command", "session_exec", true},
@@ -104,24 +105,104 @@ func TestMiddlewareRecordsBoundedSandboxOperationMetrics(t *testing.T) {
 	m := NewManager(config.MetricsConfig{IntervalSec: 10})
 	router := gin.New()
 	router.Use(m.Middleware())
-	router.POST("/api/sandboxes/:id/start", func(c *gin.Context) {
-		c.Status(http.StatusAccepted)
+	router.POST("/api/sandboxes/:id/exec", func(c *gin.Context) {
+		c.Status(http.StatusOK)
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sandboxes/sbx-123/start", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sandboxes/sbx-123/exec", nil)
 	router.ServeHTTP(httptest.NewRecorder(), req)
 
-	rr := httptest.NewRecorder()
-	m.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	body := rr.Body.String()
-	labels := `category="lifecycle",operation="start",sbx_id="sbx-123",status="202",voidrun_host="` + m.host + `"`
+	body := scrapeMetrics(t, m)
+	labels := `category="command",operation="exec",sbx_id="sbx-123",status="200",voidrun_host="` + m.host + `"`
 	if !strings.Contains(body, `voidrun_sbx_operation_requests_total{`+labels+`} 1`) {
 		t.Fatalf("metrics body missing operation counter labels %q", labels)
 	}
 	if !strings.Contains(body, `voidrun_sbx_operation_duration_seconds_bucket{`+labels+`,le="`) {
 		t.Fatalf("metrics body missing operation duration labels %q", labels)
 	}
-	if strings.Contains(body, `path="/api/sandboxes/sbx-123/start"`) {
+	if strings.Contains(body, `path="/api/sandboxes/sbx-123/exec"`) {
 		t.Fatal("operation metrics must use bounded operation labels, not raw request paths")
 	}
+}
+
+func TestRecordSandboxOperationExposesLifecycleMetrics(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.RecordSandboxOperation("sbx-1", "lifecycle", "sleep", "ok", 0.12)
+	m.RecordSandboxOperation("sbx-1", "lifecycle", "start", "ok", 0.45)
+
+	body := scrapeMetrics(t, m)
+	sleepLabels := `category="lifecycle",operation="sleep",sbx_id="sbx-1",status="ok",voidrun_host="` + m.host + `"`
+	startLabels := `category="lifecycle",operation="start",sbx_id="sbx-1",status="ok",voidrun_host="` + m.host + `"`
+	if !strings.Contains(body, `voidrun_sbx_operation_requests_total{`+sleepLabels+`} 1`) {
+		t.Fatalf("missing sleep counter\n%s", body)
+	}
+	if !strings.Contains(body, `voidrun_sbx_operation_requests_total{`+startLabels+`} 1`) {
+		t.Fatalf("missing start counter\n%s", body)
+	}
+	if !strings.Contains(body, `voidrun_sbx_operation_duration_seconds_bucket{`+sleepLabels+`,le="`) {
+		t.Fatalf("missing sleep duration\n%s", body)
+	}
+}
+
+func TestMiddlewareDoesNotRecordLifecycleHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	router := gin.New()
+	router.Use(m.Middleware())
+	router.POST("/api/sandboxes/:id/sleep", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/sandboxes/sbx-1/sleep", nil))
+
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, `voidrun_sbx_operation_requests_total{`) && strings.Contains(body, `operation="sleep"`) {
+		t.Fatal("lifecycle sleep must not be double-counted by HTTP middleware")
+	}
+}
+
+func TestSetSandboxStatusExposesLifecycleState(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.SetSandboxStatus("sbx-1", "demo", "running")
+	m.SetSandboxStatus("sbx-1", "demo", "snapshotted")
+
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, `status="running"`) && strings.Contains(body, `sbx_id="sbx-1"`) {
+		t.Fatal("expected previous running status series removed after transition")
+	}
+	want := `voidrun_sbx_status{sbx_id="sbx-1",sbx_name="demo",status="snapshotted",voidrun_host="` + m.host + `"} 2`
+	if !strings.Contains(body, want) {
+		t.Fatalf("metrics body missing status gauge %q\n%s", want, body)
+	}
+}
+
+func TestUnregisterSandboxKeepsStatusMetric(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.RegisterSandbox("sbx-1", "demo", "/tmp/sock", 1, 512, 1024)
+	m.SetSandboxStatus("sbx-1", "demo", "snapshotted")
+	m.UnregisterSandbox("sbx-1")
+
+	body := scrapeMetrics(t, m)
+	if !strings.Contains(body, `voidrun_sbx_status{sbx_id="sbx-1",sbx_name="demo",status="snapshotted"`) {
+		t.Fatal("status metric must survive UnregisterSandbox (sleep keeps state)")
+	}
+	if strings.Contains(body, "voidrun_sbx_cpu_usage") && strings.Contains(body, `sbx_name="demo"`) {
+		t.Fatal("resource metrics should be removed on unregister")
+	}
+}
+
+func TestClearSandboxStatusRemovesSeries(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.SetSandboxStatus("sbx-1", "demo", "running")
+	m.ClearSandboxStatus("sbx-1")
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, `sbx_id="sbx-1"`) && strings.Contains(body, "voidrun_sbx_status") {
+		t.Fatal("expected status series removed after ClearSandboxStatus")
+	}
+}
+
+func scrapeMetrics(t *testing.T, m *Manager) string {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rr.Body.String()
 }
