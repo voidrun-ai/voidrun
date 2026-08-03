@@ -48,6 +48,8 @@ type Manager struct {
 	scrapeTime         *prometheus.HistogramVec
 	httpReqsTotal      *prometheus.CounterVec
 	httpReqDur         *prometheus.HistogramVec
+	sbxOperationReqs   *prometheus.CounterVec
+	sbxOperationDur    *prometheus.HistogramVec
 	diskReadBytes      *prometheus.GaugeVec
 	diskWriteBytes     *prometheus.GaugeVec
 	diskReadOps        *prometheus.GaugeVec
@@ -188,6 +190,21 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		},
 		[]string{"method", "path", "status", "voidrun_host"},
 	)
+	sbxOperationReqs := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "voidrun_sbx_operation_requests_total",
+			Help: "Total lifecycle and command operations handled per sandbox",
+		},
+		[]string{"sbx_id", "category", "operation", "status", "voidrun_host"},
+	)
+	sbxOperationDur := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "voidrun_sbx_operation_duration_seconds",
+			Help:    "Duration of lifecycle and command operations per sandbox",
+			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60},
+		},
+		[]string{"sbx_id", "category", "operation", "status", "voidrun_host"},
+	)
 
 	hostAllocVcpu := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -319,6 +336,8 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		scrapeTime,
 		httpReqs,
 		httpDur,
+		sbxOperationReqs,
+		sbxOperationDur,
 		hostAllocVcpu,
 		hostAllocMemBytes,
 		hostAllocDiskBytes,
@@ -361,6 +380,8 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		scrapeTime:         scrapeTime,
 		httpReqsTotal:      httpReqs,
 		httpReqDur:         httpDur,
+		sbxOperationReqs:   sbxOperationReqs,
+		sbxOperationDur:    sbxOperationDur,
 		diskReadBytes:      diskReadBytes,
 		diskWriteBytes:     diskWriteBytes,
 		diskReadOps:        diskReadOps,
@@ -391,6 +412,15 @@ func (m *Manager) Handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }
 
+func (m *Manager) RegisterCollectors(collectors ...prometheus.Collector) error {
+	for _, collector := range collectors {
+		if err := m.registry.Register(collector); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *Manager) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -402,9 +432,51 @@ func (m *Manager) Middleware() gin.HandlerFunc {
 		}
 		method := c.Request.Method
 		status := fmt.Sprintf("%d", c.Writer.Status())
+		duration := time.Since(start).Seconds()
 
 		m.httpReqsTotal.WithLabelValues(method, path, status, m.host).Inc()
-		m.httpReqDur.WithLabelValues(method, path, status, m.host).Observe(time.Since(start).Seconds())
+		m.httpReqDur.WithLabelValues(method, path, status, m.host).Observe(duration)
+
+		if category, operation, ok := classifySandboxOperation(method, path); ok {
+			sbxID := c.Param("id")
+			if sbxID != "" {
+				m.sbxOperationReqs.WithLabelValues(sbxID, category, operation, status, m.host).Inc()
+				m.sbxOperationDur.WithLabelValues(sbxID, category, operation, status, m.host).Observe(duration)
+			}
+		}
+	}
+}
+
+func classifySandboxOperation(method, path string) (category, operation string, ok bool) {
+	switch method + " " + path {
+	case http.MethodDelete + " /api/sandboxes/:id":
+		return "lifecycle", "delete", true
+	case http.MethodPost + " /api/sandboxes/:id/sleep":
+		return "lifecycle", "sleep", true
+	case http.MethodPost + " /api/sandboxes/:id/wake":
+		return "lifecycle", "wake", true
+	case http.MethodPost + " /api/sandboxes/:id/start":
+		return "lifecycle", "start", true
+	case http.MethodPost + " /api/sandboxes/:id/exec":
+		return "command", "exec", true
+	case http.MethodPost + " /api/sandboxes/:id/exec-stream":
+		return "command", "exec_stream", true
+	case http.MethodPost + " /api/sandboxes/:id/session-exec":
+		return "command", "session_exec", true
+	case http.MethodPost + " /api/sandboxes/:id/session-exec-stream":
+		return "command", "session_exec_stream", true
+	case http.MethodPost + " /api/sandboxes/:id/commands/run":
+		return "command", "run", true
+	case http.MethodGet + " /api/sandboxes/:id/commands/list":
+		return "command", "list", true
+	case http.MethodPost + " /api/sandboxes/:id/commands/kill":
+		return "command", "kill", true
+	case http.MethodPost + " /api/sandboxes/:id/commands/attach":
+		return "command", "attach", true
+	case http.MethodPost + " /api/sandboxes/:id/commands/wait":
+		return "command", "wait", true
+	default:
+		return "", "", false
 	}
 }
 
