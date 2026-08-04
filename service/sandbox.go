@@ -491,6 +491,25 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 	start := time.Now()
 	defer func() { s.recordLifecycleOp(id, "start", start, err) }()
 
+	// False-killed: VM still up on this host — only repair DB/metrics, do not re-boot.
+	if sandbox.Status == "killed" || sandbox.Status == "error" {
+		if sandboxVMRunning(id) {
+			if _, uerr := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); uerr != nil {
+				return fmt.Errorf("VM running but failed to update DB status: %w", uerr)
+			}
+			if err := s.repo.TouchActivity(ctx, sandbox.ID); err != nil {
+				log.Printf("[WARN] Failed to touch activity on reattach for %s: %v", id, err)
+			}
+			if s.metrics != nil {
+				s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
+			}
+			if s.monitor != nil {
+				s.monitor.Start(ctx, sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
+			}
+			return nil
+		}
+	}
+
 	if runtime.GetLatestSnapshotDir(id) != "" {
 		return s.restoreLocked(ctx, orgID, sandbox)
 	}
@@ -729,10 +748,10 @@ func (s *SandboxService) Info(id string) (string, error) {
 
 // RefreshStatuses checks each sandbox health and updates status field in DB.
 // Status values: running, snapshotted, killed, deleted.
+// Scoped to this node's HostID. Also resurrects false-killed rows when the local VM is still up.
 func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
-	// Optimization 1: Fetch only necessary fields
-	projection := bson.M{"_id": 1, "status": 1}
-	sandboxes, err := s.repo.FindForHealth(ctx, options.FindOptions{Projection: projection})
+	projection := bson.M{"_id": 1, "status": 1, "name": 1}
+	sandboxes, err := s.repo.FindForHealth(ctx, s.cfg.HostID, options.FindOptions{Projection: projection})
 
 	if err != nil {
 		return fmt.Errorf("failed to list sandboxes: %w", err)
@@ -749,10 +768,9 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		sb := sb
 		id := sb.ID.Hex()
 
-		// Health monitor only concerns itself with "did a running VM die?" — skip
-		// any non-running status. Any transition into/out of running is owned by
-		// the lifecycle ops (Snapshot/Restore/Start/Delete) under lifecycleLocks.
-		if sb.Status != "running" {
+		switch sb.Status {
+		case "running", "killed", "error":
+		default:
 			continue
 		}
 
@@ -762,61 +780,75 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 		go func() {
 			defer func() { <-sem; wg.Done() }()
 
-			// Skip if a lifecycle op (Snapshot/Restore/Delete) is currently in flight —
-			// its DB write is authoritative, and health will re-check on the next tick.
-			// Prevents the running -> killed -> snapshotted flicker during long snapshot tear-downs.
 			release := s.lifecycleLocks.TryAcquire(id)
 			if release == nil {
 				return
 			}
 			defer release()
 
-			// Re-read under the lock in case a lifecycle op finished between our list
-			// query and TryAcquire (e.g. Snapshot just released).
 			cur, err := s.repo.FindByID(ctx, sb.ID, options.FindOneOptions{})
-			if err != nil || cur == nil || cur.Status != "running" {
+			if err != nil || cur == nil {
 				return
 			}
 
-			newState := "killed"
+			alive := sandboxVMRunning(id)
 
-			client := runtime.NewAPIClientForSandbox(id)
-			if client.IsSocketAvailable() {
-				apiCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				defer cancel()
-
-				sbxState, err := client.GetStateWithContext(apiCtx)
-				if err == nil {
-					switch strings.ToLower(sbxState) {
-					case "running", "runningvirtualized":
-						newState = "running"
-					default:
-						// Socket present but VM not running — treat as zombie.
-						newState = "killed"
-					}
-				} else {
-					fmt.Printf("[health] Sandbox %s unresponsive (socket exists): %v\n", id, err)
-					newState = "killed"
+			switch cur.Status {
+			case "running":
+				if alive {
+					return
 				}
-			}
-
-			if newState == "running" {
-				return
-			}
-
-			if err := s.repo.UpdateStatusForHealth(ctx, sb.ID, newState); err != nil {
-				fmt.Printf("[health] failed to update status for %s: %v\n", id, err)
-			} else if s.metrics != nil {
-				s.metrics.SetSandboxStatus(id, sb.Name, newState)
-				if newState != "running" {
+				if err := s.repo.UpdateStatusForHealth(ctx, sb.ID, "killed"); err != nil {
+					fmt.Printf("[health] failed to update status for %s: %v\n", id, err)
+				} else if s.metrics != nil {
+					s.metrics.SetSandboxStatus(id, cur.Name, "killed")
 					s.metrics.UnregisterSandbox(id)
 				}
+			case "killed", "error":
+				if !alive {
+					return
+				}
+				if err := s.repo.UpdateStatusFrom(ctx, sb.ID, cur.Status, "running"); err != nil {
+					fmt.Printf("[health] failed to resurrect status for %s: %v\n", id, err)
+					return
+				}
+				if s.metrics != nil {
+					s.metrics.RegisterSandbox(id, cur.Name, runtime.GetSocketPath(id), cur.CPU, cur.Mem, cur.DiskMB)
+				}
+				if s.monitor != nil {
+					s.monitor.Start(ctx, cur.ID, cur.OrgID, cur.CreatedBy)
+				}
+				fmt.Printf("[health] resurrected sandbox %s (%s) — VM still running\n", cur.Name, id)
 			}
 		}()
 	}
 
 	wg.Wait()
 	return nil
+}
+
+// sandboxVMRunning reports whether cloud-hypervisor on this host says the VM is up.
+func sandboxVMRunning(id string) bool {
+	client := runtime.NewAPIClientForSandbox(id)
+	if !client.IsSocketAvailable() {
+		return false
+	}
+	apiCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sbxState, err := client.GetStateWithContext(apiCtx)
+	if err != nil {
+		return false
+	}
+	return isRunningVMState(sbxState)
+}
+
+func isRunningVMState(state string) bool {
+	switch strings.ToLower(state) {
+	case "running", "runningvirtualized":
+		return true
+	default:
+		return false
+	}
 }
 
 type agentNetConfig struct {

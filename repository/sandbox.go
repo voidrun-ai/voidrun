@@ -31,7 +31,7 @@ type ISandboxRepository interface {
 	UpdatePublishPortsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, ports []int) (bool, error)
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
-	FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error)
+	FindForHealth(ctx context.Context, nodeID string, opts options.FindOptions) ([]*model.Sandbox, error)
 	UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error
 	UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) error
 	NextAvailableIP() (string, error)
@@ -39,8 +39,8 @@ type ISandboxRepository interface {
 	TouchActivity(ctx context.Context, id primitive.ObjectID) error
 	SetSnapshottedAt(ctx context.Context, id primitive.ObjectID) error
 	SetSnapshottedAtAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
-	FindIdleRunning(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
-	FindStaleSnapshotted(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error)
+	FindIdleRunning(ctx context.Context, nodeID string, threshold time.Time) ([]*model.Sandbox, error)
+	FindStaleSnapshotted(ctx context.Context, nodeID string, threshold time.Time) ([]*model.Sandbox, error)
 	FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
 	FreeIP(ctx context.Context, ip string)
 	ListWithPublishPorts(ctx context.Context, statuses []string) ([]*model.Sandbox, error)
@@ -211,20 +211,6 @@ func (r *SandboxRepository) FindAndOrg(ctx context.Context, orgID primitive.Obje
 	return sandboxes, nil
 }
 
-func (r *SandboxRepository) FindForHealth(ctx context.Context, opts options.FindOptions) ([]*model.Sandbox, error) {
-	cursor, err := r.collection.Find(ctx, bson.M{"status": bson.M{"$nin": []string{"killed", "deleted"}}}, &opts)
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	var sandboxes []*model.Sandbox
-	if err = cursor.All(ctx, &sandboxes); err != nil {
-		return nil, err
-	}
-	return sandboxes, nil
-}
-
 func (r *SandboxRepository) DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
 	res, err := r.collection.DeleteOne(ctx, bson.M{"_id": id, "orgId": orgID})
 	if err != nil {
@@ -233,8 +219,6 @@ func (r *SandboxRepository) DeleteByIDAndOrg(ctx context.Context, id, orgID prim
 	return res.DeletedCount > 0, nil
 }
 
-// UpdateStatusForHealth transitions a "running" row to a new status.
-// CAS-guarded so concurrent lifecycle ops are not overwritten.
 func (r *SandboxRepository) UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error {
 	_, err := r.collection.UpdateOne(
 		ctx,
@@ -361,50 +345,6 @@ func (r *SandboxRepository) SetSnapshottedAtAndOrg(ctx context.Context, id, orgI
 		return false, err
 	}
 	return res.MatchedCount > 0, nil
-}
-
-// FindIdleRunning finds running sandboxes that have been idle since before the threshold
-func (r *SandboxRepository) FindIdleRunning(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error) {
-	filter := bson.M{
-		"status": "running",
-		"$or": []bson.M{
-			{"autoSleep": bson.M{"$ne": false}},
-			{"autoSleep": bson.M{"$exists": false}},
-		},
-		"lastActivityAt": bson.M{"$lt": threshold},
-	}
-	cursor, err := r.collection.Find(ctx, filter, &options.FindOptions{
-		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-	var sandboxes []*model.Sandbox
-	if err = cursor.All(ctx, &sandboxes); err != nil {
-		return nil, err
-	}
-	return sandboxes, nil
-}
-
-// FindStaleSnapshotted finds snapshotted sandboxes that have been snapshotted since before the threshold
-func (r *SandboxRepository) FindStaleSnapshotted(ctx context.Context, threshold time.Time) ([]*model.Sandbox, error) {
-	filter := bson.M{
-		"status":        "snapshotted",
-		"snapshottedAt": bson.M{"$lt": threshold},
-	}
-	cursor, err := r.collection.Find(ctx, filter, &options.FindOptions{
-		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1, "createdBy": 1, "tapName": 1, "netnsName": 1},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-	var sandboxes []*model.Sandbox
-	if err = cursor.All(ctx, &sandboxes); err != nil {
-		return nil, err
-	}
-	return sandboxes, nil
 }
 
 func (r *SandboxRepository) FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error) {

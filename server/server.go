@@ -167,7 +167,7 @@ func (s *Server) resumeEventWatchers() {
 
 	ctx := context.Background()
 	// Find all non-killed sandboxes to resume watching
-	sandboxes, err := s.repos.Sandbox.FindForHealth(ctx, options.FindOptions{})
+	sandboxes, err := s.repos.Sandbox.FindForHealth(ctx, s.cfg.HostID, options.FindOptions{})
 	if err != nil {
 		fmt.Printf("[event_monitor] failed to fetch sandboxes for resume: %v\n", err)
 		return

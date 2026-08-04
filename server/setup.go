@@ -110,7 +110,7 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		Clerk:            clerkSvc,
 		AuthCache:        authCache,
 		Monitor:          monitor,
-		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, repos.Sandbox, monitor, metricsManager, lifecycleLocks, sandboxSvc),
+		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, cfg.HostID, repos.Sandbox, monitor, metricsManager, lifecycleLocks, sandboxSvc),
 	}
 }
 

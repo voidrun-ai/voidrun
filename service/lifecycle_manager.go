@@ -27,6 +27,7 @@ type Snapshotter interface {
 type LifecycleManager struct {
 	repo           repository.ISandboxRepository
 	cfg            config.AutoLifecycleConfig
+	hostID         string
 	monitor        *runtime.EventMonitor
 	metrics        *metrics.Manager
 	lifecycleLocks *SandboxLifecycleLocks
@@ -35,8 +36,10 @@ type LifecycleManager struct {
 
 // NewLifecycleManager wires the sweeper. lifecycleLocks and snapshotter must
 // be the same instances used by SandboxService so manual and auto flows serialize.
+// hostID scopes idle/stale scans to this node's sandboxes only.
 func NewLifecycleManager(
 	cfg config.AutoLifecycleConfig,
+	hostID string,
 	repo repository.ISandboxRepository,
 	monitor *runtime.EventMonitor,
 	metricsManager *metrics.Manager,
@@ -49,6 +52,7 @@ func NewLifecycleManager(
 	return &LifecycleManager{
 		repo:           repo,
 		cfg:            cfg,
+		hostID:         hostID,
 		monitor:        monitor,
 		metrics:        metricsManager,
 		lifecycleLocks: lifecycleLocks,
@@ -111,7 +115,7 @@ func (m *LifecycleManager) autoSnapshot(ctx context.Context) {
 	}
 
 	threshold := time.Now().Add(-time.Duration(m.cfg.SnapshotAfterIdleSec) * time.Second)
-	sandboxes, err := m.repo.FindIdleRunning(ctx, threshold)
+	sandboxes, err := m.repo.FindIdleRunning(ctx, m.hostID, threshold)
 	if err != nil {
 		log.Printf("[lifecycle] auto-snapshot query failed: %v", err)
 		return
@@ -159,7 +163,7 @@ func (m *LifecycleManager) autoDelete(ctx context.Context) {
 	}
 
 	threshold := time.Now().Add(-time.Duration(m.cfg.DeleteAfterSnapshottedSec) * time.Second)
-	sandboxes, err := m.repo.FindStaleSnapshotted(ctx, threshold)
+	sandboxes, err := m.repo.FindStaleSnapshotted(ctx, m.hostID, threshold)
 	if err != nil {
 		log.Printf("[lifecycle] auto-delete query failed: %v", err)
 		return
