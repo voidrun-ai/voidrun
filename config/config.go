@@ -210,7 +210,7 @@ const (
 	DefaultHealthConcurrency      = 16
 	DefaultMetricsEnabled         = true
 	DefaultMetricsIntervalSec     = 10
-	DefaultMetricsDiskIntervalSec = 60
+	DefaultMetricsDiskIntervalSec = 10
 	DefaultMetricsConcurrency     = 16
 	DefaultMetricsPath            = "/metrics"
 	// CORS defaults

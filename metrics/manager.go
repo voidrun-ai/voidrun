@@ -129,7 +129,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 	}
 	diskInterval := time.Duration(cfg.DiskIntervalSec) * time.Second
 	if diskInterval <= 0 {
-		diskInterval = 60 * time.Second
+		diskInterval = time.Duration(config.DefaultMetricsDiskIntervalSec) * time.Second
 	}
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
