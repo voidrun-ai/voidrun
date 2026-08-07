@@ -200,6 +200,22 @@ func TestClearSandboxStatusRemovesSeries(t *testing.T) {
 	}
 }
 
+func TestDeleteLeavesDeletedStatusTombstone(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.RegisterSandbox("sbx-1", "demo", "/tmp/sock", 1, 512, 1024)
+	m.UnregisterSandbox("sbx-1")
+	m.SetSandboxStatus("sbx-1", "demo", "deleted")
+
+	body := scrapeMetrics(t, m)
+	want := `voidrun_sbx_status{sbx_id="sbx-1",sbx_name="demo",status="deleted",voidrun_host="` + m.host + `"} 0`
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected deleted status tombstone %q\n%s", want, body)
+	}
+	if strings.Contains(body, "voidrun_sbx_cpu_usage") && strings.Contains(body, `sbx_id="sbx-1"`) {
+		t.Fatal("resource metrics should be removed on unregister before deleted tombstone")
+	}
+}
+
 func scrapeMetrics(t *testing.T, m *Manager) string {
 	t.Helper()
 	rr := httptest.NewRecorder()

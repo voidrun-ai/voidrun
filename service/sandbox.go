@@ -377,7 +377,7 @@ func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, i
 
 	if s.metrics != nil {
 		s.metrics.UnregisterSandbox(id)
-		s.metrics.ClearSandboxStatus(id)
+		s.metrics.SetSandboxStatus(id, sandbox.Name, "deleted")
 	}
 
 	if err := runtime.Delete(id, sandbox.TapName, sandbox.NetNSName); err != nil {
@@ -488,8 +488,12 @@ func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id
 		return fmt.Errorf("sandbox cannot be started from status: %s", sandbox.Status)
 	}
 
+	op := "start"
+	if sandbox.Status == "snapshotted" {
+		op = "wake"
+	}
 	start := time.Now()
-	defer func() { s.recordLifecycleOp(id, "start", start, err) }()
+	defer func() { s.recordLifecycleOp(id, op, start, err) }()
 
 	// False-killed: VM still up on this host — only repair DB/metrics, do not re-boot.
 	if sandbox.Status == "killed" || sandbox.Status == "error" {

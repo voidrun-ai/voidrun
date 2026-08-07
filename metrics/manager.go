@@ -579,7 +579,8 @@ func (m *Manager) SetSandboxStatus(sbxID, sbxName, status string) {
 	m.sbxStatusGauge.WithLabelValues(sbxID, sbxName, status, m.host).Set(sandboxStatusValue(status))
 }
 
-// ClearSandboxStatus drops the status series for a sandbox (delete / final cleanup).
+// ClearSandboxStatus drops the status series for a sandbox (ops / tests).
+// Prefer SetSandboxStatus(..., "deleted") on delete so Grafana State stays accurate.
 func (m *Manager) ClearSandboxStatus(sbxID string) {
 	if sbxID == "" {
 		return
