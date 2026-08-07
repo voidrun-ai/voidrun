@@ -45,6 +45,7 @@ type Manager struct {
 	cpuUsageGauge      *prometheus.GaugeVec
 	memUsedGauge       *prometheus.GaugeVec
 	diskUsedGauge      *prometheus.GaugeVec
+	diskLimitGauge     *prometheus.GaugeVec
 	scrapeUpGauge      *prometheus.GaugeVec
 	scrapeTime         *prometheus.HistogramVec
 	httpReqsTotal      *prometheus.CounterVec
@@ -166,6 +167,13 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		prometheus.GaugeOpts{
 			Name: "voidrun_sbx_disk_used_bytes",
 			Help: "Disk usage of the sandbox overlay on the host",
+		},
+		[]string{"sbx_id", "sbx_name", "voidrun_host"},
+	)
+	diskLimit := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "voidrun_sbx_disk_limit_bytes",
+			Help: "Allocated disk capacity for the sandbox (from diskMB)",
 		},
 		[]string{"sbx_id", "sbx_name", "voidrun_host"},
 	)
@@ -342,6 +350,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		memUsed,
 		scrapeUp,
 		diskUsed,
+		diskLimit,
 		scrapeTime,
 		httpReqs,
 		httpDur,
@@ -387,6 +396,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		cpuUsageGauge:      cpuUsage,
 		memUsedGauge:       memUsed,
 		diskUsedGauge:      diskUsed,
+		diskLimitGauge:     diskLimit,
 		scrapeUpGauge:      scrapeUp,
 		scrapeTime:         scrapeTime,
 		httpReqsTotal:      httpReqs,
@@ -539,6 +549,7 @@ func (m *Manager) RegisterSandbox(vmID, sbxName, socketPath string, cpu, memMB, 
 	m.hostAllocVcpu.WithLabelValues(m.host).Set(float64(allocVcpu))
 	m.hostAllocMemBytes.WithLabelValues(m.host).Set(float64(allocMemBytes))
 	m.hostAllocDiskBytes.WithLabelValues(m.host).Set(float64(allocDiskBytes))
+	m.diskLimitGauge.WithLabelValues(vmID, sbxName, m.host).Set(float64(diskBytes))
 	m.SetSandboxStatus(vmID, sbxName, "running")
 }
 
@@ -621,6 +632,7 @@ func (m *Manager) UnregisterSandbox(vmID string) {
 	m.cpuUsageGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.memUsedGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.diskUsedGauge.DeleteLabelValues(labelID, labelName, labelHost)
+	m.diskLimitGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.scrapeUpGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.scrapeTime.DeleteLabelValues(labelID, labelName, labelHost)
 	m.deleteDeviceMetrics(vmID, labelID, labelName, labelHost)

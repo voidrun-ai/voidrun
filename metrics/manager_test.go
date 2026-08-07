@@ -62,6 +62,28 @@ func TestUnregisterSandboxDeletesScrapeDurationLabels(t *testing.T) {
 	}
 }
 
+func TestRegisterSandboxExposesDiskLimitBytes(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.RegisterSandbox("sbx-1", "demo", "/tmp/sock", 1, 512, 1024)
+
+	body := scrapeMetrics(t, m)
+	want := `voidrun_sbx_disk_limit_bytes{sbx_id="sbx-1",sbx_name="demo",voidrun_host="` + m.host + `"} 1.073741824e+09`
+	if !strings.Contains(body, want) {
+		t.Fatalf("metrics body missing disk limit gauge %q\n%s", want, body)
+	}
+}
+
+func TestUnregisterSandboxRemovesDiskLimitBytes(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.RegisterSandbox("sbx-1", "demo", "/tmp/sock", 1, 512, 1024)
+	m.UnregisterSandbox("sbx-1")
+
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, "voidrun_sbx_disk_limit_bytes") && strings.Contains(body, `sbx_id="sbx-1"`) {
+		t.Fatal("expected disk limit series removed after unregister")
+	}
+}
+
 func TestClassifySandboxOperation(t *testing.T) {
 	tests := []struct {
 		method    string
