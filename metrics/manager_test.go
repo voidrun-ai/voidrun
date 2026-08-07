@@ -30,6 +30,23 @@ func TestNormalizeCPUUsagePercent(t *testing.T) {
 	}
 }
 
+func TestDefaultDiskIntervalMatchesGuestScrape(t *testing.T) {
+	m := NewManager(config.MetricsConfig{})
+	if m.diskInterval != m.interval {
+		t.Fatalf("diskInterval=%v interval=%v; disk should scrape every guest poll by default", m.diskInterval, m.interval)
+	}
+	if !m.shouldScrapeDisk("any") {
+		t.Fatal("shouldScrapeDisk must be true every tick when diskInterval <= interval")
+	}
+}
+
+func TestConfigDefaultDiskIntervalSecMatchesMetrics(t *testing.T) {
+	if config.DefaultMetricsDiskIntervalSec != config.DefaultMetricsIntervalSec {
+		t.Fatalf("DefaultMetricsDiskIntervalSec=%d DefaultMetricsIntervalSec=%d",
+			config.DefaultMetricsDiskIntervalSec, config.DefaultMetricsIntervalSec)
+	}
+}
+
 func TestScrapeDurationHistogramPerSandboxLabels(t *testing.T) {
 	m := NewManager(config.MetricsConfig{IntervalSec: 10})
 	m.scrapeTime.WithLabelValues("sbx-1", "stress-test", "test-host").Observe(0.05)
