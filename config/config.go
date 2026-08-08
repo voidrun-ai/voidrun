@@ -184,7 +184,7 @@ const (
 	DefaultSystemUserEmail          = "system@local"
 	DefaultSandboxVCPUs             = 1
 	DefaultSandboxMemoryMB          = 1024
-	DefaultSandboxDiskMB            = 5120 // 5GB
+	DefaultSandboxDiskMB            = 10240 // 10GB
 	DefaultSandboxImage             = "code"
 	DefaultSandboxKernelCmdline     = "root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0"
 	DefaultSandboxSyncTimeoutSec    = 10

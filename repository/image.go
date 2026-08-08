@@ -24,7 +24,8 @@ type IImageRepository interface {
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
 	Exists(ctx context.Context, orgID, id primitive.ObjectID) bool
 
-	GetLatestByNameForOrg(name string, orgID primitive.ObjectID) (*model.Image, error)
+	GetLatestByNameForOrg(ctx context.Context, name string, orgID primitive.ObjectID) (*model.Image, error)
+	ResolveImage(ctx context.Context, orgID primitive.ObjectID, imageSpec string) (*model.Image, error)
 	EnsureSystemImage(img model.Image) error
 	DeactivateStaleSystemImages(ctx context.Context, validImages []model.Image) error
 }
@@ -75,11 +76,8 @@ func (r *ImageRepository) FindByIDAndOrgOrSystem(ctx context.Context, id, orgID 
 	return img, nil
 }
 
-// GetByNameTag retrieves an image by name and tag
-func (r *ImageRepository) GetLatestByNameForOrg(name string, orgID primitive.ObjectID) (*model.Image, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
+// GetLatestByNameForOrg retrieves the latest active image by name for an org (or system).
+func (r *ImageRepository) GetLatestByNameForOrg(ctx context.Context, name string, orgID primitive.ObjectID) (*model.Image, error) {
 	var img *model.Image
 	filter := bson.M{
 		"name":   name,

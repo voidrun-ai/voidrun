@@ -158,7 +158,7 @@ func (h *ImageHandler) GetByName(c *gin.Context) error {
 		return err
 	}
 
-	image, err := h.imageService.GetLatestByNameForOrg(name, orgID)
+	image, err := h.imageService.GetLatestByNameForOrg(c.Request.Context(), name, orgID)
 	if err != nil {
 		if errors.Is(err, service.ErrImageNotFound) {
 			return util.ErrNotFound("Image not found")
