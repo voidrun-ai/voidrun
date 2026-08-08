@@ -90,6 +90,58 @@ func TestRegisterSandboxExposesDiskLimitBytes(t *testing.T) {
 	}
 }
 
+func TestApplyAgentDiskSetsGuestUsedGauge(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	if !m.applyAgentDisk("sbx-1", "demo", m.host, &agentMetrics{DiskUsedBytes: 42}) {
+		t.Fatal("expected applyAgentDisk to succeed when DiskError is empty")
+	}
+
+	body := scrapeMetrics(t, m)
+	want := `voidrun_sbx_disk_used_bytes{sbx_id="sbx-1",sbx_name="demo",voidrun_host="` + m.host + `"} 42`
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected guest disk used gauge %q\n%s", want, body)
+	}
+}
+
+func TestApplyAgentDiskSkipsOnError(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	if m.applyAgentDisk("sbx-1", "demo", m.host, &agentMetrics{DiskUsedBytes: 42, DiskError: "statfs failed"}) {
+		t.Fatal("expected applyAgentDisk to skip when DiskError is set")
+	}
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, "voidrun_sbx_disk_used_bytes") && strings.Contains(body, `sbx_id="sbx-1"`) {
+		t.Fatal("disk used gauge must not be set when agent reports DiskError")
+	}
+}
+
+func TestOverlayBytesGaugeIsSeparateFromDiskUsed(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.diskUsedGauge.WithLabelValues("sbx-1", "demo", m.host).Set(42)
+	m.overlayBytesGauge.WithLabelValues("sbx-1", "demo", m.host).Set(99)
+
+	body := scrapeMetrics(t, m)
+	guest := `voidrun_sbx_disk_used_bytes{sbx_id="sbx-1",sbx_name="demo",voidrun_host="` + m.host + `"} 42`
+	overlay := `voidrun_sbx_overlay_bytes{sbx_id="sbx-1",sbx_name="demo",voidrun_host="` + m.host + `"} 99`
+	if !strings.Contains(body, guest) {
+		t.Fatalf("missing guest disk used %q\n%s", guest, body)
+	}
+	if !strings.Contains(body, overlay) {
+		t.Fatalf("missing host overlay size %q\n%s", overlay, body)
+	}
+}
+
+func TestUnregisterSandboxRemovesOverlayBytes(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.RegisterSandbox("sbx-1", "demo", "/tmp/sock", 1, 512, 1024)
+	m.overlayBytesGauge.WithLabelValues("sbx-1", "demo", m.host).Set(99)
+	m.UnregisterSandbox("sbx-1")
+
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, "voidrun_sbx_overlay_bytes") && strings.Contains(body, `sbx_id="sbx-1"`) {
+		t.Fatal("expected overlay series removed after unregister")
+	}
+}
+
 func TestUnregisterSandboxRemovesDiskLimitBytes(t *testing.T) {
 	m := NewManager(config.MetricsConfig{IntervalSec: 10})
 	m.RegisterSandbox("sbx-1", "demo", "/tmp/sock", 1, 512, 1024)
