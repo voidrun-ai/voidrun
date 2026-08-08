@@ -295,7 +295,7 @@ components:
         diskMB:
           type: integer
           description: Disk size in MiB
-          example: 5120
+          example: 10240
         status:
           type: string
           description: >-

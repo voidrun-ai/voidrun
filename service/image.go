@@ -92,8 +92,8 @@ func (s *ImageService) Count(ctx context.Context, orgID primitive.ObjectID, filt
 }
 
 // GetLatestByNameForOrg returns the latest image for a name visible to org.
-func (s *ImageService) GetLatestByNameForOrg(name string, orgID primitive.ObjectID) (*model.Image, error) {
-	img, err := s.repo.GetLatestByNameForOrg(name, orgID)
+func (s *ImageService) GetLatestByNameForOrg(ctx context.Context, name string, orgID primitive.ObjectID) (*model.Image, error) {
+	img, err := s.repo.GetLatestByNameForOrg(ctx, name, orgID)
 	if err != nil {
 		return nil, err
 	}

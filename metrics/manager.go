@@ -46,6 +46,7 @@ type Manager struct {
 	memUsedGauge       *prometheus.GaugeVec
 	diskUsedGauge      *prometheus.GaugeVec
 	diskLimitGauge     *prometheus.GaugeVec
+	overlayBytesGauge  *prometheus.GaugeVec
 	scrapeUpGauge      *prometheus.GaugeVec
 	scrapeTime         *prometheus.HistogramVec
 	httpReqsTotal      *prometheus.CounterVec
@@ -166,7 +167,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 	diskUsed := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "voidrun_sbx_disk_used_bytes",
-			Help: "Disk usage of the sandbox overlay on the host",
+			Help: "Sandbox guest filesystem used bytes from guest agent",
 		},
 		[]string{"sbx_id", "sbx_name", "voidrun_host"},
 	)
@@ -174,6 +175,13 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		prometheus.GaugeOpts{
 			Name: "voidrun_sbx_disk_limit_bytes",
 			Help: "Allocated disk capacity for the sandbox (from diskMB)",
+		},
+		[]string{"sbx_id", "sbx_name", "voidrun_host"},
+	)
+	overlayBytes := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "voidrun_sbx_overlay_bytes",
+			Help: "Apparent size of the sandbox overlay image on the host",
 		},
 		[]string{"sbx_id", "sbx_name", "voidrun_host"},
 	)
@@ -351,6 +359,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		scrapeUp,
 		diskUsed,
 		diskLimit,
+		overlayBytes,
 		scrapeTime,
 		httpReqs,
 		httpDur,
@@ -397,6 +406,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		memUsedGauge:       memUsed,
 		diskUsedGauge:      diskUsed,
 		diskLimitGauge:     diskLimit,
+		overlayBytesGauge:  overlayBytes,
 		scrapeUpGauge:      scrapeUp,
 		scrapeTime:         scrapeTime,
 		httpReqsTotal:      httpReqs,
@@ -633,6 +643,7 @@ func (m *Manager) UnregisterSandbox(vmID string) {
 	m.memUsedGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.diskUsedGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.diskLimitGauge.DeleteLabelValues(labelID, labelName, labelHost)
+	m.overlayBytesGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.scrapeUpGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.scrapeTime.DeleteLabelValues(labelID, labelName, labelHost)
 	m.deleteDeviceMetrics(vmID, labelID, labelName, labelHost)
@@ -694,6 +705,7 @@ func (m *Manager) pollOnce(ctx context.Context) {
 					agentMem = true
 					m.memUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(float64(stats.MemUsedBytes))
 				}
+				m.applyAgentDisk(labelID, labelName, labelHost, stats)
 			}
 
 			stats, err := fetchCounters(ctx, socketPath)
@@ -729,7 +741,7 @@ func (m *Manager) pollOnce(ctx context.Context) {
 
 			if m.shouldScrapeDisk(vmID) {
 				if sizeBytes, err := overlaySizeBytes(socketPath); err == nil {
-					m.diskUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(float64(sizeBytes))
+					m.overlayBytesGauge.WithLabelValues(labelID, labelName, labelHost).Set(float64(sizeBytes))
 				}
 				m.markDiskScraped(vmID)
 			}
@@ -751,6 +763,15 @@ func normalizeCPUUsagePercent(usage float64) float64 {
 		return usage * 100
 	}
 	return usage
+}
+
+// applyAgentDisk sets guest filesystem used bytes when the agent reported no disk error.
+func (m *Manager) applyAgentDisk(labelID, labelName, labelHost string, stats *agentMetrics) bool {
+	if stats == nil || stats.DiskError != "" {
+		return false
+	}
+	m.diskUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(float64(stats.DiskUsedBytes))
+	return true
 }
 
 func (m *Manager) snapshotVMs() map[string]string {

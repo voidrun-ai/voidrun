@@ -201,18 +201,23 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	if mem == 0 {
 		mem = s.cfg.Sandbox.DefaultMemoryMB
 	}
-	diskMB := s.cfg.Sandbox.DefaultDiskMB
 	if req.Image == "" {
 		req.Image = s.cfg.Sandbox.DefaultImage
 	}
 
 	imageName := req.Image
-	if !strings.Contains(imageName, ":") {
-		img, err := s.imageRepo.GetLatestByNameForOrg(imageName, req.OrgID)
-		if err == nil && img != nil && img.Tag != "" {
+	img, imgErr := s.imageRepo.ResolveImage(ctx, req.OrgID, imageName)
+	if imgErr == nil && img != nil {
+		if img.Tag != "" {
 			imageName = fmt.Sprintf("%s:%s", img.Name, img.Tag)
 		}
+	} else if !strings.Contains(imageName, ":") {
+		if latest, err := s.imageRepo.GetLatestByNameForOrg(ctx, imageName, req.OrgID); err == nil && latest != nil && latest.Tag != "" {
+			img = latest
+			imageName = fmt.Sprintf("%s:%s", latest.Name, latest.Tag)
+		}
 	}
+	diskMB := diskMBForCreate(s.cfg.Sandbox.DefaultDiskMB, img)
 
 	spec := model.SandboxSpec{
 		ID:        instanceID,
@@ -351,6 +356,13 @@ func sandboxListFilter(orgID primitive.ObjectID, labels map[string]string) bson.
 		filter["labels."+key] = value
 	}
 	return filter
+}
+
+func diskMBForCreate(defaultDiskMB int, img *model.Image) int {
+	if img != nil && img.SizeGB > 0 {
+		return int(img.SizeGB) * 1024
+	}
+	return defaultDiskMB
 }
 
 func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, id string) (err error) {
@@ -605,7 +617,7 @@ func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.Obje
 
 	imageName := sandbox.Image
 	if !strings.Contains(imageName, ":") {
-		img, err := s.imageRepo.GetLatestByNameForOrg(imageName, orgID)
+		img, err := s.imageRepo.GetLatestByNameForOrg(ctx, imageName, orgID)
 		if err == nil && img != nil && img.Tag != "" {
 			imageName = fmt.Sprintf("%s:%s", img.Name, img.Tag)
 		}
