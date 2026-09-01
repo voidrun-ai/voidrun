@@ -41,36 +41,37 @@ type Manager struct {
 	statusByID     map[string]string
 	once           sync.Once
 
-	registry           *prometheus.Registry
-	cpuUsageGauge      *prometheus.GaugeVec
-	memUsedGauge       *prometheus.GaugeVec
-	diskUsedGauge      *prometheus.GaugeVec
-	diskLimitGauge     *prometheus.GaugeVec
-	overlayBytesGauge  *prometheus.GaugeVec
-	scrapeUpGauge      *prometheus.GaugeVec
-	scrapeTime         *prometheus.HistogramVec
-	httpReqsTotal      *prometheus.CounterVec
-	httpReqDur         *prometheus.HistogramVec
-	sbxOperationReqs   *prometheus.CounterVec
-	sbxOperationDur    *prometheus.HistogramVec
-	sbxStatusGauge     *prometheus.GaugeVec
-	diskReadBytes      *prometheus.GaugeVec
-	diskWriteBytes     *prometheus.GaugeVec
-	diskReadOps        *prometheus.GaugeVec
-	diskWriteOps       *prometheus.GaugeVec
-	diskReadLatMin     *prometheus.GaugeVec
-	diskReadLatMax     *prometheus.GaugeVec
-	diskReadLatAvg     *prometheus.GaugeVec
-	diskWriteLatMin    *prometheus.GaugeVec
-	diskWriteLatMax    *prometheus.GaugeVec
-	diskWriteLatAvg    *prometheus.GaugeVec
-	netRxBytes         *prometheus.GaugeVec
-	netTxBytes         *prometheus.GaugeVec
-	netRxFrames        *prometheus.GaugeVec
-	netTxFrames        *prometheus.GaugeVec
-	hostAllocVcpu      *prometheus.GaugeVec
-	hostAllocMemBytes  *prometheus.GaugeVec
-	hostAllocDiskBytes *prometheus.GaugeVec
+	registry            *prometheus.Registry
+	cpuUsageGauge       *prometheus.GaugeVec
+	memUsedGauge        *prometheus.GaugeVec
+	memUsedNoCacheGauge *prometheus.GaugeVec
+	diskUsedGauge       *prometheus.GaugeVec
+	diskLimitGauge      *prometheus.GaugeVec
+	overlayBytesGauge   *prometheus.GaugeVec
+	scrapeUpGauge       *prometheus.GaugeVec
+	scrapeTime          *prometheus.HistogramVec
+	httpReqsTotal       *prometheus.CounterVec
+	httpReqDur          *prometheus.HistogramVec
+	sbxOperationReqs    *prometheus.CounterVec
+	sbxOperationDur     *prometheus.HistogramVec
+	sbxStatusGauge      *prometheus.GaugeVec
+	diskReadBytes       *prometheus.GaugeVec
+	diskWriteBytes      *prometheus.GaugeVec
+	diskReadOps         *prometheus.GaugeVec
+	diskWriteOps        *prometheus.GaugeVec
+	diskReadLatMin      *prometheus.GaugeVec
+	diskReadLatMax      *prometheus.GaugeVec
+	diskReadLatAvg      *prometheus.GaugeVec
+	diskWriteLatMin     *prometheus.GaugeVec
+	diskWriteLatMax     *prometheus.GaugeVec
+	diskWriteLatAvg     *prometheus.GaugeVec
+	netRxBytes          *prometheus.GaugeVec
+	netTxBytes          *prometheus.GaugeVec
+	netRxFrames         *prometheus.GaugeVec
+	netTxFrames         *prometheus.GaugeVec
+	hostAllocVcpu       *prometheus.GaugeVec
+	hostAllocMemBytes   *prometheus.GaugeVec
+	hostAllocDiskBytes  *prometheus.GaugeVec
 }
 
 type allocSpec struct {
@@ -91,16 +92,17 @@ type usageField struct {
 }
 
 type agentMetrics struct {
-	CPUUsagePercent   float64 `json:"cpuUsagePercent"`
-	MemTotalBytes     uint64  `json:"memTotalBytes"`
-	MemAvailableBytes uint64  `json:"memAvailableBytes"`
-	MemUsedBytes      uint64  `json:"memUsedBytes"`
-	DiskTotalBytes    uint64  `json:"diskTotalBytes"`
-	DiskFreeBytes     uint64  `json:"diskFreeBytes"`
-	DiskUsedBytes     uint64  `json:"diskUsedBytes"`
-	CPUError          string  `json:"cpuError"`
-	MemError          string  `json:"memError"`
-	DiskError         string  `json:"diskError"`
+	CPUUsagePercent     float64 `json:"cpuUsagePercent"`
+	MemTotalBytes       uint64  `json:"memTotalBytes"`
+	MemAvailableBytes   uint64  `json:"memAvailableBytes"`
+	MemUsedBytes        uint64  `json:"memUsedBytes"`
+	MemUsedNoCacheBytes *uint64 `json:"memUsedNoCacheBytes"`
+	DiskTotalBytes      uint64  `json:"diskTotalBytes"`
+	DiskFreeBytes       uint64  `json:"diskFreeBytes"`
+	DiskUsedBytes       uint64  `json:"diskUsedBytes"`
+	CPUError            string  `json:"cpuError"`
+	MemError            string  `json:"memError"`
+	DiskError           string  `json:"diskError"`
 }
 
 type diskCounters struct {
@@ -153,7 +155,14 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 	memUsed := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "voidrun_sbx_mem_used_bytes",
-			Help: "Sandbox memory usage from guest agent",
+			Help: "Sandbox memory not available to apps (MemTotal - MemAvailable) from guest agent",
+		},
+		[]string{"sbx_id", "sbx_name", "voidrun_host"},
+	)
+	memUsedNoCache := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "voidrun_sbx_mem_used_no_cache_bytes",
+			Help: "Sandbox application memory excluding reclaimable cache (htop Mem used) from guest agent",
 		},
 		[]string{"sbx_id", "sbx_name", "voidrun_host"},
 	)
@@ -356,6 +365,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 	registry.MustRegister(
 		cpuUsage,
 		memUsed,
+		memUsedNoCache,
 		scrapeUp,
 		diskUsed,
 		diskLimit,
@@ -390,47 +400,48 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 	)
 
 	return &Manager{
-		interval:           interval,
-		diskInterval:       diskInterval,
-		concurrency:        concurrency,
-		host:               hostname,
-		vms:                map[string]string{},
-		sbxNames:           map[string]string{},
-		lastDisk:           map[string]time.Time{},
-		alloc:              map[string]allocSpec{},
-		diskDevs:           map[string]map[string]struct{}{},
-		netDevs:            map[string]map[string]struct{}{},
-		statusByID:         map[string]string{},
-		registry:           registry,
-		cpuUsageGauge:      cpuUsage,
-		memUsedGauge:       memUsed,
-		diskUsedGauge:      diskUsed,
-		diskLimitGauge:     diskLimit,
-		overlayBytesGauge:  overlayBytes,
-		scrapeUpGauge:      scrapeUp,
-		scrapeTime:         scrapeTime,
-		httpReqsTotal:      httpReqs,
-		httpReqDur:         httpDur,
-		sbxOperationReqs:   sbxOperationReqs,
-		sbxOperationDur:    sbxOperationDur,
-		sbxStatusGauge:     sbxStatus,
-		diskReadBytes:      diskReadBytes,
-		diskWriteBytes:     diskWriteBytes,
-		diskReadOps:        diskReadOps,
-		diskWriteOps:       diskWriteOps,
-		diskReadLatMin:     diskReadLatMin,
-		diskReadLatMax:     diskReadLatMax,
-		diskReadLatAvg:     diskReadLatAvg,
-		diskWriteLatMin:    diskWriteLatMin,
-		diskWriteLatMax:    diskWriteLatMax,
-		diskWriteLatAvg:    diskWriteLatAvg,
-		netRxBytes:         netRxBytes,
-		netTxBytes:         netTxBytes,
-		netRxFrames:        netRxFrames,
-		netTxFrames:        netTxFrames,
-		hostAllocVcpu:      hostAllocVcpu,
-		hostAllocMemBytes:  hostAllocMemBytes,
-		hostAllocDiskBytes: hostAllocDiskBytes,
+		interval:            interval,
+		diskInterval:        diskInterval,
+		concurrency:         concurrency,
+		host:                hostname,
+		vms:                 map[string]string{},
+		sbxNames:            map[string]string{},
+		lastDisk:            map[string]time.Time{},
+		alloc:               map[string]allocSpec{},
+		diskDevs:            map[string]map[string]struct{}{},
+		netDevs:             map[string]map[string]struct{}{},
+		statusByID:          map[string]string{},
+		registry:            registry,
+		cpuUsageGauge:       cpuUsage,
+		memUsedGauge:        memUsed,
+		memUsedNoCacheGauge: memUsedNoCache,
+		diskUsedGauge:       diskUsed,
+		diskLimitGauge:      diskLimit,
+		overlayBytesGauge:   overlayBytes,
+		scrapeUpGauge:       scrapeUp,
+		scrapeTime:          scrapeTime,
+		httpReqsTotal:       httpReqs,
+		httpReqDur:          httpDur,
+		sbxOperationReqs:    sbxOperationReqs,
+		sbxOperationDur:     sbxOperationDur,
+		sbxStatusGauge:      sbxStatus,
+		diskReadBytes:       diskReadBytes,
+		diskWriteBytes:      diskWriteBytes,
+		diskReadOps:         diskReadOps,
+		diskWriteOps:        diskWriteOps,
+		diskReadLatMin:      diskReadLatMin,
+		diskReadLatMax:      diskReadLatMax,
+		diskReadLatAvg:      diskReadLatAvg,
+		diskWriteLatMin:     diskWriteLatMin,
+		diskWriteLatMax:     diskWriteLatMax,
+		diskWriteLatAvg:     diskWriteLatAvg,
+		netRxBytes:          netRxBytes,
+		netTxBytes:          netTxBytes,
+		netRxFrames:         netRxFrames,
+		netTxFrames:         netTxFrames,
+		hostAllocVcpu:       hostAllocVcpu,
+		hostAllocMemBytes:   hostAllocMemBytes,
+		hostAllocDiskBytes:  hostAllocDiskBytes,
 	}
 }
 
@@ -641,6 +652,7 @@ func (m *Manager) UnregisterSandbox(vmID string) {
 
 	m.cpuUsageGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.memUsedGauge.DeleteLabelValues(labelID, labelName, labelHost)
+	m.memUsedNoCacheGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.diskUsedGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.diskLimitGauge.DeleteLabelValues(labelID, labelName, labelHost)
 	m.overlayBytesGauge.DeleteLabelValues(labelID, labelName, labelHost)
@@ -704,6 +716,9 @@ func (m *Manager) pollOnce(ctx context.Context) {
 				if stats.MemError == "" {
 					agentMem = true
 					m.memUsedGauge.WithLabelValues(labelID, labelName, labelHost).Set(float64(stats.MemUsedBytes))
+					if stats.MemUsedNoCacheBytes != nil {
+						m.memUsedNoCacheGauge.WithLabelValues(labelID, labelName, labelHost).Set(float64(*stats.MemUsedNoCacheBytes))
+					}
 				}
 				m.applyAgentDisk(labelID, labelName, labelHost, stats)
 			}

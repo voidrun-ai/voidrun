@@ -114,6 +114,35 @@ func TestApplyAgentDiskSkipsOnError(t *testing.T) {
 	}
 }
 
+func TestApplyAgentMemSetsNoCacheGauge(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	noCache := uint64(169980 * 1024)
+	m.memUsedGauge.WithLabelValues("sbx-1", "demo", m.host).Set(float64(309712 * 1024))
+	m.memUsedNoCacheGauge.WithLabelValues("sbx-1", "demo", m.host).Set(float64(noCache))
+
+	body := scrapeMetrics(t, m)
+	used := `voidrun_sbx_mem_used_bytes{sbx_id="sbx-1",sbx_name="demo",voidrun_host="` + m.host + `"} 3.17145088e+08`
+	nocache := `voidrun_sbx_mem_used_no_cache_bytes{sbx_id="sbx-1",sbx_name="demo",voidrun_host="` + m.host + `"} 1.7405952e+08`
+	if !strings.Contains(body, used) {
+		t.Fatalf("missing used gauge %q\n%s", used, body)
+	}
+	if !strings.Contains(body, nocache) {
+		t.Fatalf("missing no-cache gauge %q\n%s", nocache, body)
+	}
+}
+
+func TestUnregisterSandboxRemovesNoCacheMem(t *testing.T) {
+	m := NewManager(config.MetricsConfig{IntervalSec: 10})
+	m.RegisterSandbox("sbx-1", "demo", "/tmp/sock", 1, 512, 1024)
+	m.memUsedNoCacheGauge.WithLabelValues("sbx-1", "demo", m.host).Set(42)
+	m.UnregisterSandbox("sbx-1")
+
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, "voidrun_sbx_mem_used_no_cache_bytes") && strings.Contains(body, `sbx_id="sbx-1"`) {
+		t.Fatal("expected no-cache mem series removed after unregister")
+	}
+}
+
 func TestOverlayBytesGaugeIsSeparateFromDiskUsed(t *testing.T) {
 	m := NewManager(config.MetricsConfig{IntervalSec: 10})
 	m.diskUsedGauge.WithLabelValues("sbx-1", "demo", m.host).Set(42)
