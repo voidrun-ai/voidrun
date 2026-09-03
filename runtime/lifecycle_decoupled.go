@@ -58,14 +58,14 @@ func buildDecoupledMemoryCLIArgs(cfg config.Config, spec model.SandboxSpec, ramP
 }
 
 // createDecoupled is Create with file-backed guest RAM.
-func createDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+func createDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*os.Process, error) {
 	defer util.Track("Sandbox Start Decoupled (Total)")()
 
 	overlayPath, _ = filepath.Abs(overlayPath)
 
 	ramSize := int64(spec.MemoryMB) * 1024 * 1024
 	if err := EnsureRAMFile(spec.ID, ramSize); err != nil {
-		return fmt.Errorf("decoupled: %w", err)
+		return nil, fmt.Errorf("decoupled: %w", err)
 	}
 	ramPath := GetRAMFilePath(spec.ID)
 
@@ -90,24 +90,17 @@ func createDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath stri
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	if err := cmd.Start(); err != nil {
+	proc, err := startCLH(cmd, pidPath)
+	if err != nil {
 		_ = RemoveRAMFile(spec.ID)
-		return fmt.Errorf("decoupled: process start failed: %v", err)
+		return nil, fmt.Errorf("decoupled: %w", err)
 	}
-
-	pid := cmd.Process.Pid
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
-		cmd.Process.Kill()
-		_ = RemoveRAMFile(spec.ID)
-		return err
-	}
-	cmd.Process.Release()
 
 	apiClient := NewAPIClient(socketPath)
 	if err := apiClient.WaitForSocket(2 * time.Second); err != nil {
 		logs, _ := os.ReadFile(logPath)
-		Stop(spec.ID)
-		return fmt.Errorf("decoupled: VM crashed on start. Logs:\n%s", string(logs))
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("decoupled: VM crashed on start. Logs:\n%s", string(logs))
 	}
 
 	if err := EnsureTapBridge(spec.NetNSName, spec.TapName); err != nil {
@@ -160,16 +153,16 @@ func createDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath stri
 	defer cancel()
 
 	if err := clhClient.VmCreate(ctx, &vmCfg); err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("decoupled vm.create failed: %w", err)
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("decoupled vm.create failed: %w", err)
 	}
 	if err := clhClient.VmBoot(ctx); err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("decoupled vm.boot failed: %w", err)
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("decoupled vm.boot failed: %w", err)
 	}
 
-	fmt.Printf("   [+] Decoupled VM Active! PID: %d, NetNS: %s, RAM: %s\n", pid, spec.NetNSName, ramPath)
-	return nil
+	fmt.Printf("   [+] Decoupled VM Active! PID: %d, NetNS: %s, RAM: %s\n", proc.Pid, spec.NetNSName, ramPath)
+	return proc, nil
 }
 
 // buildCLIArgsDecoupled is BuildCLIArgs with file-backed memory and RAM landlock rule.
@@ -287,14 +280,14 @@ func buildDecoupledLandlockRules(cfg config.Config, spec model.SandboxSpec, over
 }
 
 // createCLIDecoupled is CreateCLI with file-backed guest RAM.
-func createCLIDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+func createCLIDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*os.Process, error) {
 	defer util.Track("Sandbox Start Decoupled (Total CLI)")()
 
 	overlayPath, _ = filepath.Abs(overlayPath)
 
 	ramSize := int64(spec.MemoryMB) * 1024 * 1024
 	if err := EnsureRAMFile(spec.ID, ramSize); err != nil {
-		return fmt.Errorf("decoupled: %w", err)
+		return nil, fmt.Errorf("decoupled: %w", err)
 	}
 
 	socketPath := GetSocketPath(spec.ID)
@@ -314,32 +307,25 @@ func createCLIDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath s
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	if err := cmd.Start(); err != nil {
+	proc, err := startCLH(cmd, pidPath)
+	if err != nil {
 		_ = RemoveRAMFile(spec.ID)
-		return fmt.Errorf("decoupled: process start failed: %v", err)
+		return nil, fmt.Errorf("decoupled: %w", err)
 	}
-
-	pid := cmd.Process.Pid
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
-		cmd.Process.Kill()
-		_ = RemoveRAMFile(spec.ID)
-		return err
-	}
-	cmd.Process.Release()
 
 	apiClient := NewAPIClient(socketPath)
 	if err := apiClient.WaitForSocket(2 * time.Second); err != nil {
 		logs, _ := os.ReadFile(logPath)
-		Stop(spec.ID)
-		return fmt.Errorf("decoupled: VM crashed on start. Logs:\n%s", string(logs))
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("decoupled: VM crashed on start. Logs:\n%s", string(logs))
 	}
 
 	if err := EnsureTapBridge(spec.NetNSName, spec.TapName); err != nil {
 		log.Printf("[WARN] decoupled EnsureTapBridge failed: %v", err)
 	}
 
-	fmt.Printf("   [+] Decoupled VM Active! PID: %d, NetNS: %s\n", pid, spec.NetNSName)
-	return nil
+	fmt.Printf("   [+] Decoupled VM Active! PID: %d, NetNS: %s\n", proc.Pid, spec.NetNSName)
+	return proc, nil
 }
 
 // snapshotDecoupled: pause → metadata VmSnapshot → shutdown → sparse-move RAM to snapshot dir.
@@ -429,11 +415,11 @@ func snapHasMemoryDump(snapshotDir string) bool {
 }
 
 // restoreDecoupled restores parked RAM in parallel with empty-VMM spawn, then VmRestore (OnDemand).
-func restoreDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir string) error {
+func restoreDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir string) (*os.Process, error) {
 	defer util.Track("lifecycle: Sandbox Restore Decoupled")()
 
 	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
-		return fmt.Errorf("decoupled: ensure netns: %w", err)
+		return nil, fmt.Errorf("decoupled: ensure netns: %w", err)
 	}
 
 	overlayPath, _ = filepath.Abs(overlayPath)
@@ -476,30 +462,19 @@ func restoreDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath, sn
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	spawnStart := time.Now()
-	spawnErr := cmd.Start()
-	var pid int
-	if spawnErr == nil {
-		pid = cmd.Process.Pid
-		if wrErr := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); wrErr != nil {
-			cmd.Process.Kill()
-			spawnErr = wrErr
-		} else {
-			cmd.Process.Release()
-		}
-	}
-
+	proc, spawnErr := startCLH(cmd, pidPath)
 	if spawnErr != nil {
 		<-ramErrCh
 		_ = RemoveRAMFile(spec.ID)
-		return fmt.Errorf("decoupled: process start failed during restore: %v", spawnErr)
+		return nil, fmt.Errorf("decoupled: process start failed during restore: %v", spawnErr)
 	}
 
 	apiClient := NewAPIClient(socketPath)
 	if err := apiClient.WaitForSocket(2 * time.Second); err != nil {
 		<-ramErrCh
 		logs, _ := os.ReadFile(logPath)
-		Stop(spec.ID)
-		return fmt.Errorf("decoupled: CLH crashed before API socket appeared. Logs:\n%s", string(logs))
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("decoupled: CLH crashed before API socket appeared. Logs:\n%s", string(logs))
 	}
 	spawnDur := time.Since(spawnStart)
 
@@ -509,8 +484,8 @@ func restoreDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath, sn
 
 	joinStart := time.Now()
 	if err := <-ramErrCh; err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("decoupled: %w", err)
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("decoupled: %w", err)
 	}
 	ramDur := <-ramDoneCh
 	joinWait := time.Since(joinStart)
@@ -533,21 +508,21 @@ func restoreDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath, sn
 		Resume:            true,
 		MemoryRestoreMode: decoupledRestoreMode,
 	}); err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("decoupled vm.restore failed: %w", err)
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("decoupled vm.restore failed: %w", err)
 	}
 	log.Printf("[RestoreDecoupled/phase] %s vmRestoreAPI=%v", spec.ID, time.Since(vmRestoreStart))
 
-	fmt.Printf("   [+] Decoupled VM %s Restored! PID: %d\n", spec.ID, pid)
-	return nil
+	fmt.Printf("   [+] Decoupled VM %s Restored! PID: %d\n", spec.ID, proc.Pid)
+	return proc, nil
 }
 
 // bootFromDiskDecoupled is BootFromDisk with file-backed guest RAM.
-func bootFromDiskDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+func bootFromDiskDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*os.Process, error) {
 	defer util.Track("lifecycle: BootFromDisk Decoupled")()
 
 	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
-		return fmt.Errorf("decoupled: ensure netns: %w", err)
+		return nil, fmt.Errorf("decoupled: ensure netns: %w", err)
 	}
 
 	os.Remove(GetSocketPath(spec.ID))

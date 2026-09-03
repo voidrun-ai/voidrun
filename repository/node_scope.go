@@ -45,6 +45,19 @@ func staleSnapshottedFilter(nodeID string, threshold time.Time) bson.M {
 	return filter
 }
 
+// allocatedIPFilter selects IPs this node must not reissue. Empty nodeID
+// keeps the historical cluster-wide scan (single-host / tests).
+func allocatedIPFilter(nodeID string) bson.M {
+	filter := bson.M{
+		"ip":     bson.M{"$ne": ""},
+		"status": bson.M{"$nin": []string{"deleted", "killed"}},
+	}
+	if nodeID != "" {
+		filter["nodeId"] = nodeID
+	}
+	return filter
+}
+
 func (r *SandboxRepository) FindForHealth(ctx context.Context, nodeID string, opts options.FindOptions) ([]*model.Sandbox, error) {
 	if nodeID == "" {
 		return nil, nil

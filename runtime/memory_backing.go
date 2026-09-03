@@ -171,17 +171,19 @@ func ensureTmpfsMount(dir string, sizeBytes int64) error {
 	if mounted {
 		return nil
 	}
-	optsWithNoswap := fmt.Sprintf("size=%d,mode=0700,noswap", sizeBytes)
-	cmd := exec.Command("mount", "-t", "tmpfs", "-o", optsWithNoswap, "voidrun-ram", dir)
+	opts := tmpfsMountOpts(sizeBytes, MemoryAllowSwap)
+	if MemoryAllowSwap {
+		log.Printf("[memory] mounting %s without noswap (SANDBOX_RAM_ALLOW_SWAP)", dir)
+	}
+	cmd := exec.Command("mount", "-t", "tmpfs", "-o", opts, "voidrun-ram", dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// noswap needs Linux ≥6.4; mount without it on older kernels.
 		outStr := string(out)
-		if strings.Contains(outStr, "unrecognized") ||
+		if !MemoryAllowSwap && (strings.Contains(outStr, "unrecognized") ||
 			strings.Contains(outStr, "bad option") ||
-			strings.Contains(outStr, "unknown option") {
+			strings.Contains(outStr, "unknown option")) {
 			log.Printf("[WARN] tmpfs mount rejected `noswap` on %s (kernel <6.4?); mounting WITHOUT noswap — guest RAM may reach host swap. mount stderr: %s", dir, outStr)
-			opts := fmt.Sprintf("size=%d,mode=0700", sizeBytes)
-			cmd = exec.Command("mount", "-t", "tmpfs", "-o", opts, "voidrun-ram", dir)
+			cmd = exec.Command("mount", "-t", "tmpfs", "-o", tmpfsMountOpts(sizeBytes, true), "voidrun-ram", dir)
 			if out2, err2 := cmd.CombinedOutput(); err2 != nil {
 				return fmt.Errorf("mount tmpfs %s: %v: %s", dir, err2, string(out2))
 			}
@@ -190,6 +192,14 @@ func ensureTmpfsMount(dir string, sizeBytes int64) error {
 		return fmt.Errorf("mount tmpfs %s: %v: %s", dir, err, outStr)
 	}
 	return nil
+}
+
+func tmpfsMountOpts(sizeBytes int64, allowSwap bool) string {
+	opts := fmt.Sprintf("size=%d,mode=0700", sizeBytes)
+	if !allowSwap {
+		opts += ",noswap"
+	}
+	return opts
 }
 
 // umountTmpfs unmounts dir, falling back to lazy unmount on EBUSY.

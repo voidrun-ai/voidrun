@@ -33,7 +33,7 @@ type ISandboxRepository interface {
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 	FindForHealth(ctx context.Context, nodeID string, opts options.FindOptions) ([]*model.Sandbox, error)
 	UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error
-	UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) error
+	UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) (bool, error)
 	NextAvailableIP() (string, error)
 	// Lifecycle management methods
 	TouchActivity(ctx context.Context, id primitive.ObjectID) error
@@ -70,7 +70,7 @@ func NewSandboxRepository(cfg *config.Config, db *mongo.Database) *SandboxReposi
 
 // Init initializes the repository by loading all allocated IPs from the database
 func (r *SandboxRepository) Init(ctx context.Context) error {
-	// Compound indexes turn the auto-lifecycle sweeps into index range scans.
+	// Compound indexes for node-scoped sweeps, org list/count, and legacy cluster-wide lifecycle scans.
 	indexes := []mongo.IndexModel{
 		{Keys: bson.D{{Key: "orgId", Value: 1}}, Options: options.Index().SetUnique(false)},
 		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "lastActivityAt", Value: 1}}, Options: options.Index().SetUnique(false)},
@@ -78,6 +78,22 @@ func (r *SandboxRepository) Init(ctx context.Context) error {
 		{
 			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "labels.$**", Value: 1}},
 			Options: options.Index().SetName("orgId_1_labels_wildcard").SetUnique(false),
+		},
+		{
+			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "status", Value: 1}, {Key: "_id", Value: -1}},
+			Options: options.Index().SetName("orgId_1_status_1__id_-1").SetUnique(false),
+		},
+		{
+			Keys:    bson.D{{Key: "nodeId", Value: 1}, {Key: "status", Value: 1}},
+			Options: options.Index().SetName("nodeId_1_status_1").SetUnique(false),
+		},
+		{
+			Keys:    bson.D{{Key: "nodeId", Value: 1}, {Key: "status", Value: 1}, {Key: "lastActivityAt", Value: 1}},
+			Options: options.Index().SetName("nodeId_1_status_1_lastActivityAt_1").SetUnique(false),
+		},
+		{
+			Keys:    bson.D{{Key: "nodeId", Value: 1}, {Key: "status", Value: 1}, {Key: "snapshottedAt", Value: 1}},
+			Options: options.Index().SetName("nodeId_1_status_1_snapshottedAt_1").SetUnique(false),
 		},
 	}
 	if _, err := r.collection.Indexes().CreateMany(ctx, indexes); err != nil {
@@ -87,7 +103,11 @@ func (r *SandboxRepository) Init(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	cur, err := r.collection.Find(ctx, bson.M{"ip": bson.M{"$ne": ""}, "status": bson.M{"$nin": []string{"deleted", "killed"}}}, &options.FindOptions{
+	nodeID := ""
+	if r.cfg != nil {
+		nodeID = r.cfg.HostID
+	}
+	cur, err := r.collection.Find(ctx, allocatedIPFilter(nodeID), &options.FindOptions{
 		Projection: bson.M{"ip": 1},
 	})
 	if err != nil {
@@ -219,6 +239,8 @@ func (r *SandboxRepository) DeleteByIDAndOrg(ctx context.Context, id, orgID prim
 	return res.DeletedCount > 0, nil
 }
 
+// UpdateStatusForHealth transitions a "running" row to a new status.
+// CAS-guarded so concurrent lifecycle ops are not overwritten.
 func (r *SandboxRepository) UpdateStatusForHealth(ctx context.Context, id primitive.ObjectID, status string) error {
 	_, err := r.collection.UpdateOne(
 		ctx,
@@ -233,8 +255,8 @@ func (r *SandboxRepository) UpdateStatusForHealth(ctx context.Context, id primit
 
 // UpdateStatusFrom transitions a row from one status to another.
 // CAS-guarded on from; returns nil when the row was already in a different state (concurrent transition).
-func (r *SandboxRepository) UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) error {
-	_, err := r.collection.UpdateOne(
+func (r *SandboxRepository) UpdateStatusFrom(ctx context.Context, id primitive.ObjectID, from, to string) (bool, error) {
+	res, err := r.collection.UpdateOne(
 		ctx,
 		bson.M{"_id": id, "status": from},
 		bson.M{"$set": bson.M{
@@ -242,7 +264,10 @@ func (r *SandboxRepository) UpdateStatusFrom(ctx context.Context, id primitive.O
 			"updatedAt": time.Now(),
 		}},
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
 }
 
 func (r *SandboxRepository) UpdateStatusByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, status string) (bool, error) {

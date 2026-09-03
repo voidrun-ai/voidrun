@@ -235,7 +235,7 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 	sbxStatus := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "voidrun_sbx_status",
-			Help: "Sandbox lifecycle status as a numbered gauge (1=running, 2=snapshotted/sleeping, 3=paused, 4=killed, 5=error, 0=deleted); status label carries the DB value",
+			Help: "Sandbox lifecycle status as a numbered gauge (1=running, 2=snapshotted/sleeping, 3=paused, 4=killed, 5=error, 6=booting, 0=deleted); status label carries the DB value",
 		},
 		[]string{"sbx_id", "sbx_name", "status", "voidrun_host"},
 	)
@@ -581,6 +581,8 @@ func sandboxStatusValue(status string) float64 {
 		return 0
 	case "running":
 		return 1
+	case "booting":
+		return 6
 	case "snapshotted":
 		return 2
 	case "paused":

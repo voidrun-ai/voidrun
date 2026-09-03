@@ -3,7 +3,9 @@ package service
 import (
 	"reflect"
 	"testing"
+	"time"
 
+	"voidrun/config"
 	"voidrun/model"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -53,5 +55,19 @@ func TestDiskMBForCreateDocker20G(t *testing.T) {
 	got := diskMBForCreate(10240, &model.Image{SizeGB: 20})
 	if got != 20480 {
 		t.Fatalf("got %d, want 20480", got)
+	}
+}
+
+func TestSandboxSyncTimeout(t *testing.T) {
+	t.Parallel()
+	want := time.Duration(config.DefaultSandboxSyncTimeoutSec) * time.Second
+	if got := sandboxSyncTimeout(0); got != want {
+		t.Fatalf("zero: got %s, want %s", got, want)
+	}
+	if got := sandboxSyncTimeout(-1); got != want {
+		t.Fatalf("negative: got %s, want %s", got, want)
+	}
+	if got := sandboxSyncTimeout(15); got != 15*time.Second {
+		t.Fatalf("explicit: got %s, want 15s", got)
 	}
 }

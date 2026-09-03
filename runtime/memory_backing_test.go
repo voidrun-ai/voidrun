@@ -257,3 +257,14 @@ func TestSparseCopyPreservesHoles(t *testing.T) {
 		t.Fatalf("content mismatch after copy")
 	}
 }
+
+func TestTmpfsMountOpts(t *testing.T) {
+	got := tmpfsMountOpts(1<<30, false)
+	if got != "size=1073741824,mode=0700,noswap" {
+		t.Fatalf("default opts = %q", got)
+	}
+	got = tmpfsMountOpts(1<<30, true)
+	if got != "size=1073741824,mode=0700" {
+		t.Fatalf("allow-swap opts = %q", got)
+	}
+}

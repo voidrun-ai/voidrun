@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -89,6 +90,12 @@ func (h *SandboxHandler) Create(c *gin.Context) error {
 
 	spec, err := h.sandboxService.Create(c.Request.Context(), req)
 	if err != nil {
+		if d := admissionDenied(err); d != nil {
+			return d
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return util.ErrGatewayTimeout("Sandbox create timed out", err)
+		}
 		if err.Error() == "Sandbox ID already exists in DB" {
 			return util.ErrConflict("Sandbox ID already exists")
 		}
@@ -159,6 +166,9 @@ func (h *SandboxHandler) Restore(c *gin.Context) error {
 	}
 
 	if err := h.sandboxService.Restore(c.Request.Context(), orgID, id); err != nil {
+		if d := admissionDenied(err); d != nil {
+			return d
+		}
 		return util.ErrInternal("Restore failed", err)
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox restored", nil))
@@ -206,6 +216,9 @@ func (h *SandboxHandler) Start(c *gin.Context) error {
 	}
 
 	if err := h.sandboxService.Start(c.Request.Context(), orgID, id); err != nil {
+		if d := admissionDenied(err); d != nil {
+			return d
+		}
 		return util.ErrInternal("Start failed", err)
 	}
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox started", nil))

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,13 @@ func (h *Handlers) ensureRunning(ctx context.Context, orgID primitive.ObjectID, 
 	}
 	go h.SandboxService.TouchActivity(ctx, sandboxID)
 	return nil
+}
+
+func toolWakeErr(err error) *mcp.CallToolResult {
+	if errors.Is(err, service.ErrAdmissionDenied) {
+		return mcp.NewToolResultError("scheduler unavailable")
+	}
+	return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error()))
 }
 
 // readAgentJSON reads and returns the JSON body from an agent *http.Response.
@@ -296,6 +304,9 @@ func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequ
 
 	sandbox, err := h.SandboxService.Create(ctx, createReq)
 	if err != nil {
+		if errors.Is(err, service.ErrAdmissionDenied) {
+			return mcp.NewToolResultError("scheduler unavailable"), nil
+		}
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to create sandbox: %s", err.Error())), nil
 	}
 
@@ -399,7 +410,7 @@ func (h *Handlers) HandleExecuteCommand(ctx context.Context, req mcp.CallToolReq
 	cwd := optionalString(req, "cwd", "")
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	resp, err := h.ExecService.ExecSync(ctx, id, command, timeout, nil, cwd)
@@ -435,7 +446,7 @@ func (h *Handlers) HandleReadFile(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	resp, err := h.FSService.DownloadFile(ctx, id, path)
@@ -474,7 +485,7 @@ func (h *Handlers) HandleWriteFile(ctx context.Context, req mcp.CallToolRequest)
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	body := strings.NewReader(content)
@@ -508,7 +519,7 @@ func (h *Handlers) HandleListFiles(ctx context.Context, req mcp.CallToolRequest)
 	path := optionalString(req, "path", "/root")
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	resp, err := h.FSService.ListFiles(ctx, id, path)
@@ -542,7 +553,7 @@ func (h *Handlers) HandleCreateDirectory(ctx context.Context, req mcp.CallToolRe
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	resp, err := h.FSService.CreateDirectory(ctx, id, path)
@@ -576,7 +587,7 @@ func (h *Handlers) HandleDeleteFile(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	resp, err := h.FSService.DeleteFile(ctx, id, path)
@@ -615,7 +626,7 @@ func (h *Handlers) HandleMoveFile(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	resp, err := h.FSService.MoveFile(ctx, id, from, to)
@@ -649,7 +660,7 @@ func (h *Handlers) HandleFileInfo(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	resp, err := h.FSService.StatFile(ctx, id, path)
@@ -685,7 +696,7 @@ func (h *Handlers) HandleSearchFiles(ctx context.Context, req mcp.CallToolReques
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	resp, err := h.FSService.SearchFiles(ctx, id, path, pattern)
@@ -723,7 +734,7 @@ func (h *Handlers) HandleRunBackgroundCommand(ctx context.Context, req mcp.CallT
 	cwd := optionalString(req, "cwd", "")
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	runResp, err := h.CommandsService.Run(id, model.CommandRunRequest{
@@ -750,7 +761,7 @@ func (h *Handlers) HandleListProcesses(ctx context.Context, req mcp.CallToolRequ
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	listResp, err := h.CommandsService.List(id)
@@ -779,7 +790,7 @@ func (h *Handlers) HandleKillProcess(ctx context.Context, req mcp.CallToolReques
 	}
 
 	if err := h.ensureRunning(ctx, orgID, id); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error())), nil
+		return toolWakeErr(err), nil
 	}
 
 	killResp, err := h.CommandsService.Kill(id, pid)

@@ -44,12 +44,16 @@ var DecoupledSnapshotEnabled bool
 // MemoryBackingModeName is the host RAM file backend when decoupled snapshot is on.
 var MemoryBackingModeName string
 
+// MemoryAllowSwap omits tmpfs `noswap` so guest RAM can use host swap.
+var MemoryAllowSwap bool
+
 // SetDecoupledSnapshot initializes runtime globals from config at server boot.
-func SetDecoupledSnapshot(enabled bool, mode string) {
+func SetDecoupledSnapshot(enabled bool, mode string, allowSwap bool) {
 	DecoupledSnapshotEnabled = enabled
 	if mode != "" {
 		MemoryBackingModeName = mode
 	}
+	MemoryAllowSwap = allowSwap
 }
 
 // APIClient handles communication with Cloud Hypervisor API

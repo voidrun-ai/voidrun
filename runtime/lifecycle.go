@@ -21,6 +21,30 @@ import (
 
 const defaultNetDeviceID = "net0"
 
+// startCLH starts cmd, writes pidfile, and returns the process handle. Caller
+// must Wait (or attach to an actor) on success. Does not Release.
+func startCLH(cmd *exec.Cmd, pidPath string) (*os.Process, error) {
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("process start failed: %v", err)
+	}
+	proc := cmd.Process
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(proc.Pid)), 0644); err != nil {
+		_ = proc.Kill()
+		_, _ = proc.Wait()
+		return nil, err
+	}
+	return proc, nil
+}
+
+func stopAndReap(id string, proc *os.Process) {
+	_ = Stop(id)
+	if proc == nil {
+		return
+	}
+	_ = proc.Kill()
+	_, _ = proc.Wait()
+}
+
 func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {
 	// Generate MAC based on IP
 	macAddr := GenerateMAC(spec.IPAddress)
@@ -44,7 +68,7 @@ func ConfigureNetwork(cfg config.Config, spec *model.SandboxSpec) error {
 }
 
 // Create handles Fresh Boot (API Injection)
-func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*os.Process, error) {
 	if DecoupledSnapshotEnabled {
 		return createDecoupled(cfg, spec, overlayPath)
 	}
@@ -78,25 +102,17 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // Daemonize
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("process start failed: %v", err)
+	proc, err := startCLH(cmd, pidPath)
+	if err != nil {
+		return nil, err
 	}
-
-	// Save PID before releasing process handle
-	pid := cmd.Process.Pid
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
-		cmd.Process.Kill()
-		return err
-	}
-	cmd.Process.Release()
 
 	// 4. Wait for Socket to appear
 	client := NewAPIClient(socketPath)
 	if err := client.WaitForSocket(2 * time.Second); err != nil {
-		// Read log for debugging
 		logs, _ := os.ReadFile(logPath)
-		Stop(spec.ID) // Cleanup
-		return fmt.Errorf("VM crashed on start. Logs:\n%s", string(logs))
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("VM crashed on start. Logs:\n%s", string(logs))
 	}
 
 	// Ensure tap0 is attached to br0 in netns after VMM starts
@@ -184,18 +200,18 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) error
 	defer cancel()
 
 	if err := clhClient.VmCreate(ctx, &vmCfg); err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("vm.create failed: %w", err)
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("vm.create failed: %w", err)
 	}
 
 	// B. Send Boot Signal
 	if err := clhClient.VmBoot(ctx); err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("vm.boot failed: %w", err)
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("vm.boot failed: %w", err)
 	}
 
-	fmt.Printf("   [+] VM Active! PID: %d, NetNS: %s\n", pid, spec.NetNSName)
-	return nil
+	fmt.Printf("   [+] VM Active! PID: %d, NetNS: %s\n", proc.Pid, spec.NetNSName)
+	return proc, nil
 }
 
 // BuildCLIArgs constructs the Cloud Hypervisor CLI arguments from the sandbox configuration
@@ -341,7 +357,7 @@ func buildLandlockRules(cfg config.Config, spec model.SandboxSpec, overlayPath, 
 	return llRules
 }
 
-func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*os.Process, error) {
 	if DecoupledSnapshotEnabled {
 		return createCLIDecoupled(cfg, spec, overlayPath)
 	}
@@ -367,23 +383,17 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // Daemonize
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("process start failed: %v", err)
+	proc, err := startCLH(cmd, pidPath)
+	if err != nil {
+		return nil, err
 	}
-
-	pid := cmd.Process.Pid
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
-		cmd.Process.Kill()
-		return err
-	}
-	cmd.Process.Release()
 
 	// 5. Wait for Socket (Acts as a Readiness Probe)
 	client := NewAPIClient(socketPath)
 	if err := client.WaitForSocket(2 * time.Second); err != nil {
 		logs, _ := os.ReadFile(logPath)
-		Stop(spec.ID)
-		return fmt.Errorf("VM crashed on start. Logs:\n%s", string(logs))
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("VM crashed on start. Logs:\n%s", string(logs))
 	}
 
 	// Ensure tap0 is attached to br0 in netns after VMM starts
@@ -391,8 +401,8 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) er
 		log.Printf("[WARN] EnsureTapBridge failed in CreateCLI: %v\n", err)
 	}
 
-	fmt.Printf("   [+] VM Active! PID: %d, NetNS: %s\n", pid, spec.NetNSName)
-	return nil
+	fmt.Printf("   [+] VM Active! PID: %d, NetNS: %s\n", proc.Pid, spec.NetNSName)
+	return proc, nil
 }
 
 // Snapshot creates a snapshot of the VM and terminates the hypervisor.
@@ -587,7 +597,7 @@ func forceKillByPIDFile(id string) error {
 	return nil
 }
 
-func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir string) error {
+func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir string) (*os.Process, error) {
 	if DecoupledSnapshotEnabled {
 		return restoreDecoupled(cfg, spec, overlayPath, snapshotDir)
 	}
@@ -596,7 +606,7 @@ func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir
 	defer util.Track("lifecycle: Sandbox Restore (" + memoryRestoreMode + ")")()
 
 	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
-		return fmt.Errorf("ensure netns: %w", err)
+		return nil, fmt.Errorf("ensure netns: %w", err)
 	}
 
 	overlayPath, _ = filepath.Abs(overlayPath)
@@ -630,23 +640,17 @@ func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("process start failed during restore: %v", err)
+	proc, err := startCLH(cmd, pidPath)
+	if err != nil {
+		return nil, err
 	}
-
-	pid := cmd.Process.Pid
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
-		cmd.Process.Kill()
-		return err
-	}
-	cmd.Process.Release()
 
 	// 2. Wait for the CLH management API socket to appear.
 	apiClient := NewAPIClient(socketPath)
 	if err := apiClient.WaitForSocket(2 * time.Second); err != nil {
 		logs, _ := os.ReadFile(logPath)
-		Stop(spec.ID)
-		return fmt.Errorf("CLH crashed before API socket appeared. Logs:\n%s", string(logs))
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("CLH crashed before API socket appeared. Logs:\n%s", string(logs))
 	}
 
 	if err := EnsureTapBridge(spec.NetNSName, spec.TapName); err != nil {
@@ -668,25 +672,25 @@ func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir
 		Resume:            true,
 		MemoryRestoreMode: memoryRestoreMode,
 	}); err != nil {
-		Stop(spec.ID)
-		return fmt.Errorf("vm.restore API call failed: %w", err)
+		stopAndReap(spec.ID, proc)
+		return nil, fmt.Errorf("vm.restore API call failed: %w", err)
 	}
 
-	fmt.Printf("   [+] VM %s Restored via API (%s)! PID: %d\n", spec.ID, memoryRestoreMode, pid)
-	return nil
+	fmt.Printf("   [+] VM %s Restored via API (%s)! PID: %d\n", spec.ID, memoryRestoreMode, proc.Pid)
+	return proc, nil
 }
 
 // BootFromDisk boots a VM using its existing overlay disk image without a snapshot.
 // Memory state is not restored; the guest starts fresh but with its previous disk data intact.
 // It is safe to call concurrently for different sandbox IDs.
-func BootFromDisk(cfg config.Config, spec model.SandboxSpec, overlayPath string) error {
+func BootFromDisk(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*os.Process, error) {
 	if DecoupledSnapshotEnabled {
 		return bootFromDiskDecoupled(cfg, spec, overlayPath)
 	}
 	defer util.Track("lifecycle: BootFromDisk")()
 
 	if err := EnsureSandboxNetNS(cfg, &spec); err != nil {
-		return fmt.Errorf("ensure netns: %w", err)
+		return nil, fmt.Errorf("ensure netns: %w", err)
 	}
 
 	os.Remove(GetSocketPath(spec.ID))
