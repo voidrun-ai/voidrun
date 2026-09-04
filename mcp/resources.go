@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -185,6 +186,9 @@ func (h *resourceHandlers) handleSandboxFile(
 	}
 
 	if err := h.sandboxSvc.EnsureRunning(ctx, orgID, id); err != nil {
+		if errors.Is(err, service.ErrAdmissionDenied) {
+			return nil, fmt.Errorf("scheduler unavailable")
+		}
 		return nil, fmt.Errorf("sandbox not running: %w", err)
 	}
 

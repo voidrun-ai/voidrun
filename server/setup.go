@@ -84,9 +84,8 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		monitor.SetRootContext(context.Background())
 	}
 
-	// Shared per-sandbox lifecycle locks. Both SandboxService and LifecycleManager
-	// receive the same instance so manual API ops and the background sweeper
-	// serialize on the same sandbox ID.
+	// Per-sandbox lock for RefreshStatuses TryAcquire. API lifecycle ops
+	// serialize on the actor; the sweeper goes through SandboxService.
 	lifecycleLocks := service.NewSandboxLifecycleLocks()
 
 	// Build the sandbox service eagerly so the lifecycle manager can reuse its
@@ -110,7 +109,7 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		Clerk:            clerkSvc,
 		AuthCache:        authCache,
 		Monitor:          monitor,
-		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, cfg.HostID, repos.Sandbox, monitor, metricsManager, lifecycleLocks, sandboxSvc),
+		LifecycleManager: service.NewLifecycleManager(cfg.AutoLifecycle, &cfg.HostID, repos.Sandbox, monitor, metricsManager, sandboxSvc),
 	}
 }
 

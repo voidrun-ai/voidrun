@@ -71,3 +71,23 @@ func TestStaleSnapshottedFilterScopesToNode(t *testing.T) {
 		t.Fatalf("status = %v", got["status"])
 	}
 }
+
+func TestAllocatedIPFilterEmptyNodeIsClusterWide(t *testing.T) {
+	got := allocatedIPFilter("")
+	if _, ok := got["nodeId"]; ok {
+		t.Fatal("empty nodeID must not add nodeId")
+	}
+	if got["ip"].(bson.M)["$ne"] != "" {
+		t.Fatal("must still require a non-empty ip")
+	}
+}
+
+func TestAllocatedIPFilterScopesToNode(t *testing.T) {
+	got := allocatedIPFilter("host-fra-01")
+	if got["nodeId"] != "host-fra-01" {
+		t.Fatalf("nodeId = %v", got["nodeId"])
+	}
+	if _, ok := got["$or"]; ok {
+		t.Fatalf("must not add $or, got %#v", got["$or"])
+	}
+}

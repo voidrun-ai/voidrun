@@ -43,7 +43,7 @@ func (r *EventRepository) ensureIndex() {
 			{Key: "sandboxId", Value: 1},
 			{Key: "timestamp", Value: -1},
 		},
-		Options: options.Index().SetUnique(false).SetBackground(true),
+		Options: options.Index().SetUnique(false),
 	}
 	if _, err := r.collection.Indexes().CreateOne(ctx, idx); err != nil {
 		fmt.Printf("[warn] event_repository: failed to create index: %v\n", err)

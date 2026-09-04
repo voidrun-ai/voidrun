@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -35,6 +36,13 @@ func Handle(fn HandlerFunc) gin.HandlerFunc {
 	}
 }
 
+func admissionDenied(err error) error {
+	if errors.Is(err, service.ErrAdmissionDenied) {
+		return util.ErrOverloaded("scheduler unavailable")
+	}
+	return nil
+}
+
 func ensureSandboxRunning(
 	c *gin.Context,
 	sandboxSvc *service.SandboxService,
@@ -46,6 +54,9 @@ func ensureSandboxRunning(
 	}
 
 	if err = sandboxSvc.EnsureRunning(c.Request.Context(), orgID, sandboxID); err != nil {
+		if d := admissionDenied(err); d != nil {
+			return d
+		}
 		return util.ErrNotFound(err.Error())
 	}
 

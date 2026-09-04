@@ -38,8 +38,9 @@ type NetworkConfig struct {
 
 // MongoDB configuration
 type MongoConfig struct {
-	URI      string
-	Database string
+	URI        string
+	Database   string
+	LogQueries bool
 }
 
 // Redis configuration
@@ -122,6 +123,7 @@ type SandboxConfig struct {
 	MemoryRestoreMode   string // "auto", "copy", or "ondemand"
 	DecoupledSnapshot   bool   // metadata-only snapshot + external RAM file
 	MemoryBackingMode   string // "legacy", "shared-shm", or "private-tmpfs"
+	MemoryAllowSwap     bool   // omit tmpfs noswap so guest RAM can use host swap
 }
 
 // Health monitor configuration
@@ -187,7 +189,7 @@ const (
 	DefaultSandboxDiskMB            = 10240 // 10GB
 	DefaultSandboxImage             = "code"
 	DefaultSandboxKernelCmdline     = "root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0"
-	DefaultSandboxSyncTimeoutSec    = 10
+	DefaultSandboxSyncTimeoutSec    = 30
 	DefaultSandboxDebugBootConsole  = false
 	DefaultOverlayImage             = "overlay.qcow2"
 	DefaultSandboxHostname          = "voidrun"
@@ -201,6 +203,7 @@ const (
 	DefaultSandboxMemoryRestoreMode = "auto"
 	DefaultSandboxDecoupledSnapshot = false
 	DefaultSandboxMemoryBackingMode = "legacy"
+	DefaultSandboxMemoryAllowSwap   = false
 	MemBackingLegacy                = "legacy"
 	MemBackingSharedShm             = "shared-shm"
 	MemBackingPrivateTmpfs          = "private-tmpfs"
@@ -276,8 +279,9 @@ func New() *Config {
 			Nameservers: getEnvCSV("DNS_NAMESERVERS", DefaultNameservers),
 		},
 		Mongo: MongoConfig{
-			URI:      getEnv("MONGO_URI", DefaultMongoURI),
-			Database: getEnv("MONGO_DB", DefaultMongoDB),
+			URI:        getEnv("MONGO_URI", DefaultMongoURI),
+			Database:   getEnv("MONGO_DB", DefaultMongoDB),
+			LogQueries: getEnvBool("MONGO_LOG_QUERIES", false),
 		},
 		Redis: RedisConfig{
 			Mode:           getEnv("REDIS_MODE", DefaultRedisMode),
@@ -319,6 +323,7 @@ func New() *Config {
 			MemoryRestoreMode:   getEnv("SANDBOX_MEMORY_RESTORE_MODE", DefaultSandboxMemoryRestoreMode),
 			DecoupledSnapshot:   getEnvBool("SANDBOX_DECOUPLED_SNAPSHOT", DefaultSandboxDecoupledSnapshot),
 			MemoryBackingMode:   getEnv("SANDBOX_MEMORY_BACKING_MODE", DefaultSandboxMemoryBackingMode),
+			MemoryAllowSwap:     getEnvBool("SANDBOX_RAM_ALLOW_SWAP", DefaultSandboxMemoryAllowSwap),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),

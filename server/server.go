@@ -32,11 +32,24 @@ type Server struct {
 	middlewares *Middlewares
 }
 
-// New creates a new server instance.
 func New(cfg *config.Config, routeMws RouteMiddlewares) (*Server, error) {
+	srv, err := NewCore(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := srv.SetupRoutes(routeMws); err != nil {
+		_ = srv.Close()
+		return nil, err
+	}
+	return srv, nil
+}
+
+// NewCore initializes Mongo, repositories, services, and handlers without
+// mounting the Gin router. Call SetupRoutes before Run.
+func NewCore(cfg *config.Config) (*Server, error) {
 	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
 	runtime.SetCHBinary(cfg.CHBinary)
-	runtime.SetDecoupledSnapshot(cfg.Sandbox.DecoupledSnapshot, cfg.Sandbox.MemoryBackingMode)
+	runtime.SetDecoupledSnapshot(cfg.Sandbox.DecoupledSnapshot, cfg.Sandbox.MemoryBackingMode, cfg.Sandbox.MemoryAllowSwap)
 	var metricsManager *metrics.Manager
 	var stopFn context.CancelFunc
 	if cfg.Metrics.Enabled {
@@ -60,16 +73,8 @@ func New(cfg *config.Config, routeMws RouteMiddlewares) (*Server, error) {
 		return nil, fmt.Errorf("failed to populate initial data: %w", err)
 	}
 
-	middlewares := InitMiddlewares(cfg, services)
-
-	router, err := setupRouter(cfg, handlers, services, middlewares, routeMws)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Server{
 		cfg:         cfg,
-		router:      router,
 		mongo:       mongoClient,
 		services:    services,
 		metrics:     metricsManager,
@@ -77,15 +82,28 @@ func New(cfg *config.Config, routeMws RouteMiddlewares) (*Server, error) {
 		handlers:    handlers,
 		db:          db,
 		repos:       repos,
-		middlewares: middlewares,
+		middlewares: InitMiddlewares(cfg, services),
 	}, nil
+}
+
+// SetupRoutes mounts the Gin engine. It may be called once.
+func (s *Server) SetupRoutes(routeMws RouteMiddlewares) error {
+	if s.router != nil {
+		return fmt.Errorf("routes already set up")
+	}
+	router, err := setupRouter(s.cfg, s.handlers, s.services, s.middlewares, routeMws)
+	if err != nil {
+		return err
+	}
+	s.router = router
+	return nil
 }
 
 func Connect(cfg *config.Config) (*mongo.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(cfg.Mongo.URI))
+	client, err := mongo.Connect(ctx, mongoClientOptions(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
@@ -115,6 +133,9 @@ func (s *Server) Close() error {
 
 // Run starts the server
 func (s *Server) Run() error {
+	if s.router == nil {
+		return fmt.Errorf("routes not set up; call SetupRoutes first")
+	}
 	s.startHealthMonitor()
 	s.resumeEventWatchers()
 	s.startLifecycleManager()
@@ -184,8 +205,11 @@ func (s *Server) resumeEventWatchers() {
 			continue
 		}
 		id := sb.ID.Hex()
-		if sb.Status == "running" {
+		if sb.Status == "running" || sb.Status == "booting" {
 			s.metrics.RegisterSandbox(id, sb.Name, runtime.GetSocketPath(id), sb.CPU, sb.Mem, sb.DiskMB)
+			if sb.Status == "booting" {
+				s.metrics.SetSandboxStatus(id, sb.Name, "booting")
+			}
 		} else {
 			s.metrics.SetSandboxStatus(id, sb.Name, sb.Status)
 		}

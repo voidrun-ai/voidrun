@@ -47,6 +47,15 @@ func ErrInternal(msg string, cause error) *APIError {
 	return &APIError{http.StatusInternalServerError, msg, detail}
 }
 
+// ErrGatewayTimeout returns a 504 error (handler deadline exceeded).
+func ErrGatewayTimeout(msg string, cause error) *APIError {
+	detail := ""
+	if cause != nil {
+		detail = cause.Error()
+	}
+	return &APIError{http.StatusGatewayTimeout, msg, detail}
+}
+
 // ErrBadGateway returns a 502 error (upstream / agent unreachable).
 func ErrBadGateway(msg string, cause error) *APIError {
 	detail := ""
@@ -74,6 +83,19 @@ func ErrTooLarge(msg string) *APIError {
 // ErrUnauthorized returns a 401 error.
 func ErrUnauthorized(msg string) *APIError {
 	return &APIError{http.StatusUnauthorized, msg, ""}
+}
+
+// ErrServiceUnavailable returns a 503 error.
+func ErrServiceUnavailable(msg string) *APIError {
+	return &APIError{http.StatusServiceUnavailable, msg, ""}
+}
+
+// StatusOverloaded is a non-standard 5xx (Cloudflare-style custom code).
+const StatusOverloaded = 529
+
+// ErrOverloaded returns a 529 error.
+func ErrOverloaded(msg string) *APIError {
+	return &APIError{StatusOverloaded, msg, ""}
 }
 
 // ---------------------------------------------------------------------------
