@@ -13,7 +13,7 @@ info:
     name: Proprietary
 
 servers:
-  - url: https://platform.void-run.com/api
+  - url: https://api.void-run.com/api
     description: Production server
 
 tags:
