@@ -124,6 +124,9 @@ type SandboxConfig struct {
 	DecoupledSnapshot   bool   // metadata-only snapshot + external RAM file
 	MemoryBackingMode   string // "legacy", "shared-shm", or "private-tmpfs"
 	MemoryAllowSwap     bool   // omit tmpfs noswap so guest RAM can use host swap
+	ConsoleLogEnabled   bool   // guest /dev/hvc0 → host console.log when true
+	ConsoleLogMaxSizeMB int    // kubelet-style cap for host console.log
+	ConsoleLogMaxFiles  int    // current + rotated files (kubelet default 5)
 }
 
 // Health monitor configuration
@@ -191,6 +194,7 @@ const (
 	DefaultSandboxKernelCmdline     = "root=/dev/vda rw init=/sbin/init net.ifnames=0 biosdevname=0"
 	DefaultSandboxSyncTimeoutSec    = 30
 	DefaultSandboxDebugBootConsole  = false
+	DefaultSandboxConsoleLogEnabled = false
 	DefaultOverlayImage             = "overlay.qcow2"
 	DefaultSandboxHostname          = "voidrun"
 	DefaultAuthLocalMode            = false
@@ -204,6 +208,8 @@ const (
 	DefaultSandboxDecoupledSnapshot = false
 	DefaultSandboxMemoryBackingMode = "legacy"
 	DefaultSandboxMemoryAllowSwap   = false
+	DefaultConsoleLogMaxSizeMB      = 10
+	DefaultConsoleLogMaxFiles       = 5
 	MemBackingLegacy                = "legacy"
 	MemBackingSharedShm             = "shared-shm"
 	MemBackingPrivateTmpfs          = "private-tmpfs"
@@ -324,6 +330,9 @@ func New() *Config {
 			DecoupledSnapshot:   getEnvBool("SANDBOX_DECOUPLED_SNAPSHOT", DefaultSandboxDecoupledSnapshot),
 			MemoryBackingMode:   getEnv("SANDBOX_MEMORY_BACKING_MODE", DefaultSandboxMemoryBackingMode),
 			MemoryAllowSwap:     getEnvBool("SANDBOX_RAM_ALLOW_SWAP", DefaultSandboxMemoryAllowSwap),
+			ConsoleLogEnabled:   getEnvBool("SANDBOX_CONSOLE_LOG_ENABLED", DefaultSandboxConsoleLogEnabled),
+			ConsoleLogMaxSizeMB: getEnvInt("SANDBOX_CONSOLE_LOG_MAX_SIZE_MB", DefaultConsoleLogMaxSizeMB),
+			ConsoleLogMaxFiles:  getEnvInt("SANDBOX_CONSOLE_LOG_MAX_FILES", DefaultConsoleLogMaxFiles),
 		},
 		Health: HealthConfig{
 			Enabled:     getEnvBool("HEALTH_ENABLED", DefaultHealthEnabled),

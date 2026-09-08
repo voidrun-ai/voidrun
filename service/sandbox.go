@@ -76,28 +76,29 @@ func NewSandboxService(
 		lifecycleLocks: lifecycleLocks,
 		actors:         NewActorRegistry(),
 		projection: bson.M{
-			"_id":            1,
-			"name":           1,
-			"image":          1,
-			"ip":             1,
-			"cpu":            1,
-			"mem":            1,
-			"diskMB":         1,
-			"status":         1,
-			"autoSleep":      1,
-			"lastActivityAt": 1,
-			"snapshottedAt":  1,
-			"createdAt":      1,
-			"orgId":          1,
-			"createdBy":      1,
-			"region":         1,
-			"nodeId":         1,
-			"tapName":        1,
-			"tapDeleted":     1,
-			"netnsName":      1,
-			"macAddress":     1,
-			"publishPorts":   1,
-			"labels":         1,
+			"_id":               1,
+			"name":              1,
+			"image":             1,
+			"ip":                1,
+			"cpu":               1,
+			"mem":               1,
+			"diskMB":            1,
+			"status":            1,
+			"autoSleep":         1,
+			"consoleLogEnabled": 1,
+			"lastActivityAt":    1,
+			"snapshottedAt":     1,
+			"createdAt":         1,
+			"orgId":             1,
+			"createdBy":         1,
+			"region":            1,
+			"nodeId":            1,
+			"tapName":           1,
+			"tapDeleted":        1,
+			"netnsName":         1,
+			"macAddress":        1,
+			"publishPorts":      1,
+			"labels":            1,
 		},
 	}
 }
@@ -240,13 +241,16 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		}
 	}()
 
+	consoleLogEnabled := s.cfg.Sandbox.ConsoleLogEnabled
+
 	spec := model.SandboxSpec{
-		ID:        instanceID,
-		Type:      imageName,
-		CPUs:      cpu,
-		MemoryMB:  mem,
-		DiskMB:    diskMB,
-		IPAddress: ip,
+		ID:                instanceID,
+		Type:              imageName,
+		CPUs:              cpu,
+		MemoryMB:          mem,
+		DiskMB:            diskMB,
+		IPAddress:         ip,
+		ConsoleLogEnabled: consoleLogEnabled,
 	}
 
 	haveVM := false
@@ -261,6 +265,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		} else if spec.TapName != "" {
 			_ = runtime.DeleteTap(spec.TapName)
 		}
+		runtime.StopConsolePump(spec.ID)
 		os.RemoveAll(runtime.GetInstanceDir(spec.ID))
 		if ip != "" {
 			s.repo.FreeIP(context.Background(), ip)
@@ -345,27 +350,28 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 
 	now := time.Now()
 	sandbox := &model.Sandbox{
-		ID:             objID,
-		Name:           req.Name,
-		Image:          imageName,
-		IP:             ip,
-		CPU:            cpu,
-		Mem:            mem,
-		DiskMB:         diskMB,
-		OrgID:          req.OrgID,
-		EnvVars:        req.EnvVars,
-		AutoSleep:      autoSleep,
-		Region:         req.Region,
-		NodeID:         s.cfg.HostID,
-		PublishPorts:   req.PublishPorts,
-		Labels:         req.Labels,
-		TapName:        spec.TapName,
-		NetNSName:      spec.NetNSName,
-		MacAddress:     spec.MacAddress, // persist so Restore doesn't need to re-derive it
-		LastActivityAt: &now,
-		Status:         "running",
-		CreatedAt:      now,
-		CreatedBy:      req.UserID,
+		ID:                objID,
+		Name:              req.Name,
+		Image:             imageName,
+		IP:                ip,
+		CPU:               cpu,
+		Mem:               mem,
+		DiskMB:            diskMB,
+		OrgID:             req.OrgID,
+		EnvVars:           req.EnvVars,
+		AutoSleep:         autoSleep,
+		ConsoleLogEnabled: consoleLogEnabled,
+		Region:            req.Region,
+		NodeID:            s.cfg.HostID,
+		PublishPorts:      req.PublishPorts,
+		Labels:            req.Labels,
+		TapName:           spec.TapName,
+		NetNSName:         spec.NetNSName,
+		MacAddress:        spec.MacAddress, // persist so Restore doesn't need to re-derive it
+		LastActivityAt:    &now,
+		Status:            "running",
+		CreatedAt:         now,
+		CreatedBy:         req.UserID,
 	}
 	if !syncEnabled {
 		sandbox.Status = "booting"
@@ -785,14 +791,15 @@ func (s *SandboxService) bootFromDiskLocked(ctx context.Context, orgID primitive
 	}
 
 	spec := model.SandboxSpec{
-		ID:         id,
-		Type:       sandbox.Image,
-		CPUs:       sandbox.CPU,
-		MemoryMB:   sandbox.Mem,
-		IPAddress:  sandbox.IP,
-		TapName:    sandbox.TapName,
-		MacAddress: macAddr,
-		NetNSName:  sandbox.NetNSName,
+		ID:                id,
+		Type:              sandbox.Image,
+		CPUs:              sandbox.CPU,
+		MemoryMB:          sandbox.Mem,
+		IPAddress:         sandbox.IP,
+		TapName:           sandbox.TapName,
+		MacAddress:        macAddr,
+		NetNSName:         sandbox.NetNSName,
+		ConsoleLogEnabled: sandbox.ConsoleLogEnabled,
 	}
 
 	proc, err := runtime.BootFromDisk(*s.cfg, spec, overlayPath)
@@ -866,14 +873,15 @@ func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.Obje
 	}
 
 	spec := model.SandboxSpec{
-		ID:         id,
-		Type:       imageName,
-		CPUs:       sandbox.CPU,
-		MemoryMB:   sandbox.Mem,
-		IPAddress:  sandbox.IP,
-		TapName:    sandbox.TapName,
-		MacAddress: macAddr,
-		NetNSName:  sandbox.NetNSName,
+		ID:                id,
+		Type:              imageName,
+		CPUs:              sandbox.CPU,
+		MemoryMB:          sandbox.Mem,
+		IPAddress:         sandbox.IP,
+		TapName:           sandbox.TapName,
+		MacAddress:        macAddr,
+		NetNSName:         sandbox.NetNSName,
+		ConsoleLogEnabled: sandbox.ConsoleLogEnabled,
 	}
 
 	var overlayPath string

@@ -50,6 +50,7 @@ func NewCore(cfg *config.Config) (*Server, error) {
 	runtime.SetInstancesRoot(cfg.Paths.InstancesDir)
 	runtime.SetCHBinary(cfg.CHBinary)
 	runtime.SetDecoupledSnapshot(cfg.Sandbox.DecoupledSnapshot, cfg.Sandbox.MemoryBackingMode, cfg.Sandbox.MemoryAllowSwap)
+	runtime.SetConsoleLogLimits(int64(cfg.Sandbox.ConsoleLogMaxSizeMB)<<20, cfg.Sandbox.ConsoleLogMaxFiles)
 	var metricsManager *metrics.Manager
 	var stopFn context.CancelFunc
 	if cfg.Metrics.Enabled {
