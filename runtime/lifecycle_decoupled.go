@@ -89,6 +89,7 @@ func createDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath stri
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	prepareConsoleLog(spec)
 
 	proc, err := startCLH(cmd, pidPath)
 	if err != nil {
@@ -133,7 +134,7 @@ func createDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath stri
 		Net:     []NetConfig{{ID: defaultNetDeviceID, Tap: spec.TapName, Mac: spec.MacAddress}},
 		Rng:     &RngConfig{Src: "/dev/urandom"},
 		Serial:  &ConsoleConfig{Mode: consoleMode},
-		Console: &ConsoleConfig{Mode: consoleMode},
+		Console: consoleLogAPI(spec),
 		Vsock: &VsockConfig{
 			Cid:    getCidFromIP(spec.IPAddress),
 			Socket: vsockPath,
@@ -175,9 +176,9 @@ func buildCLIArgsDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPat
 
 	cmdLine := strings.TrimSpace(cfg.Sandbox.KernelCmdline)
 
-	consoleMode := "off"
+	serialMode := "off"
 	if cfg.Sandbox.DebugBootConsole {
-		consoleMode = "tty"
+		serialMode = "tty"
 	}
 
 	imageType := "qcow2"
@@ -204,8 +205,8 @@ func buildCLIArgsDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPat
 		"--net", fmt.Sprintf("tap=%s,mac=%s", spec.TapName, spec.MacAddress),
 		"--vsock", fmt.Sprintf("cid=%d,socket=%s", getCidFromIP(spec.IPAddress), vsockPath),
 		"--rng", "src=/dev/urandom",
-		"--serial", consoleMode,
-		"--console", consoleMode,
+		"--serial", serialMode,
+		"--console", consoleLogCLI(spec),
 	)
 
 	if cfg.Paths.InitrdPath != "" {
@@ -249,6 +250,10 @@ func buildDecoupledLandlockRules(cfg config.Config, spec model.SandboxSpec, over
 	rulesMap := make(map[string]string)
 	rulesMap[absKernel] = "r"
 	rulesMap[logPath] = "rw"
+	if spec.ConsoleLogEnabled {
+		rulesMap[GetConsoleLogPath(spec.ID)] = "rw"
+		rulesMap[GetConsoleFifoPath(spec.ID)] = "rw"
+	}
 	rulesMap[absInstanceDir] = "rw"
 	rulesMap["/dev/urandom"] = "r"
 	rulesMap["/dev/net/tun"] = "rw"
@@ -306,6 +311,7 @@ func createCLIDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath s
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	prepareConsoleLog(spec)
 
 	proc, err := startCLH(cmd, pidPath)
 	if err != nil {
@@ -460,6 +466,7 @@ func restoreDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath, sn
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	prepareConsoleLog(spec)
 
 	spawnStart := time.Now()
 	proc, spawnErr := startCLH(cmd, pidPath)

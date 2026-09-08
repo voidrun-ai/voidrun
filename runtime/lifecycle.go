@@ -101,6 +101,7 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*os.
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // Daemonize
+	prepareConsoleLog(spec)
 
 	proc, err := startCLH(cmd, pidPath)
 	if err != nil {
@@ -171,12 +172,7 @@ func Create(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*os.
 			}
 			return "Null"
 		}()},
-		Console: &ConsoleConfig{Mode: func() string {
-			if debugConsole {
-				return "Tty"
-			}
-			return "Null"
-		}()},
+		Console: consoleLogAPI(spec),
 		Vsock: &VsockConfig{
 			Cid:    getCidFromIP(spec.IPAddress),
 			Socket: vsockPath,
@@ -231,9 +227,9 @@ func BuildCLIArgs(cfg config.Config, spec model.SandboxSpec, overlayPath string)
 	// 1. Map Configurations to CLI Strings
 	cmdLine := strings.TrimSpace(cfg.Sandbox.KernelCmdline)
 
-	consoleMode := "off"
+	serialMode := "off"
 	if cfg.Sandbox.DebugBootConsole {
-		consoleMode = "tty"
+		serialMode = "tty"
 	}
 
 	imageType := "qcow2"
@@ -270,8 +266,8 @@ func BuildCLIArgs(cfg config.Config, spec model.SandboxSpec, overlayPath string)
 		"--net", fmt.Sprintf("tap=%s,mac=%s", tapName, macAddr),
 		"--vsock", fmt.Sprintf("cid=%d,socket=%s", getCidFromIP(spec.IPAddress), vsockPath),
 		"--rng", "src=/dev/urandom",
-		"--serial", consoleMode,
-		"--console", consoleMode,
+		"--serial", serialMode,
+		"--console", consoleLogCLI(spec),
 	}
 
 	if cfg.Paths.InitrdPath != "" {
@@ -324,6 +320,10 @@ func buildLandlockRules(cfg config.Config, spec model.SandboxSpec, overlayPath, 
 	rulesMap := make(map[string]string)
 	rulesMap[absKernel] = "r"
 	rulesMap[logPath] = "rw"
+	if spec.ConsoleLogEnabled {
+		rulesMap[GetConsoleLogPath(spec.ID)] = "rw"
+		rulesMap[GetConsoleFifoPath(spec.ID)] = "rw"
+	}
 	rulesMap[absInstanceDir] = "rw"
 	rulesMap["/dev/urandom"] = "r"
 	rulesMap["/dev/net/tun"] = "rw"
@@ -382,6 +382,7 @@ func CreateCLI(cfg config.Config, spec model.SandboxSpec, overlayPath string) (*
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // Daemonize
+	prepareConsoleLog(spec)
 
 	proc, err := startCLH(cmd, pidPath)
 	if err != nil {
@@ -639,6 +640,7 @@ func Restore(cfg config.Config, spec model.SandboxSpec, overlayPath, snapshotDir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	prepareConsoleLog(spec)
 
 	proc, err := startCLH(cmd, pidPath)
 	if err != nil {
@@ -749,6 +751,7 @@ func Cleanup(id string) error {
 	// 4. Delete the instance directory
 	instanceDir := GetInstanceDir(id)
 	fmt.Printf(">> Deleting instance directory %s\n", instanceDir)
+	StopConsolePump(id)
 
 	if err := os.RemoveAll(instanceDir); err != nil {
 		return fmt.Errorf("failed to delete directory: %w", err)

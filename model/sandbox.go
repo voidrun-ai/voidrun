@@ -8,42 +8,44 @@ import (
 
 // Sandbox represents the sandbox metadata stored in the database
 type Sandbox struct {
-	ID               primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	Name             string             `bson:"name" json:"name"`
-	Image            string             `bson:"image" json:"image"`
-	IP               string             `bson:"ip" json:"-"`
-	CPU              int                `bson:"cpu" json:"cpu"`
-	Mem              int                `bson:"mem" json:"mem"`
-	DiskMB           int                `bson:"diskMB" json:"diskMB"`
-	Status           string             `bson:"status" json:"status"`
-	AutoSleep        bool               `bson:"autoSleep" json:"autoSleep"`
-	LastActivityAt   *time.Time         `bson:"lastActivityAt,omitempty" json:"-"`
-	SnapshottedAt    *time.Time         `bson:"snapshottedAt,omitempty" json:"-"`
-	CreatedAt        time.Time          `bson:"createdAt" json:"createdAt"`
-	UpdatedAt        time.Time          `bson:"updatedAt,omitempty" json:"updatedAt,omitempty"`
-	CreatedBy        primitive.ObjectID `bson:"createdBy" json:"createdBy"`
-	OrgID            primitive.ObjectID `bson:"orgId" json:"orgId"`
-	EnvVars          map[string]string  `bson:"envVars,omitempty" json:"-"`
-	Region           string             `bson:"region,omitempty" json:"region,omitempty"`
-	NodeID           string             `bson:"nodeId,omitempty" json:"nodeId,omitempty"`
-	TapName          string             `bson:"tapName,omitempty" json:"-"`
-	NetNSName        string             `bson:"netnsName,omitempty" json:"-"`
-	MacAddress       string             `bson:"macAddress,omitempty" json:"-"`
-	TapDeleted       bool               `bson:"tapDeleted,omitempty" json:"-"`
-	BillingCompleted bool               `bson:"billingCompleted,omitempty" json:"-"`
-	PublishPorts     []int              `bson:"publishPorts,omitempty" json:"publishPorts,omitempty"`
-	Labels           map[string]string  `bson:"labels,omitempty" json:"labels,omitempty"`
+	ID                primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Name              string             `bson:"name" json:"name"`
+	Image             string             `bson:"image" json:"image"`
+	IP                string             `bson:"ip" json:"-"`
+	CPU               int                `bson:"cpu" json:"cpu"`
+	Mem               int                `bson:"mem" json:"mem"`
+	DiskMB            int                `bson:"diskMB" json:"diskMB"`
+	Status            string             `bson:"status" json:"status"`
+	AutoSleep         bool               `bson:"autoSleep" json:"autoSleep"`
+	ConsoleLogEnabled bool               `bson:"consoleLogEnabled" json:"-"`
+	LastActivityAt    *time.Time         `bson:"lastActivityAt,omitempty" json:"-"`
+	SnapshottedAt     *time.Time         `bson:"snapshottedAt,omitempty" json:"-"`
+	CreatedAt         time.Time          `bson:"createdAt" json:"createdAt"`
+	UpdatedAt         time.Time          `bson:"updatedAt,omitempty" json:"updatedAt,omitempty"`
+	CreatedBy         primitive.ObjectID `bson:"createdBy" json:"createdBy"`
+	OrgID             primitive.ObjectID `bson:"orgId" json:"orgId"`
+	EnvVars           map[string]string  `bson:"envVars,omitempty" json:"-"`
+	Region            string             `bson:"region,omitempty" json:"region,omitempty"`
+	NodeID            string             `bson:"nodeId,omitempty" json:"nodeId,omitempty"`
+	TapName           string             `bson:"tapName,omitempty" json:"-"`
+	NetNSName         string             `bson:"netnsName,omitempty" json:"-"`
+	MacAddress        string             `bson:"macAddress,omitempty" json:"-"`
+	TapDeleted        bool               `bson:"tapDeleted,omitempty" json:"-"`
+	BillingCompleted  bool               `bson:"billingCompleted,omitempty" json:"-"`
+	PublishPorts      []int              `bson:"publishPorts,omitempty" json:"publishPorts,omitempty"`
+	Labels            map[string]string  `bson:"labels,omitempty" json:"labels,omitempty"`
 }
 
 type SandboxSpec struct {
-	ID         string            `json:"id"`
-	Type       string            `json:"type"`
-	CPUs       int               `json:"cpus"`
-	MemoryMB   int               `json:"memory_mb"`
-	DiskMB     int               `json:"disk_mb"`
-	IPAddress  string            `json:"ip_address"`
-	EnvVars    map[string]string `json:"env_vars"`
-	TapName    string            `json:"tap_name"`
-	MacAddress string            `json:"mac_address"`
-	NetNSName  string            `json:"netns_name"`
+	ID                string            `json:"id"`
+	Type              string            `json:"type"`
+	CPUs              int               `json:"cpus"`
+	MemoryMB          int               `json:"memory_mb"`
+	DiskMB            int               `json:"disk_mb"`
+	IPAddress         string            `json:"ip_address"`
+	EnvVars           map[string]string `json:"env_vars"`
+	TapName           string            `json:"tap_name"`
+	MacAddress        string            `json:"mac_address"`
+	NetNSName         string            `json:"netns_name"`
+	ConsoleLogEnabled bool              `json:"console_log_enabled"`
 }

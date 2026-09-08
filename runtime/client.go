@@ -258,6 +258,11 @@ func GetLogPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/vm.log", InstancesRoot, sbxID)
 }
 
+// GetConsoleLogPath is the host file for guest console output.
+func GetConsoleLogPath(sbxID string) string {
+	return fmt.Sprintf("%s/%s/console.log", InstancesRoot, sbxID)
+}
+
 func GetOverlayPath(sbxID string) string {
 	return fmt.Sprintf("%s/%s/overlay.qcow2", InstancesRoot, sbxID)
 }
@@ -302,4 +307,3 @@ func GetLatestSnapshotDir(sbxID string) string {
 	}
 	return ""
 }
-
