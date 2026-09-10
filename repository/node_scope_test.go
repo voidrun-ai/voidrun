@@ -62,6 +62,20 @@ func TestIdleRunningFilterScopesToNode(t *testing.T) {
 	}
 }
 
+func TestIdleRunningFilterExcludesAutoSleepFalse(t *testing.T) {
+	got := idleRunningFilter("node-a", time.Unix(1, 0).UTC())
+	or, ok := got["$or"].([]bson.M)
+	if !ok || len(or) != 2 {
+		t.Fatalf("$or = %#v, want two autoSleep clauses", got["$or"])
+	}
+	if or[0]["autoSleep"].(bson.M)["$ne"] != false {
+		t.Fatalf("first clause = %#v", or[0])
+	}
+	if or[1]["autoSleep"].(bson.M)["$exists"] != false {
+		t.Fatalf("second clause = %#v", or[1])
+	}
+}
+
 func TestStaleSnapshottedFilterScopesToNode(t *testing.T) {
 	got := staleSnapshottedFilter("node-b", time.Unix(1, 0).UTC())
 	if got["nodeId"] != "node-b" {

@@ -10,6 +10,7 @@ func ToolDefinitions() []mcp.Tool {
 		toolCreateSandbox(),
 		toolListSandboxes(),
 		toolGetSandbox(),
+		toolUpdateSandbox(),
 		toolDeleteSandbox(),
 		toolExecuteCommand(),
 		toolReadFile(),
@@ -97,6 +98,20 @@ func toolGetSandbox() mcp.Tool {
 		mcp.WithString("id",
 			mcp.Required(),
 			mcp.Description("The sandbox ID"),
+		),
+	)
+}
+
+func toolUpdateSandbox() mcp.Tool {
+	return mcp.NewTool(
+		"update_sandbox",
+		mcp.WithDescription("Update mutable sandbox fields (PATCH /sandboxes/{id}). Currently autoSleep only."),
+		mcp.WithString("id",
+			mcp.Required(),
+			mcp.Description("The sandbox ID"),
+		),
+		mcp.WithBoolean("autoSleep",
+			mcp.Description("If true, auto-snapshot after idle. If false, skip idle snapshot."),
 		),
 	)
 }

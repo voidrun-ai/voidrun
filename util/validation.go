@@ -210,3 +210,12 @@ func ParseLabelSelector(raw string) (map[string]string, error) {
 	}
 	return labels, nil
 }
+
+// ValidateUpdateSandboxRequest requires at least one mutable field.
+// autoSleep may be true or false; omitted (nil) is not an update.
+func ValidateUpdateSandboxRequest(autoSleep *bool) error {
+	if autoSleep == nil {
+		return &InvalidSandboxRequestError{msg: "no updatable fields"}
+	}
+	return nil
+}
