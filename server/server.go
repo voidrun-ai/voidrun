@@ -292,6 +292,7 @@ func setupRouter(cfg *config.Config, h *Handlers, s *Services, mw *Middlewares, 
 
 		sandboxByID := sandboxes.Group("/:id")
 		mount(sandboxByID, "GET", "", h.Sandbox.Get)
+		mount(sandboxByID, "PATCH", "", h.Sandbox.Update)
 		mount(sandboxByID, "DELETE", "", h.Sandbox.Delete)
 		mount(sandboxByID, "POST", "/sleep", h.Sandbox.Snapshot)
 		mount(sandboxByID, "POST", "/wake", h.Sandbox.Restore)

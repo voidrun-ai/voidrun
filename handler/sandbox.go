@@ -207,6 +207,35 @@ func (h *SandboxHandler) UpdatePublishPorts(c *gin.Context) error {
 	return nil
 }
 
+func (h *SandboxHandler) Update(c *gin.Context) error {
+	id := c.Param("id")
+
+	var req model.UpdateSandboxRequest
+	if err := util.DecodeStrictJSON(c.Request.Body, &req); err != nil {
+		return util.ErrBadRequest(err.Error())
+	}
+
+	orgID, err := util.GetOrgIDFromContext(c)
+	if err != nil {
+		return err
+	}
+
+	sandbox, err := h.sandboxService.Update(c.Request.Context(), orgID, id, req)
+	if err != nil {
+		if errors.Is(err, service.ErrSandboxNotFound) {
+			return util.ErrNotFound("Sandbox not found")
+		}
+		var inv *util.InvalidSandboxRequestError
+		if errors.As(err, &inv) {
+			return util.ErrBadRequest(inv.Error())
+		}
+		return util.ErrInternal("Failed to update sandbox", err)
+	}
+
+	c.JSON(http.StatusOK, model.NewSuccessResponse("Sandbox updated", sandbox))
+	return nil
+}
+
 func (h *SandboxHandler) Start(c *gin.Context) error {
 	id := c.Param("id")
 

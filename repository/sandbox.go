@@ -29,6 +29,7 @@ type ISandboxRepository interface {
 	UpdateTapNameByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName string) (bool, error)
 	UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error)
 	UpdatePublishPortsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, ports []int) (bool, error)
+	UpdateFieldsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error)
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 	FindForHealth(ctx context.Context, nodeID string, opts options.FindOptions) ([]*model.Sandbox, error)
@@ -297,6 +298,22 @@ func (r *SandboxRepository) UpdatePublishPortsByIDAndOrg(ctx context.Context, id
 		"publishPorts": ports,
 		"updatedAt":    time.Now(),
 	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+func (r *SandboxRepository) UpdateFieldsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error) {
+	if len(fields) == 0 {
+		return false, fmt.Errorf("no fields to update")
+	}
+	set := bson.M{}
+	for k, v := range fields {
+		set[k] = v
+	}
+	set["updatedAt"] = time.Now()
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": set})
 	if err != nil {
 		return false, err
 	}
