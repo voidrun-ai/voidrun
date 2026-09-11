@@ -131,6 +131,39 @@ func (s *SandboxService) UpdatePublishPorts(ctx context.Context, orgID primitive
 	return sandbox, nil
 }
 
+func sandboxUpdateSet(req model.UpdateSandboxRequest) bson.M {
+	set := bson.M{}
+	if req.AutoSleep != nil {
+		set["autoSleep"] = *req.AutoSleep
+	}
+	return set
+}
+
+func (s *SandboxService) Update(ctx context.Context, orgID primitive.ObjectID, id string, req model.UpdateSandboxRequest) (*model.Sandbox, error) {
+	if err := util.ValidateUpdateSandboxRequest(req.AutoSleep); err != nil {
+		return nil, err
+	}
+	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	if sandbox.Status == "deleted" {
+		return nil, ErrSandboxNotFound
+	}
+	fields := sandboxUpdateSet(req)
+	ok, err := s.repo.UpdateFieldsByIDAndOrg(ctx, sandbox.ID, orgID, fields)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrSandboxNotFound
+	}
+	if req.AutoSleep != nil {
+		sandbox.AutoSleep = *req.AutoSleep
+	}
+	return sandbox, nil
+}
+
 func (s *SandboxService) ListByOrgPaginated(ctx context.Context, orgID primitive.ObjectID, page, pageSize int, labels map[string]string) ([]*model.Sandbox, int64, int, error) {
 	if page < 1 {
 		page = 1

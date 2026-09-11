@@ -271,6 +271,19 @@ components:
             env: prod
             team: backend
 
+    UpdateSandboxRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        autoSleep:
+          type: boolean
+          description: >-
+            If true, auto-snapshot after idle. If false, skip idle snapshot.
+            Takes effect on the next lifecycle scan. Does not cancel
+            auto-delete of an already-snapshotted sandbox.
+          example: true
+
     Sandbox:
       type: object
       properties:
@@ -1235,6 +1248,58 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiResponseSandbox"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Sandbox not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      tags:
+        - Sandboxes
+      summary: Update sandbox
+      description: >-
+        Update mutable sandbox fields. Currently `autoSleep` is the only
+        allowed field. Unknown or immutable keys are rejected. The change
+        takes effect on the next auto-lifecycle scan and does not restart
+        the VM. Disabling autoSleep does not cancel auto-delete of an
+        already-snapshotted sandbox.
+      operationId: updateSandbox
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 65ae1234567890abcdef1234
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSandboxRequest"
+      responses:
+        "200":
+          description: Sandbox updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponseSandbox"
+        "400":
+          description: Invalid request (empty body, unknown field, or no updatable fields)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Unauthorized
           content:

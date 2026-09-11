@@ -22,6 +22,11 @@ type UpdatePublishPortsRequest struct {
 	PublishPorts []int `json:"publishPorts" binding:"required"`
 }
 
+// UpdateSandboxRequest is the whitelist of fields PATCH /sandboxes/{id} may change.
+type UpdateSandboxRequest struct {
+	AutoSleep *bool `json:"autoSleep,omitempty"`
+}
+
 // ExecRequest represents a command execution request
 type ExecRequest struct {
 	Command string            `json:"command"`

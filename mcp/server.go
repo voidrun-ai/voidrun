@@ -41,6 +41,7 @@ func NewServer(
 	mcpServer.AddTool(toolCreateSandbox(), h.HandleCreateSandbox)
 	mcpServer.AddTool(toolListSandboxes(), h.HandleListSandboxes)
 	mcpServer.AddTool(toolGetSandbox(), h.HandleGetSandbox)
+	mcpServer.AddTool(toolUpdateSandbox(), h.HandleUpdateSandbox)
 	mcpServer.AddTool(toolDeleteSandbox(), h.HandleDeleteSandbox)
 	mcpServer.AddTool(toolExecuteCommand(), h.HandleExecuteCommand)
 	mcpServer.AddTool(toolReadFile(), h.HandleReadFile)

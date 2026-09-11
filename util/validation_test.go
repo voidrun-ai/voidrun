@@ -140,3 +140,18 @@ func TestValidatePublishPorts(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateUpdateSandboxRequest(t *testing.T) {
+	t.Parallel()
+	if err := ValidateUpdateSandboxRequest(nil); err == nil {
+		t.Fatal("expected error when no fields are set")
+	}
+	off := false
+	if err := ValidateUpdateSandboxRequest(&off); err != nil {
+		t.Fatalf("false must be a valid update: %v", err)
+	}
+	on := true
+	if err := ValidateUpdateSandboxRequest(&on); err != nil {
+		t.Fatalf("true must be a valid update: %v", err)
+	}
+}

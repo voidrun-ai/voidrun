@@ -361,6 +361,29 @@ func (h *Handlers) HandleGetSandbox(ctx context.Context, req mcp.CallToolRequest
 	return mcp.NewToolResultText(toJSON(sandbox)), nil
 }
 
+// HandleUpdateSandbox patches mutable sandbox fields (autoSleep).
+func (h *Handlers) HandleUpdateSandbox(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	orgID, err := requireOrgID(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	id, err := requireString(req, "id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	patch := model.UpdateSandboxRequest{
+		AutoSleep: optionalBoolPtr(req, "autoSleep"),
+	}
+	sandbox, err := h.SandboxService.Update(ctx, orgID, id, patch)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to update sandbox: %s", err.Error())), nil
+	}
+
+	return mcp.NewToolResultText(toJSON(sandbox)), nil
+}
+
 // HandleDeleteSandbox deletes a sandbox.
 func (h *Handlers) HandleDeleteSandbox(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	orgID, err := requireOrgID(ctx)
