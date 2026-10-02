@@ -22,7 +22,7 @@ import (
 const defaultNetDeviceID = "net0"
 
 // startCLH starts cmd, writes pidfile, and returns the process handle. Caller
-// must Wait (or attach to an actor) on success. Does not Release.
+// must Wait (or attach to a supervisor) on success. Does not Release.
 func startCLH(cmd *exec.Cmd, pidPath string) (*os.Process, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("process start failed: %v", err)

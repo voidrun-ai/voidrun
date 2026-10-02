@@ -29,6 +29,8 @@ import (
 var (
 	ErrSandboxNotFound   = errors.New("sandbox not found")
 	ErrSandboxNotRunning = errors.New("sandbox is not running")
+	errIdleNotDue        = errors.New("idle snapshot not due")
+	errAutoSleepOff      = errors.New("auto-sleep disabled")
 )
 
 func (s *SandboxService) recordLifecycleOp(sbxID, operation string, start time.Time, err error) {
@@ -44,37 +46,50 @@ func (s *SandboxService) recordLifecycleOp(sbxID, operation string, start time.T
 
 // SandboxService handles sandbox business logic
 type SandboxService struct {
-	repo           repository.ISandboxRepository
-	imageRepo      repository.IImageRepository
-	cfg            *config.Config
-	metrics        *metrics.Manager
-	monitor        *runtime.EventMonitor
-	projection     primitive.M
-	lifecycleLocks *SandboxLifecycleLocks // health TryAcquire; actor already serializes API ops
-	actors         *ActorRegistry
+	repo        repository.ISandboxRepository
+	imageRepo   repository.IImageRepository
+	cfg         *config.Config
+	metrics     *metrics.Manager
+	monitor     *runtime.EventMonitor
+	projection  primitive.M
+	supervisors *SupervisorRegistry
+	autoLifeSem chan struct{}
+	bootMu      sync.Mutex
+	bootWait    map[string]*bootWait
 }
 
-// NewSandboxService creates a new sandbox service. lifecycleLocks is held so
-// RefreshStatuses can TryAcquire without spinning up an actor per sandbox.
+const (
+	activityTouchGap         = 5 * time.Second
+	ensureRunningTimeout     = 10 * time.Minute
+	asyncCreateCommitTimeout = 10 * time.Second
+)
+
+type bootWait struct {
+	done chan struct{}
+	err  error
+}
+
+// NewSandboxService creates a new sandbox service.
 func NewSandboxService(
 	cfg *config.Config,
 	repo repository.ISandboxRepository,
 	imageRepo repository.IImageRepository,
 	metricsManager *metrics.Manager,
 	monitor *runtime.EventMonitor,
-	lifecycleLocks *SandboxLifecycleLocks,
 ) *SandboxService {
-	if lifecycleLocks == nil {
-		lifecycleLocks = NewSandboxLifecycleLocks()
+	conc := 10
+	if cfg != nil && cfg.AutoLifecycle.Concurrency > 0 {
+		conc = cfg.AutoLifecycle.Concurrency
 	}
-	return &SandboxService{
-		repo:           repo,
-		imageRepo:      imageRepo,
-		cfg:            cfg,
-		metrics:        metricsManager,
-		monitor:        monitor,
-		lifecycleLocks: lifecycleLocks,
-		actors:         NewActorRegistry(),
+	s := &SandboxService{
+		repo:        repo,
+		imageRepo:   imageRepo,
+		cfg:         cfg,
+		metrics:     metricsManager,
+		monitor:     monitor,
+		supervisors: NewSupervisorRegistry(),
+		autoLifeSem: make(chan struct{}, conc),
+		bootWait:    make(map[string]*bootWait),
 		projection: bson.M{
 			"_id":               1,
 			"name":              1,
@@ -88,6 +103,11 @@ func NewSandboxService(
 			"consoleLogEnabled": 1,
 			"lastActivityAt":    1,
 			"snapshottedAt":     1,
+			"packed":            1,
+			"packPath":          1,
+			"archiveKey":        1,
+			"archivedAt":        1,
+			"coldCleared":       1,
 			"createdAt":         1,
 			"orgId":             1,
 			"createdBy":         1,
@@ -101,11 +121,88 @@ func NewSandboxService(
 			"labels":            1,
 		},
 	}
+	s.supervisors.SetOnProcessExit(s.onSupervisorProcessExit)
+	s.supervisors.SetObservers(func(n int) {
+		if s.metrics != nil {
+			s.metrics.SetSupervisorCount(n)
+		}
+	}, func(kind string, d time.Duration) {
+		if s.metrics != nil {
+			s.metrics.ObserveSupervisorQueueWait(kind, d.Seconds())
+		}
+	})
+	return s
+}
+
+// AddLifecycleListener registers a subscriber (gateway, billing, audit).
+func (s *SandboxService) AddLifecycleListener(fn LifecycleListener) {
+	s.supervisors.AddLifecycleListener(fn)
+}
+
+func lifeFrom(sb *model.Sandbox, op, phase, from, to string) model.LifecycleEvent {
+	ev := model.LifecycleEvent{Op: op, Phase: phase, FromStatus: from, ToStatus: to}
+	if sb == nil {
+		return ev
+	}
+	ev.OrgID = sb.OrgID.Hex()
+	if !sb.CreatedBy.IsZero() {
+		ev.UserID = sb.CreatedBy.Hex()
+	}
+	ev.SandboxName = sb.Name
+	ev.IP = sb.IP
+	ev.PublishPorts = sb.PublishPorts
+	return ev
+}
+
+func (s *SandboxService) emitLife(ctx context.Context, id string, ev model.LifecycleEvent) {
+	s.supervisors.Emit(ctx, id, ev)
+}
+
+// attachOwned gives proc to the supervisor. On error the process is killed and reaped
+// here, because the caller no longer has a live VM to clean up.
+func attachOwned(a *Supervisor, proc *os.Process) error {
+	if err := a.Attach(proc); err != nil {
+		_ = proc.Kill()
+		_, _ = proc.Wait()
+		return err
+	}
+	return nil
 }
 
 // SetAdmission installs the optional lifecycle plugin. Only EE calls this.
 func (s *SandboxService) SetAdmission(a Admission) {
-	s.actors.SetAdmission(a)
+	s.supervisors.SetAdmission(a)
+}
+
+// onSupervisorProcessExit CAS-writes running→killed. Snapshotted/deleted rows are left alone.
+func (s *SandboxService) onSupervisorProcessExit(id string) {
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return
+	}
+	ctx := context.Background()
+	ok, err := s.repo.UpdateStatusFrom(ctx, oid, "running", "killed")
+	if err != nil {
+		log.Printf("[supervisor] %s wait status: %v", id, err)
+		return
+	}
+	if !ok {
+		return
+	}
+	cur, err := s.repo.FindByID(ctx, oid, options.FindOneOptions{Projection: bson.M{"name": 1, "orgId": 1, "createdBy": 1, "ip": 1, "publishPorts": 1}})
+	if err != nil {
+		cur = nil
+	}
+	s.emitLife(ctx, id, lifeFrom(cur, model.OpKill, model.PhaseCommitted, "running", "killed"))
+	if s.metrics == nil {
+		return
+	}
+	name := id
+	if cur != nil && cur.Name != "" {
+		name = cur.Name
+	}
+	s.metrics.SetSandboxStatus(id, name, "killed")
+	s.metrics.UnregisterSandbox(id)
 }
 
 // UpdatePublishPorts replaces the ports exposed through the public gateway.
@@ -128,6 +225,7 @@ func (s *SandboxService) UpdatePublishPorts(ctx context.Context, orgID primitive
 		return nil, ErrSandboxNotFound
 	}
 	sandbox.PublishPorts = ports
+	s.emitLife(ctx, id, lifeFrom(sandbox, model.OpPorts, model.PhaseCommitted, sandbox.Status, sandbox.Status))
 	return sandbox, nil
 }
 
@@ -160,6 +258,16 @@ func (s *SandboxService) Update(ctx context.Context, orgID primitive.ObjectID, i
 	}
 	if req.AutoSleep != nil {
 		sandbox.AutoSleep = *req.AutoSleep
+	}
+	if a := s.supervisors.Get(id); a != nil {
+		_ = a.Coalesce(func() error {
+			fresh, ferr := s.getOrgScopedSandbox(context.Background(), orgID, id)
+			if ferr != nil {
+				return ferr
+			}
+			s.syncAutoTimers(fresh)
+			return nil
+		})
 	}
 	return sandbox, nil
 }
@@ -264,13 +372,13 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	}
 	diskMB := diskMBForCreate(s.cfg.Sandbox.DefaultDiskMB, img)
 
-	if err := s.actors.beforeCreate(ctx, cpu, mem, diskMB); err != nil {
+	if err := s.supervisors.BeforeCreate(ctx, cpu, mem, diskMB); err != nil {
 		return nil, err
 	}
 	created := false
 	defer func() {
 		if !created {
-			s.actors.afterCreateFailed(cpu, mem, diskMB)
+			s.supervisors.AfterCreateFailed(cpu, mem, diskMB)
 		}
 	}()
 
@@ -291,7 +399,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		fmt.Printf("   [!] Rollback: Deleting failed instance %s\n", spec.ID)
 		if haveVM {
 			runtime.Stop(spec.ID)
-			s.actors.Unregister(spec.ID)
+			s.supervisors.Unregister(spec.ID)
 		}
 		if spec.NetNSName != "" {
 			_ = runtime.DeleteSandboxNetNS(spec.NetNSName)
@@ -335,7 +443,10 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		fmt.Printf("❌ CRITICAL BOOT ERROR: %v\n", err)
 		return nil, fmt.Errorf("boot failed: %w", err)
 	}
-	s.actors.GetOrCreate(spec.ID).Attach(proc)
+	if err := attachOwned(s.supervisors.GetOrCreate(spec.ID), proc); err != nil {
+		s.supervisors.Unregister(spec.ID)
+		return nil, fmt.Errorf("attach vm: %w", err)
+	}
 	haveVM = true
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -416,6 +527,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		return nil, fmt.Errorf("DB save failed: %w", err)
 	}
 	created = true
+	s.emitLife(ctx, spec.ID, lifeFrom(sandbox, model.OpCreate, model.PhaseCommitted, "", sandbox.Status))
 
 	if s.metrics != nil {
 		s.metrics.RegisterSandbox(spec.ID, sandbox.Name, runtime.GetSocketPath(spec.ID), cpu, mem, diskMB)
@@ -428,23 +540,17 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		s.monitor.Start(ctx, sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
 	}
 
-	s.actors.afterCreate(cpu, mem, diskMB)
+	s.supervisors.AfterCreate(cpu, mem, diskMB)
+	s.syncAutoTimers(sandbox)
 	if !syncEnabled {
-		a := s.actors.GetOrCreate(spec.ID)
-		if err := a.Enqueue(func() error {
-			s.finishAsyncCreate(sandbox, spec, netCfg, req.EnvVars, timeout)
-			return nil
-		}); err != nil {
-			s.failAsyncCreate(sandbox, spec)
-		}
+		a := s.supervisors.GetOrCreate(spec.ID)
+		go s.finishAsyncCreate(a, sandbox, spec, netCfg, req.EnvVars, timeout)
 	}
 	return sandbox, nil
 }
 
-func (s *SandboxService) finishAsyncCreate(sandbox *model.Sandbox, spec model.SandboxSpec, netCfg agentNetConfig, envVars map[string]string, timeout time.Duration) {
+func (s *SandboxService) finishAsyncCreate(a *Supervisor, sandbox *model.Sandbox, spec model.SandboxSpec, netCfg agentNetConfig, envVars map[string]string, timeout time.Duration) {
 	id := spec.ID
-	release := s.lifecycleLocks.Acquire(id)
-	defer release()
 
 	if timeout <= 0 {
 		timeout = sandboxSyncTimeout(0)
@@ -452,47 +558,59 @@ func (s *SandboxService) finishAsyncCreate(sandbox *model.Sandbox, spec model.Sa
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	if err := waitForAgent(ctx, id, timeout); err != nil {
-		log.Printf("   [SandboxService] async create agent wait failed on %s: %v\n", id, err)
-		s.failAsyncCreateLocked(sandbox, spec)
-		return
+	waitErr := waitForAgent(ctx, id, timeout)
+	var cfgErr error
+	if waitErr == nil {
+		cfgErr = configureAgentNetwork(ctx, id, &netCfg)
+		if cfgErr == nil && len(envVars) > 0 {
+			if err := setAgentEnvVars(id, envVars); err != nil {
+				fmt.Printf("[WARN] Failed to set env vars on agent: %v\n", err)
+			}
+		}
 	}
-	if cfgErr := configureAgentNetwork(ctx, id, &netCfg); cfgErr != nil {
-		if ctx.Err() != nil {
+
+	err := a.Do(context.Background(), func() error {
+		if waitErr != nil {
+			log.Printf("   [SandboxService] async create agent wait failed on %s: %v\n", id, waitErr)
 			s.failAsyncCreateLocked(sandbox, spec)
-			return
+			return nil
 		}
-		log.Printf("   [Agent] network config failed on %s: %v\n", id, cfgErr)
-	}
-	if len(envVars) > 0 {
-		if err := setAgentEnvVars(id, envVars); err != nil {
-			fmt.Printf("[WARN] Failed to set env vars on agent: %v\n", err)
+		if cfgErr != nil {
+			if ctx.Err() != nil {
+				s.failAsyncCreateLocked(sandbox, spec)
+				return nil
+			}
+			log.Printf("   [Agent] network config failed on %s: %v\n", id, cfgErr)
 		}
+		commitCtx, commitCancel := context.WithTimeout(context.Background(), asyncCreateCommitTimeout)
+		defer commitCancel()
+		ok, uerr := s.repo.UpdateStatusFrom(commitCtx, sandbox.ID, "booting", "running")
+		if uerr != nil {
+			log.Printf("   [SandboxService] async create status update failed on %s: %v\n", id, uerr)
+			return nil
+		}
+		if !ok {
+			return nil
+		}
+		s.emitLife(commitCtx, id, lifeFrom(sandbox, model.OpCreate, model.PhaseCommitted, "booting", "running"))
+		if s.metrics != nil {
+			s.metrics.SetSandboxStatus(id, sandbox.Name, "running")
+		}
+		if s.monitor != nil {
+			s.monitor.Start(context.Background(), sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
+		}
+		if err := s.repo.TouchActivity(context.Background(), sandbox.ID); err != nil {
+			log.Printf("[WARN] Failed to touch activity after async create for %s: %v", id, err)
+		}
+		now := time.Now()
+		sandbox.Status = "running"
+		sandbox.LastActivityAt = &now
+		s.syncAutoTimers(sandbox)
+		return nil
+	})
+	if err != nil && !errors.Is(err, errSupervisorStopped) {
+		log.Printf("   [SandboxService] async create commit failed on %s: %v\n", id, err)
 	}
-
-	ok, err := s.repo.UpdateStatusFrom(ctx, sandbox.ID, "booting", "running")
-	if err != nil {
-		log.Printf("   [SandboxService] async create status update failed on %s: %v\n", id, err)
-		return
-	}
-	if !ok {
-		return
-	}
-	if s.metrics != nil {
-		s.metrics.SetSandboxStatus(id, sandbox.Name, "running")
-	}
-	if s.monitor != nil {
-		s.monitor.Start(context.Background(), sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
-	}
-	if err := s.repo.TouchActivity(context.Background(), sandbox.ID); err != nil {
-		log.Printf("[WARN] Failed to touch activity after async create for %s: %v", id, err)
-	}
-}
-
-func (s *SandboxService) failAsyncCreate(sandbox *model.Sandbox, spec model.SandboxSpec) {
-	release := s.lifecycleLocks.Acquire(spec.ID)
-	defer release()
-	s.failAsyncCreateLocked(sandbox, spec)
 }
 
 // failAsyncCreateLocked CAS-transitions booting → error then stops the VM.
@@ -501,13 +619,14 @@ func (s *SandboxService) failAsyncCreate(sandbox *model.Sandbox, spec model.Sand
 // (bootFromDiskLocked), same as any other error/killed row, so the sandbox
 // keeps its IP, overlay, and packing/running reservation until an explicit
 // Delete actually removes it.
-// Caller must hold the lifecycle lock for spec.ID.
+// Caller runs on the supervisor inbox, or the supervisor has already stopped.
 func (s *SandboxService) failAsyncCreateLocked(sandbox *model.Sandbox, spec model.SandboxSpec) {
 	id := spec.ID
 	ok, err := s.repo.UpdateStatusFrom(context.Background(), sandbox.ID, "booting", "error")
 	if err != nil || !ok {
 		return
 	}
+	s.emitLife(context.Background(), id, lifeFrom(sandbox, model.OpCreate, model.PhaseFailed, "booting", "error"))
 	runtime.Stop(id)
 	if spec.NetNSName != "" {
 		_ = runtime.DeleteSandboxNetNS(spec.NetNSName)
@@ -521,7 +640,46 @@ func (s *SandboxService) failAsyncCreateLocked(sandbox *model.Sandbox, spec mode
 }
 
 func (s *SandboxService) waitIfBooting(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	timeout := sandboxSyncTimeout(s.cfg.Sandbox.SyncTimeoutSec)
+	s.bootMu.Lock()
+	if w, ok := s.bootWait[id]; ok {
+		s.bootMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-w.done:
+			return w.err
+		}
+	}
+	w := &bootWait{done: make(chan struct{})}
+	s.bootWait[id] = w
+	s.bootMu.Unlock()
+	go s.pollBooting(orgID, id, w)
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-w.done:
+		return w.err
+	}
+}
+
+func (s *SandboxService) pollBooting(orgID primitive.ObjectID, id string, w *bootWait) {
+	defer func() {
+		close(w.done)
+		s.bootMu.Lock()
+		if s.bootWait[id] == w {
+			delete(s.bootWait, id)
+		}
+		s.bootMu.Unlock()
+	}()
+
+	sec := 0
+	if s.cfg != nil {
+		sec = s.cfg.Sandbox.SyncTimeoutSec
+	}
+	timeout := sandboxSyncTimeout(sec)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
@@ -529,23 +687,27 @@ func (s *SandboxService) waitIfBooting(ctx context.Context, orgID primitive.Obje
 	for {
 		sb, err := s.getOrgScopedSandbox(ctx, orgID, id)
 		if err != nil {
-			return err
+			w.err = err
+			return
 		}
 		switch sb.Status {
 		case "booting":
 		case "running":
-			return nil
+			return
 		case "error", "killed":
-			return fmt.Errorf("sandbox boot failed (status: %s)", sb.Status)
+			w.err = fmt.Errorf("sandbox boot failed (status: %s)", sb.Status)
+			return
 		default:
-			return nil
+			return
 		}
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("sandbox still booting after %s", timeout)
+			w.err = fmt.Errorf("sandbox still booting after %s", timeout)
+			return
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			w.err = ctx.Err()
+			return
 		case <-ticker.C:
 		}
 	}
@@ -573,35 +735,21 @@ func sandboxSyncTimeout(sec int) time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
-func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	return s.actors.GetOrCreate(id).Delete(ctx, func() error {
-		release := s.lifecycleLocks.Acquire(id)
-		defer release()
-		return s.deleteLocked(ctx, orgID, id)
-	})
+func (s *SandboxService) supervisorForSandbox(ctx context.Context, orgID primitive.ObjectID, id string) (*Supervisor, error) {
+	if _, err := s.getOrgScopedSandbox(ctx, orgID, id); err != nil {
+		return nil, err
+	}
+	return s.supervisors.GetOrCreate(id), nil
 }
 
-// DeleteIfSnapshotted deletes only when the row is still snapshotted.
-// A skip returns (false, nil) so packing is not released.
-func (s *SandboxService) DeleteIfSnapshotted(ctx context.Context, orgID primitive.ObjectID, id string) (deleted bool, err error) {
-	err = s.actors.GetOrCreate(id).Delete(ctx, func() error {
-		release := s.lifecycleLocks.Acquire(id)
-		defer release()
-
-		sandbox, ferr := s.getOrgScopedSandbox(ctx, orgID, id)
-		if ferr != nil {
-			return ferr
-		}
-		if sandbox.Status != "snapshotted" {
-			return nil
-		}
-		deleted = true
-		return s.deleteLockedSandbox(ctx, orgID, id, sandbox)
-	})
+func (s *SandboxService) Delete(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	a, err := s.supervisorForSandbox(ctx, orgID, id)
 	if err != nil {
-		deleted = false
+		return err
 	}
-	return deleted, err
+	return a.Delete(ctx, func() error {
+		return s.deleteLocked(ctx, orgID, id)
+	})
 }
 
 func (s *SandboxService) deleteLocked(ctx context.Context, orgID primitive.ObjectID, id string) error {
@@ -616,15 +764,23 @@ func (s *SandboxService) deleteLockedSandbox(ctx context.Context, orgID primitiv
 	start := time.Now()
 	defer func() { s.recordLifecycleOp(id, "delete", start, err) }()
 
-	s.repo.FreeIP(ctx, sandbox.IP)
+	from := sandbox.Status
+	s.emitLife(ctx, id, lifeFrom(sandbox, model.OpDelete, model.PhaseStarting, from, "deleted"))
 
+	// Commit the status before releasing the IP. Freeing first would return the
+	// address to the pool while the row still reads snapshotted, so a failed
+	// status write could hand the same IP to another sandbox.
 	ok, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "deleted")
 	if err != nil {
+		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpDelete, model.PhaseFailed, from, from))
 		return err
 	}
 	if !ok {
+		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpDelete, model.PhaseFailed, from, from))
 		return ErrSandboxNotFound
 	}
+	s.repo.FreeIP(ctx, sandbox.IP)
+	s.emitLife(ctx, id, lifeFrom(sandbox, model.OpDelete, model.PhaseCommitted, from, "deleted"))
 
 	if s.metrics != nil {
 		s.metrics.UnregisterSandbox(id)
@@ -643,17 +799,40 @@ func (s *SandboxService) deleteLockedSandbox(ctx context.Context, orgID primitiv
 		fmt.Printf("[WARN] Failed to cleanup files for %s: %v\n", id, err)
 	}
 
-	s.actors.GetOrCreate(id).afterDelete(sandbox.Status == "running" || sandbox.Status == "booting", sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
-	s.actors.Unregister(id)
+	s.supervisors.GetOrCreate(id).AfterDelete(sandbox.Status == "running" || sandbox.Status == "booting", sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
+	s.supervisors.Unregister(id)
 	return nil
 }
 
 func (s *SandboxService) Snapshot(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	return s.actors.GetOrCreate(id).Snapshot(ctx, func() error {
-		release := s.lifecycleLocks.Acquire(id)
-		defer release()
+	a, err := s.supervisorForSandbox(ctx, orgID, id)
+	if err != nil {
+		return err
+	}
+	return a.Snapshot(ctx, func() error {
 		return s.snapshotLocked(ctx, orgID, id)
 	})
+}
+
+func (s *SandboxService) snapshotIfStillIdle(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	sb, err := s.getOrgScopedSandbox(ctx, orgID, id)
+	if err != nil {
+		return err
+	}
+	if sb.Status != "running" {
+		return fmt.Errorf("%w (current status: %s)", ErrSandboxNotRunning, sb.Status)
+	}
+	if !sb.AutoSleep {
+		return errAutoSleepOff
+	}
+	idle := time.Duration(0)
+	if s.cfg != nil {
+		idle = time.Duration(s.cfg.AutoLifecycle.SnapshotAfterIdleSec) * time.Second
+	}
+	if activityFresh(sb.LastActivityAt, idle, time.Now()) {
+		return errIdleNotDue
+	}
+	return s.snapshotLocked(ctx, orgID, id)
 }
 
 func (s *SandboxService) snapshotLocked(ctx context.Context, orgID primitive.ObjectID, id string) (err error) {
@@ -669,7 +848,10 @@ func (s *SandboxService) snapshotLocked(ctx context.Context, orgID primitive.Obj
 	start := time.Now()
 	defer func() { s.recordLifecycleOp(id, "sleep", start, err) }()
 
+	s.emitLife(ctx, id, lifeFrom(sandbox, model.OpSleep, model.PhaseStarting, "running", "snapshotted"))
+
 	if err = runtime.Snapshot(id); err != nil {
+		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpSleep, model.PhaseFailed, "running", "running"))
 		return err
 	}
 
@@ -687,32 +869,36 @@ func (s *SandboxService) snapshotLocked(ctx context.Context, orgID primitive.Obj
 		time.Sleep(time.Duration(attempt*50) * time.Millisecond)
 	}
 	if err != nil {
+		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpSleep, model.PhaseFailed, "running", "running"))
 		return fmt.Errorf("failed to persist snapshotted state for %s after retries: %w", id, err)
 	}
 	if !ok {
+		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpSleep, model.PhaseFailed, "running", "running"))
 		return ErrSandboxNotFound
 	}
+	s.emitLife(ctx, id, lifeFrom(sandbox, model.OpSleep, model.PhaseCommitted, "running", "snapshotted"))
 
 	if s.metrics != nil {
 		s.metrics.SetSandboxStatus(sandbox.ID.Hex(), sandbox.Name, "snapshotted")
 		s.metrics.UnregisterSandbox(sandbox.ID.Hex())
 	}
 
-	s.actors.GetOrCreate(id).afterSnapshot(sandbox.CPU, sandbox.Mem)
+	s.supervisors.GetOrCreate(id).AfterSnapshot(sandbox.CPU, sandbox.Mem)
+	now := time.Now()
+	sandbox.Status = "snapshotted"
+	sandbox.SnapshottedAt = &now
+	s.syncAutoTimers(sandbox)
 	return nil
 }
 
 func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	a := s.actors.GetOrCreate(id)
-	return a.Restore(ctx, func() error {
-		release := s.lifecycleLocks.Acquire(id)
-		defer release()
-
+	a := s.supervisors.GetOrCreate(id)
+	err := a.Restore(ctx, func() error {
 		sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 		if err != nil {
 			return err
 		}
-		if sandbox.Status != "snapshotted" {
+		if sandbox.Status != "snapshotted" && sandbox.Status != "archived" {
 			return fmt.Errorf("sandbox is not snapshotted (current status: %s)", sandbox.Status)
 		}
 
@@ -720,18 +906,25 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 		var opErr error
 		defer func() { s.recordLifecycleOp(id, "wake", start, opErr) }()
 
-		if err := a.beforeBoot(ctx, sandbox.CPU, sandbox.Mem); err != nil {
+		if err := a.BeforeBoot(ctx, sandbox.CPU, sandbox.Mem); err != nil {
 			opErr = err
 			return err
 		}
+		from := sandbox.Status
+		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseStarting, from, "running"))
 		opErr = s.restoreLocked(ctx, orgID, sandbox)
 		if opErr != nil {
-			a.afterBootFailed(sandbox.CPU, sandbox.Mem)
+			s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseFailed, from, from))
+			a.AfterBootFailed(sandbox.CPU, sandbox.Mem)
 			return opErr
 		}
-		a.afterBoot(sandbox.CPU, sandbox.Mem)
+		a.AfterBoot(sandbox.CPU, sandbox.Mem)
 		return nil
 	})
+	if errors.Is(err, ErrSandboxNotFound) {
+		s.supervisors.Unregister(id)
+	}
+	return err
 }
 
 // Start boots a stopped sandbox back into "running". Accepts snapshotted, killed,
@@ -739,15 +932,16 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 // that were killed before ever being snapshotted have no recoverable state and
 // must be recreated instead.
 func (s *SandboxService) Start(ctx context.Context, orgID primitive.ObjectID, id string) error {
-	a := s.actors.GetOrCreate(id)
+	a, err := s.supervisorForSandbox(ctx, orgID, id)
+	if err != nil {
+		return err
+	}
 	return a.Start(ctx, func() error {
-		release := s.lifecycleLocks.Acquire(id)
-		defer release()
 		return s.startLocked(ctx, a, orgID, id)
 	})
 }
 
-func (s *SandboxService) startLocked(ctx context.Context, a *Actor, orgID primitive.ObjectID, id string) (err error) {
+func (s *SandboxService) startLocked(ctx context.Context, a *Supervisor, orgID primitive.ObjectID, id string) (err error) {
 	sandbox, err := s.getOrgScopedSandbox(ctx, orgID, id)
 	if err != nil {
 		return err
@@ -755,14 +949,15 @@ func (s *SandboxService) startLocked(ctx context.Context, a *Actor, orgID primit
 
 	switch sandbox.Status {
 	case "running", "booting":
+		s.adoptRunning(sandbox)
 		return nil
-	case "snapshotted", "killed", "error":
+	case "snapshotted", "archived", "killed", "error":
 	default:
 		return fmt.Errorf("sandbox cannot be started from status: %s", sandbox.Status)
 	}
 
 	op := "start"
-	if sandbox.Status == "snapshotted" {
+	if sandbox.Status == "snapshotted" || sandbox.Status == "archived" {
 		op = "wake"
 	}
 	start := time.Now()
@@ -770,12 +965,16 @@ func (s *SandboxService) startLocked(ctx context.Context, a *Actor, orgID primit
 
 	if sandbox.Status == "killed" || sandbox.Status == "error" {
 		if sandboxVMRunning(id) {
-			if _, uerr := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); uerr != nil {
+			from := sandbox.Status
+			if _, uerr := s.repo.SetRunning(ctx, sandbox.ID, orgID); uerr != nil {
+				s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseFailed, from, from))
 				return fmt.Errorf("VM running but failed to update DB status: %w", uerr)
 			}
-			if err := s.repo.TouchActivity(ctx, sandbox.ID); err != nil {
-				log.Printf("[WARN] Failed to touch activity on reattach for %s: %v", id, err)
-			}
+			s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseCommitted, from, "running"))
+			now := time.Now()
+			sandbox.Status = "running"
+			sandbox.LastActivityAt = &now
+			s.adoptRunning(sandbox)
 			if s.metrics != nil {
 				s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
 			}
@@ -786,16 +985,39 @@ func (s *SandboxService) startLocked(ctx context.Context, a *Actor, orgID primit
 		}
 	}
 
+	from := sandbox.Status
 	boot := func(fn func() error) error {
-		if berr := a.beforeBoot(ctx, sandbox.CPU, sandbox.Mem); berr != nil {
+		if berr := a.BeforeBoot(ctx, sandbox.CPU, sandbox.Mem); berr != nil {
 			return berr
 		}
+		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseStarting, from, "running"))
 		if berr := fn(); berr != nil {
-			a.afterBootFailed(sandbox.CPU, sandbox.Mem)
+			s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseFailed, from, from))
+			a.AfterBootFailed(sandbox.CPU, sandbox.Mem)
 			return berr
 		}
-		a.afterBoot(sandbox.CPU, sandbox.Mem)
+		a.AfterBoot(sandbox.CPU, sandbox.Mem)
 		return nil
+	}
+
+	claimedFrom, err := s.claimWake(ctx, sandbox)
+	if err != nil {
+		return err
+	}
+	if sandbox.Status == "running" || (sandbox.Status == "booting" && claimedFrom == "") {
+		s.adoptRunning(sandbox)
+		return nil
+	}
+	if claimedFrom != "" {
+		defer func() {
+			if err != nil {
+				_, _ = s.repo.UpdateStatusFrom(context.Background(), sandbox.ID, "booting", claimedFrom)
+			}
+		}()
+	}
+
+	if err := a.BeforeWake(ctx, sandbox); err != nil {
+		return err
 	}
 
 	if runtime.GetLatestSnapshotDir(id) != "" {
@@ -814,7 +1036,7 @@ func (s *SandboxService) startLocked(ctx context.Context, a *Actor, orgID primit
 }
 
 // bootFromDiskLocked boots a sandbox from its existing overlay disk without a snapshot (memory state lost).
-// The caller MUST hold the lifecycle lock for sandbox.ID.
+// Caller runs on the supervisor inbox.
 func (s *SandboxService) bootFromDiskLocked(ctx context.Context, orgID primitive.ObjectID, sandbox *model.Sandbox, overlayPath string) error {
 	id := sandbox.ID.Hex()
 
@@ -839,7 +1061,9 @@ func (s *SandboxService) bootFromDiskLocked(ctx context.Context, orgID primitive
 	if err != nil {
 		return fmt.Errorf("failed to boot VM from disk: %w", err)
 	}
-	s.actors.GetOrCreate(id).Attach(proc)
+	if err := attachOwned(s.supervisors.GetOrCreate(id), proc); err != nil {
+		return fmt.Errorf("attach vm: %w", err)
+	}
 
 	cleanup := func() {
 		log.Printf("[BootFromDisk] Rolling back: stopping VM %s", id)
@@ -864,14 +1088,16 @@ func (s *SandboxService) bootFromDiskLocked(ctx context.Context, orgID primitive
 		syncSandboxClock(id)
 	}()
 
-	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
+	if _, err := s.repo.SetRunning(ctx, sandbox.ID, orgID); err != nil {
 		cleanup()
 		return fmt.Errorf("VM booted but failed to update DB status: %w", err)
 	}
-
-	if err := s.repo.TouchActivity(ctx, sandbox.ID); err != nil {
-		log.Printf("[WARN] Failed to touch activity on disk boot for %s: %v", id, err)
-	}
+	s.supervisors.GetOrCreate(id).AfterWake(ctx, sandbox)
+	s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseCommitted, sandbox.Status, "running"))
+	now := time.Now()
+	sandbox.Status = "running"
+	sandbox.LastActivityAt = &now
+	s.syncAutoTimers(sandbox)
 
 	if s.metrics != nil {
 		s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
@@ -884,11 +1110,27 @@ func (s *SandboxService) bootFromDiskLocked(ctx context.Context, orgID primitive
 	return nil
 }
 
-// restoreLocked performs the runtime+DB work for restoring a sandbox. The caller
-// MUST hold the lifecycle lock for sandbox.ID and MUST have verified that the
-// sandbox's status is "snapshotted" under that lock.
+// restoreLocked performs the runtime+DB work for restoring a sandbox. Caller
+// runs on the supervisor inbox and has verified that status is still "snapshotted".
 func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.ObjectID, sandbox *model.Sandbox) (err error) {
 	id := sandbox.ID.Hex()
+	var claimedFrom string
+	if !localSnapshotReady(sandbox, id) {
+		claimedFrom, err = s.claimWake(ctx, sandbox)
+		if err != nil {
+			return err
+		}
+	}
+	if claimedFrom != "" {
+		defer func() {
+			if err != nil {
+				_, _ = s.repo.UpdateStatusFrom(context.Background(), sandbox.ID, "booting", claimedFrom)
+			}
+		}()
+	}
+	if err := s.supervisors.GetOrCreate(id).BeforeWake(ctx, sandbox); err != nil {
+		return err
+	}
 
 	imageName := sandbox.Image
 	if !strings.Contains(imageName, ":") {
@@ -932,7 +1174,9 @@ func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.Obje
 	if err != nil {
 		return fmt.Errorf("failed to restore VM: %w", err)
 	}
-	s.actors.GetOrCreate(id).Attach(proc)
+	if err := attachOwned(s.supervisors.GetOrCreate(id), proc); err != nil {
+		return fmt.Errorf("attach vm: %w", err)
+	}
 
 	// From this point, the VMM is running. Any failure must clean it up.
 	cleanup := func() {
@@ -959,16 +1203,16 @@ func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.Obje
 		syncSandboxClock(id)
 	}()
 
-	// Update status to running
-	if _, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "running"); err != nil {
+	if _, err := s.repo.SetRunning(ctx, sandbox.ID, orgID); err != nil {
 		cleanup()
 		return fmt.Errorf("VM restored but failed to update DB status: %w", err)
 	}
-
-	// Touch activity on restore so the sandbox doesn't immediately get auto-snapshotted again
-	if err := s.repo.TouchActivity(ctx, sandbox.ID); err != nil {
-		log.Printf("[WARN] Failed to touch activity on restore for %s: %v", id, err)
-	}
+	s.supervisors.GetOrCreate(id).AfterWake(ctx, sandbox)
+	s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseCommitted, sandbox.Status, "running"))
+	now := time.Now()
+	sandbox.Status = "running"
+	sandbox.LastActivityAt = &now
+	s.syncAutoTimers(sandbox)
 
 	// Register with metrics
 	if s.metrics != nil {
@@ -983,51 +1227,55 @@ func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.Obje
 	return nil
 }
 
-// EnsureRunning restores a snapshotted sandbox. The actor inbox serializes
-// concurrent callers; status is re-read under the lifecycle lock.
+// EnsureRunning restores a snapshotted sandbox. The supervisor inbox serializes
+// concurrent callers; status is re-read inside the inbox fn.
 func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.ObjectID, id string) error {
 	if err := s.waitIfBooting(ctx, orgID, id); err != nil {
 		return err
 	}
-	bgCtx := context.WithoutCancel(ctx)
-	a := s.actors.GetOrCreate(id)
-	return a.Restore(bgCtx, func() error {
-		release := s.lifecycleLocks.Acquire(id)
-		defer release()
-
+	bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureRunningTimeout)
+	defer cancel()
+	a := s.supervisors.GetOrCreate(id)
+	err := a.Restore(bgCtx, func() error {
 		cur, err := s.getOrgScopedSandbox(bgCtx, orgID, id)
 		if err != nil {
 			return err
 		}
 		if cur.Status == "running" {
+			s.adoptRunning(cur)
 			return nil
 		}
-		if cur.Status != "snapshotted" {
+		if cur.Status != "snapshotted" && cur.Status != "archived" {
 			return fmt.Errorf("sandbox in unexpected state for auto-restore: %s", cur.Status)
 		}
 
-		if err := a.beforeBoot(bgCtx, cur.CPU, cur.Mem); err != nil {
+		if err := a.BeforeBoot(bgCtx, cur.CPU, cur.Mem); err != nil {
 			return err
 		}
 
 		log.Printf("[Auto-Restore] Sandbox %s is snapshotted, restoring...\n", id)
 		if err := s.restoreLocked(bgCtx, orgID, cur); err != nil {
-			a.afterBootFailed(cur.CPU, cur.Mem)
+			a.AfterBootFailed(cur.CPU, cur.Mem)
 			return fmt.Errorf("failed to auto-restore sandbox: %w", err)
 		}
-		a.afterBoot(cur.CPU, cur.Mem)
+		a.AfterBoot(cur.CPU, cur.Mem)
 		log.Printf("[Auto-Restore] Sandbox %s restored and ready\n", id)
 		return nil
 	})
+	if errors.Is(err, ErrSandboxNotFound) {
+		s.supervisors.Unregister(id)
+	}
+	return err
 }
 
 func (s *SandboxService) Info(id string) (string, error) {
 	return runtime.Info(id)
 }
 
-// RefreshStatuses checks each sandbox health and updates status field in DB.
-// Status values: running, snapshotted, killed, deleted.
-// Scoped to this node's HostID. Also resurrects false-killed rows when the local VM is still up.
+// RefreshStatuses is a dead-supervisor sweeper. Sandboxes whose supervisor already
+// supervises a process are skipped. After a host restart, VMs with no watcher
+// yet are still polled (Has(id) is not enough — GetOrCreate without WatchPID
+// must not hide a live VM from health).
 func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 	projection := bson.M{"_id": 1, "status": 1, "name": 1}
 	sandboxes, err := s.repo.FindForHealth(ctx, s.cfg.HostID, options.FindOptions{Projection: projection})
@@ -1053,17 +1301,19 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 			continue
 		}
 
+		if s.supervisors.SupervisesProcess(id) {
+			continue
+		}
+
 		wg.Add(1)
 		sem <- struct{}{}
 
 		go func() {
 			defer func() { <-sem; wg.Done() }()
 
-			release := s.lifecycleLocks.TryAcquire(id)
-			if release == nil {
+			if s.supervisors.SupervisesProcess(id) {
 				return
 			}
-			defer release()
 
 			cur, err := s.repo.FindByID(ctx, sb.ID, options.FindOneOptions{})
 			if err != nil || cur == nil {
@@ -1075,6 +1325,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 			switch cur.Status {
 			case "running":
 				if alive {
+					s.adoptRunning(cur)
 					return
 				}
 				if err := s.repo.UpdateStatusForHealth(ctx, sb.ID, "killed"); err != nil {
@@ -1097,6 +1348,10 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 				if s.monitor != nil {
 					s.monitor.Start(ctx, cur.ID, cur.OrgID, cur.CreatedBy)
 				}
+				now := time.Now()
+				cur.Status = "running"
+				cur.LastActivityAt = &now
+				s.adoptRunning(cur)
 				fmt.Printf("[health] resurrected sandbox %s (%s) — VM still running\n", cur.Name, id)
 			}
 		}()
@@ -1474,6 +1729,43 @@ func setAgentEnvVars(sbxID string, envVars map[string]string) error {
 	return nil
 }
 
+// localSnapshotReady is true when wake can use files already on disk.
+// The packer deletes those files only after archive, which requires packed,
+// so this path skips the booting claim write.
+func localSnapshotReady(sb *model.Sandbox, id string) bool {
+	if sb == nil || sb.Status != "snapshotted" || sb.Packed || sb.ColdCleared {
+		return false
+	}
+	return runtime.GetLatestSnapshotDir(id) != ""
+}
+
+// claimWake moves snapshotted or archived to booting before files are used.
+// claimedFrom is set only when this call won, so a failure can revert that update.
+func (s *SandboxService) claimWake(ctx context.Context, sandbox *model.Sandbox) (string, error) {
+	if sandbox == nil || (sandbox.Status != "snapshotted" && sandbox.Status != "archived") {
+		return "", nil
+	}
+	from := sandbox.Status
+	ok, err := s.repo.ClaimForWake(ctx, sandbox.ID, sandbox.OrgID)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		sandbox.Status = "booting"
+		return from, nil
+	}
+	cur, err := s.getOrgScopedSandbox(ctx, sandbox.OrgID, sandbox.ID.Hex())
+	if err != nil {
+		return "", err
+	}
+	sandbox.Status = cur.Status
+	sandbox.ColdCleared = cur.ColdCleared
+	sandbox.ArchiveKey = cur.ArchiveKey
+	sandbox.Packed = cur.Packed
+	sandbox.PackPath = cur.PackPath
+	return "", nil
+}
+
 func (s *SandboxService) getOrgScopedSandbox(ctx context.Context, orgID primitive.ObjectID, id string) (*model.Sandbox, error) {
 	objID, err := util.ParseObjectID(id)
 	if err != nil {
@@ -1495,5 +1787,265 @@ func (s *SandboxService) TouchActivity(ctx context.Context, id string) {
 	if err != nil {
 		return
 	}
-	_ = s.repo.TouchActivity(ctx, objID)
+	if a := s.supervisors.Get(id); a != nil && !a.NoteActivity(activityTouchGap) {
+		return
+	}
+	bg, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = s.repo.TouchActivity(bg, objID)
+	s.resetIdleFromActivity(id)
+}
+
+// AdoptLocal attaches supervisors to this node's running sandboxes after a process restart.
+// Live cloud-hypervisor pids are watched with pidfd (not Wait). Sleeping rows
+// are left to the lifecycle sweeper.
+func (s *SandboxService) AdoptLocal(ctx context.Context) error {
+	if s == nil || s.repo == nil || s.supervisors == nil {
+		return nil
+	}
+	hostID := ""
+	if s.cfg != nil {
+		hostID = s.cfg.HostID
+	}
+	sandboxes, err := s.repo.FindForHealth(ctx, hostID, options.FindOptions{})
+	if err != nil {
+		return fmt.Errorf("adopt local: %w", err)
+	}
+
+	n := 0
+	for _, sb := range sandboxes {
+		if sb == nil {
+			continue
+		}
+		id := sb.ID.Hex()
+		switch sb.Status {
+		case "running", "booting":
+			s.adoptRunning(sb)
+			n++
+		case "killed", "error":
+			if _, ok := runtime.LiveCHPID(id); !ok {
+				continue
+			}
+			from := sb.Status
+			matched, uerr := s.repo.UpdateStatusFrom(ctx, sb.ID, from, "running")
+			if uerr != nil {
+				log.Printf("[adopt] %s status: %v", id, uerr)
+				continue
+			}
+			if !matched {
+				continue
+			}
+			s.emitLife(ctx, id, lifeFrom(sb, model.OpWake, model.PhaseCommitted, from, "running"))
+			if err := s.repo.TouchActivity(ctx, sb.ID); err != nil {
+				log.Printf("[adopt] %s touch: %v", id, err)
+			}
+			now := time.Now()
+			sb.Status = "running"
+			sb.LastActivityAt = &now
+			s.adoptRunning(sb)
+			if s.metrics != nil {
+				s.metrics.RegisterSandbox(id, sb.Name, runtime.GetSocketPath(id), sb.CPU, sb.Mem, sb.DiskMB)
+			}
+			if s.monitor != nil {
+				s.monitor.Start(ctx, sb.ID, sb.OrgID, sb.CreatedBy)
+			}
+			n++
+		}
+	}
+	if n > 0 {
+		log.Printf("[adopt] adopted %d local sandboxes", n)
+	}
+	return nil
+}
+
+// adoptRunning creates the supervisor, watches a live CLH pid if present, and arms
+// idle timers from the Mongo row. Safe from health, Start, and EnsureRunning.
+func (s *SandboxService) adoptRunning(sb *model.Sandbox) {
+	if s == nil || s.supervisors == nil || sb == nil {
+		return
+	}
+	id := sb.ID.Hex()
+	a := s.supervisors.GetOrCreate(id)
+	if pid, ok := runtime.LiveCHPID(id); ok {
+		a.WatchPID(pid)
+	}
+	s.syncAutoTimers(sb)
+}
+
+// activityFresh reports whether last is still inside the idle window.
+// The idle timer only wakes the supervisor; the row decides whether to snapshot.
+func activityFresh(last *time.Time, idle time.Duration, now time.Time) bool {
+	if last == nil || idle <= 0 {
+		return false
+	}
+	return now.Sub(*last) < idle
+}
+
+func remainingSince(t *time.Time, sec int, now time.Time) time.Duration {
+	if sec <= 0 {
+		return -1
+	}
+	if t == nil {
+		return 0
+	}
+	d := t.Add(time.Duration(sec) * time.Second).Sub(now)
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+func (s *SandboxService) autoLifeOn() bool {
+	return s != nil && s.cfg != nil && s.cfg.AutoLifecycle.Enabled
+}
+
+func (s *SandboxService) acquireAutoLife(ctx context.Context) error {
+	if s == nil || s.autoLifeSem == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case s.autoLifeSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *SandboxService) releaseAutoLife() {
+	if s == nil || s.autoLifeSem == nil {
+		return
+	}
+	select {
+	case <-s.autoLifeSem:
+	default:
+	}
+}
+
+func (s *SandboxService) fireIdleSnapshot(id string, orgID primitive.ObjectID) func() {
+	return func() {
+		a := s.supervisors.Get(id)
+		if a == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if err := s.acquireAutoLife(ctx); err != nil {
+			s.rearmIdle(id, orgID)
+			return
+		}
+		defer s.releaseAutoLife()
+		if err := a.Snapshot(ctx, func() error {
+			return s.snapshotIfStillIdle(ctx, orgID, id)
+		}); err != nil {
+			switch {
+			case errors.Is(err, errIdleNotDue):
+				s.rearmIdle(id, orgID)
+				return
+			case errors.Is(err, errAutoSleepOff), errors.Is(err, ErrSandboxNotFound), errors.Is(err, ErrSandboxNotRunning), errors.Is(err, errSupervisorStopped):
+			default:
+				log.Printf("[lifecycle] auto-snapshot failed for %s: %v", id, err)
+				s.rearmIdle(id, orgID)
+			}
+			return
+		}
+		log.Printf("[lifecycle] auto-snapshotted sandbox %s after idle", id)
+	}
+}
+
+func (s *SandboxService) rearmIdle(id string, orgID primitive.ObjectID) {
+	if s == nil || !s.autoLifeOn() {
+		return
+	}
+	a := s.supervisors.Get(id)
+	if a == nil {
+		return
+	}
+	_, autoSleep := a.AutoLifeMeta()
+	if !autoSleep {
+		return
+	}
+	sec := s.cfg.AutoLifecycle.SnapshotAfterIdleSec
+	if sec <= 0 {
+		return
+	}
+	a.SetIdleAfter(time.Duration(sec)*time.Second, s.fireIdleSnapshot(id, orgID))
+}
+
+// ApplySleep deletes a sleeping sandbox once its retention timer is due.
+func (s *SandboxService) ApplySleep(ctx context.Context, orgID primitive.ObjectID, id string) error {
+	if s == nil || s.supervisors == nil || s.cfg == nil {
+		return nil
+	}
+	sb, err := s.getOrgScopedSandbox(ctx, orgID, id)
+	if err != nil {
+		return err
+	}
+	if dueSleepAction(sb, s.cfg.AutoLifecycle.DeleteAfterSnapshottedSec, 0, 0, false, time.Now()) != sleepDelete {
+		return nil
+	}
+	a := s.supervisors.GetOrCreate(id)
+	return a.Delete(ctx, func() error {
+		cur, ferr := s.getOrgScopedSandbox(ctx, orgID, id)
+		if ferr != nil {
+			return ferr
+		}
+		if cur.Status != "snapshotted" && cur.Status != "archived" {
+			return nil
+		}
+		return s.deleteLockedSandbox(ctx, orgID, id, cur)
+	})
+}
+
+func (s *SandboxService) resetIdleFromActivity(id string) {
+	if s == nil || s.supervisors == nil || !s.autoLifeOn() {
+		return
+	}
+	a := s.supervisors.Get(id)
+	if a == nil || !a.IdleArmed() {
+		return
+	}
+	sec := s.cfg.AutoLifecycle.SnapshotAfterIdleSec
+	if sec <= 0 {
+		a.StopIdleTimer()
+		return
+	}
+	orgID, _ := a.AutoLifeMeta()
+	a.SetIdleAfter(time.Duration(sec)*time.Second, s.fireIdleSnapshot(id, orgID))
+}
+
+// syncAutoTimers arms or clears supervisor timers from the sandbox row.
+// No-op if no supervisor exists — do not GetOrCreate here (health skips only
+// SupervisesProcess; an unsupervised supervisor must still be visible to health).
+func (s *SandboxService) syncAutoTimers(sb *model.Sandbox) {
+	if s == nil || s.supervisors == nil || sb == nil {
+		return
+	}
+	id := sb.ID.Hex()
+	a := s.supervisors.Get(id)
+	if a == nil {
+		return
+	}
+	a.SetAutoLifeMeta(sb.OrgID, sb.AutoSleep)
+	if !s.autoLifeOn() {
+		a.StopIdleTimer()
+		return
+	}
+	switch sb.Status {
+	case "running":
+		sec := s.cfg.AutoLifecycle.SnapshotAfterIdleSec
+		if !sb.AutoSleep || sec <= 0 {
+			a.StopIdleTimer()
+			return
+		}
+		d := time.Duration(sec) * time.Second
+		if sb.LastActivityAt != nil {
+			d = remainingSince(sb.LastActivityAt, sec, time.Now())
+		}
+		a.SetIdleAfter(d, s.fireIdleSnapshot(id, sb.OrgID))
+	default:
+		a.StopIdleTimer()
+	}
 }

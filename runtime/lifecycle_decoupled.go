@@ -444,11 +444,17 @@ func restoreDecoupled(cfg config.Config, spec model.SandboxSpec, overlayPath, sn
 	ramErrCh := make(chan error, 1)
 	ramDoneCh := make(chan time.Duration, 1)
 	ramStart := time.Now()
-	go func() {
-		err := RestoreRAMFromSnapshot(spec.ID, snapshotDir)
-		ramDoneCh <- time.Since(ramStart)
-		ramErrCh <- err
-	}()
+	if RAMAlreadyRestored != nil && RAMAlreadyRestored(spec.ID) {
+		log.Printf("[RestoreDecoupled/phase] %s ramCopy=skipped", spec.ID)
+		ramDoneCh <- 0
+		ramErrCh <- nil
+	} else {
+		go func() {
+			err := RestoreRAMFromSnapshot(spec.ID, snapshotDir)
+			ramDoneCh <- time.Since(ramStart)
+			ramErrCh <- err
+		}()
+	}
 
 	args := []string{
 		"--api-socket", socketPath,
