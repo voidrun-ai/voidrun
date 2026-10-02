@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"time"
 
 	"voidrun/model"
 
@@ -13,32 +12,6 @@ import (
 func healthFilter(nodeID string) bson.M {
 	// Include killed/error so this node can resurrect false-killed rows when the VM is still up.
 	filter := bson.M{"status": bson.M{"$ne": "deleted"}}
-	if nodeID != "" {
-		filter["nodeId"] = nodeID
-	}
-	return filter
-}
-
-func idleRunningFilter(nodeID string, threshold time.Time) bson.M {
-	filter := bson.M{
-		"status": "running",
-		"$or": []bson.M{
-			{"autoSleep": bson.M{"$ne": false}},
-			{"autoSleep": bson.M{"$exists": false}},
-		},
-		"lastActivityAt": bson.M{"$lt": threshold},
-	}
-	if nodeID != "" {
-		filter["nodeId"] = nodeID
-	}
-	return filter
-}
-
-func staleSnapshottedFilter(nodeID string, threshold time.Time) bson.M {
-	filter := bson.M{
-		"status":        "snapshotted",
-		"snapshottedAt": bson.M{"$lt": threshold},
-	}
 	if nodeID != "" {
 		filter["nodeId"] = nodeID
 	}
@@ -75,32 +48,21 @@ func (r *SandboxRepository) FindForHealth(ctx context.Context, nodeID string, op
 	return sandboxes, nil
 }
 
-// FindIdleRunning finds running sandboxes on this node that have been idle since before the threshold.
-func (r *SandboxRepository) FindIdleRunning(ctx context.Context, nodeID string, threshold time.Time) ([]*model.Sandbox, error) {
-	if nodeID == "" {
-		return nil, nil
+func sleepingFilter(nodeID string) bson.M {
+	filter := bson.M{"status": bson.M{"$in": []string{"snapshotted", "archived"}}}
+	if nodeID != "" {
+		filter["nodeId"] = nodeID
 	}
-	cursor, err := r.collection.Find(ctx, idleRunningFilter(nodeID, threshold), &options.FindOptions{
-		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1},
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-	var sandboxes []*model.Sandbox
-	if err = cursor.All(ctx, &sandboxes); err != nil {
-		return nil, err
-	}
-	return sandboxes, nil
+	return filter
 }
 
-// FindStaleSnapshotted finds snapshotted sandboxes on this node older than the threshold.
-func (r *SandboxRepository) FindStaleSnapshotted(ctx context.Context, nodeID string, threshold time.Time) ([]*model.Sandbox, error) {
+// FindSleeping returns this node's snapshotted and archived sandboxes.
+func (r *SandboxRepository) FindSleeping(ctx context.Context, nodeID string) ([]*model.Sandbox, error) {
 	if nodeID == "" {
 		return nil, nil
 	}
-	cursor, err := r.collection.Find(ctx, staleSnapshottedFilter(nodeID, threshold), &options.FindOptions{
-		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1, "createdBy": 1, "tapName": 1, "netnsName": 1},
+	cursor, err := r.collection.Find(ctx, sleepingFilter(nodeID), &options.FindOptions{
+		Projection: bson.M{"_id": 1, "orgId": 1, "name": 1, "status": 1, "packed": 1, "snapshottedAt": 1, "archiveKey": 1, "coldCleared": 1},
 	})
 	if err != nil {
 		return nil, err

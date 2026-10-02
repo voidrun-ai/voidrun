@@ -137,6 +137,7 @@ func (s *Server) Run() error {
 	if s.router == nil {
 		return fmt.Errorf("routes not set up; call SetupRoutes first")
 	}
+	s.adoptLocalSandboxes()
 	s.startHealthMonitor()
 	s.resumeEventWatchers()
 	s.startLifecycleManager()
@@ -155,6 +156,15 @@ func (s *Server) Run() error {
 	}
 	fmt.Printf("🚀 VoidRun Server %s running on %s\n", versionLine, s.cfg.Server.Address())
 	return s.router.Run(s.cfg.Server.Address())
+}
+
+func (s *Server) adoptLocalSandboxes() {
+	if s.services == nil || s.services.Sandbox == nil {
+		return
+	}
+	if err := s.services.Sandbox.AdoptLocal(context.Background()); err != nil {
+		fmt.Printf("[adopt] %v\n", err)
+	}
 }
 
 func (s *Server) startLifecycleManager() {

@@ -72,6 +72,8 @@ type Manager struct {
 	hostAllocVcpu       *prometheus.GaugeVec
 	hostAllocMemBytes   *prometheus.GaugeVec
 	hostAllocDiskBytes  *prometheus.GaugeVec
+	supervisorCount     prometheus.Gauge
+	supervisorQueueWait *prometheus.HistogramVec
 }
 
 type allocSpec struct {
@@ -362,6 +364,18 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		[]string{"sbx_id", "sbx_name", "voidrun_host", "device"},
 	)
 
+	supervisorCount := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name:        "voidrun_supervisor_count",
+		Help:        "Live sandbox supervisors on this node",
+		ConstLabels: prometheus.Labels{"voidrun_host": hostname},
+	})
+	supervisorQueueWait := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:        "voidrun_supervisor_queue_wait_seconds",
+		Help:        "Time a sandbox command waited before the supervisor ran it",
+		Buckets:     prometheus.DefBuckets,
+		ConstLabels: prometheus.Labels{"voidrun_host": hostname},
+	}, []string{"kind"})
+
 	registry.MustRegister(
 		cpuUsage,
 		memUsed,
@@ -393,6 +407,8 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		netTxBytes,
 		netRxFrames,
 		netTxFrames,
+		supervisorCount,
+		supervisorQueueWait,
 	)
 	registry.MustRegister(
 		prometheus.NewGoCollector(),
@@ -442,7 +458,29 @@ func NewManager(cfg config.MetricsConfig) *Manager {
 		hostAllocVcpu:       hostAllocVcpu,
 		hostAllocMemBytes:   hostAllocMemBytes,
 		hostAllocDiskBytes:  hostAllocDiskBytes,
+		supervisorCount:     supervisorCount,
+		supervisorQueueWait: supervisorQueueWait,
 	}
+}
+
+func (m *Manager) SetSupervisorCount(n int) {
+	if m == nil || m.supervisorCount == nil {
+		return
+	}
+	m.supervisorCount.Set(float64(n))
+}
+
+func (m *Manager) ObserveSupervisorQueueWait(kind string, seconds float64) {
+	if m == nil || m.supervisorQueueWait == nil {
+		return
+	}
+	if kind == "" {
+		kind = "command"
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	m.supervisorQueueWait.WithLabelValues(kind).Observe(seconds)
 }
 
 func (m *Manager) Start(ctx context.Context) {
@@ -583,7 +621,7 @@ func sandboxStatusValue(status string) float64 {
 		return 1
 	case "booting":
 		return 6
-	case "snapshotted":
+	case "snapshotted", "archived":
 		return 2
 	case "paused":
 		return 3

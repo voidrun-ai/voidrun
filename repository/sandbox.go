@@ -38,10 +38,15 @@ type ISandboxRepository interface {
 	NextAvailableIP() (string, error)
 	// Lifecycle management methods
 	TouchActivity(ctx context.Context, id primitive.ObjectID) error
+	SetRunning(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	SetSnapshottedAt(ctx context.Context, id primitive.ObjectID) error
 	SetSnapshottedAtAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
-	FindIdleRunning(ctx context.Context, nodeID string, threshold time.Time) ([]*model.Sandbox, error)
-	FindStaleSnapshotted(ctx context.Context, nodeID string, threshold time.Time) ([]*model.Sandbox, error)
+	SetPackedAndOrg(ctx context.Context, id, orgID primitive.ObjectID, packPath string) (bool, error)
+	SetArchivedAndOrg(ctx context.Context, id, orgID primitive.ObjectID, archiveKey string) (bool, error)
+	ClaimColdClear(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
+	ClaimForWake(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
+	ClearPackFieldsAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
+	FindSleeping(ctx context.Context, nodeID string) ([]*model.Sandbox, error)
 	FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
 	FreeIP(ctx context.Context, ip string)
 	ListWithPublishPorts(ctx context.Context, statuses []string) ([]*model.Sandbox, error)
@@ -282,6 +287,20 @@ func (r *SandboxRepository) UpdateStatusByIDAndOrg(ctx context.Context, id, orgI
 	return res.MatchedCount > 0, nil
 }
 
+// SetRunning marks the sandbox running and stamps lastActivityAt in one write.
+func (r *SandboxRepository) SetRunning(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
+	now := time.Now()
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": bson.M{
+		"status":         "running",
+		"updatedAt":      now,
+		"lastActivityAt": now,
+	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
 func (r *SandboxRepository) UpdateTapNameByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName string) (bool, error) {
 	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": bson.M{
 		"tapName":   tapName,
@@ -368,21 +387,103 @@ func (r *SandboxRepository) TouchActivity(ctx context.Context, id primitive.Obje
 // SetSnapshottedAt sets the snapshottedAt timestamp and status to snapshotted
 func (r *SandboxRepository) SetSnapshottedAt(ctx context.Context, id primitive.ObjectID) error {
 	now := time.Now()
-	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
-		"status":        "snapshotted",
-		"snapshottedAt": now,
-		"updatedAt":     now,
-	}})
+	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+		"$set": bson.M{
+			"status":        "snapshotted",
+			"snapshottedAt": now,
+			"updatedAt":     now,
+		},
+		"$unset": bson.M{"coldCleared": ""},
+	})
 	return err
 }
 
 func (r *SandboxRepository) SetSnapshottedAtAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
 	now := time.Now()
-	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": bson.M{
-		"status":        "snapshotted",
-		"snapshottedAt": now,
-		"updatedAt":     now,
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{
+		"$set": bson.M{
+			"status":        "snapshotted",
+			"snapshottedAt": now,
+			"updatedAt":     now,
+			"packed":        false,
+			"packPath":      "",
+		},
+		"$unset": bson.M{"archiveKey": "", "archivedAt": "", "coldCleared": ""},
+	})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+func (r *SandboxRepository) SetPackedAndOrg(ctx context.Context, id, orgID primitive.ObjectID, packPath string) (bool, error) {
+	now := time.Now()
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID, "status": "snapshotted"}, bson.M{"$set": bson.M{
+		"packed":    true,
+		"packPath":  packPath,
+		"updatedAt": now,
 	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+func (r *SandboxRepository) SetArchivedAndOrg(ctx context.Context, id, orgID primitive.ObjectID, archiveKey string) (bool, error) {
+	now := time.Now()
+	res, err := r.collection.UpdateOne(ctx, bson.M{
+		"_id": id, "orgId": orgID, "status": "snapshotted", "packed": true,
+	}, bson.M{"$set": bson.M{
+		"status":     "archived",
+		"archiveKey": archiveKey,
+		"archivedAt": now,
+		"packed":     false,
+		"packPath":   "",
+		"updatedAt":  now,
+	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+// ClaimColdClear marks an archived row so the packer may delete local files.
+// A wake that already moved the row off archived does not match.
+func (r *SandboxRepository) ClaimColdClear(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
+	res, err := r.collection.UpdateOne(ctx, bson.M{
+		"_id": id, "orgId": orgID, "status": "archived", "coldCleared": bson.M{"$ne": true},
+	}, bson.M{"$set": bson.M{
+		"coldCleared": true,
+		"updatedAt":   time.Now(),
+	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+// ClaimForWake moves snapshotted or archived to booting before local files are used.
+// It does not match a row the packer already marked coldCleared.
+func (r *SandboxRepository) ClaimForWake(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
+	res, err := r.collection.UpdateOne(ctx, bson.M{
+		"_id": id, "orgId": orgID,
+		"status":      bson.M{"$in": bson.A{"snapshotted", "archived"}},
+		"coldCleared": bson.M{"$ne": true},
+	}, bson.M{"$set": bson.M{
+		"status":    "booting",
+		"updatedAt": time.Now(),
+	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+func (r *SandboxRepository) ClearPackFieldsAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{
+		"$set":   bson.M{"packed": false, "packPath": "", "updatedAt": time.Now()},
+		"$unset": bson.M{"archiveKey": "", "archivedAt": ""},
+	})
 	if err != nil {
 		return false, err
 	}
@@ -413,7 +514,7 @@ func (r *SandboxRepository) ListWithPublishPorts(ctx context.Context, statuses [
 
 func (r *SandboxRepository) ListWithPublishPortsForNode(ctx context.Context, nodeID string, statuses []string) ([]*model.Sandbox, error) {
 	if len(statuses) == 0 {
-		statuses = []string{"running", "snapshotted", "paused"}
+		statuses = []string{"running", "snapshotted", "archived", "paused"}
 	}
 	filter := bson.M{
 		"status":       bson.M{"$in": statuses},

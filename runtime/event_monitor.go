@@ -157,7 +157,7 @@ func (w *sandboxWatcher) run(ctx context.Context) {
 	}
 }
 
-// poll reads new JSON objects from offset, persists them, returns the new offset.
+// poll reads new JSON objects from offset, logs them, returns the new offset.
 func (w *sandboxWatcher) poll(ctx context.Context, offset int64) (int64, error) {
 	f, err := os.Open(w.eventPath)
 	if err != nil {
@@ -215,8 +215,8 @@ func (w *sandboxWatcher) poll(ctx context.Context, offset int64) (int64, error) 
 
 		if len(batch) >= w.cfg.BatchSize {
 			w.finalizeTimestamps(batch)
-			if err := w.sink.SaveEvents(ctx, batch); err != nil {
-				return offset, fmt.Errorf("save events batch: %w", err)
+			if err := w.persist(ctx, batch); err != nil {
+				return offset, fmt.Errorf("log events batch: %w", err)
 			}
 			offset += decoder.InputOffset()
 			w.saveOffset(offset)
@@ -227,12 +227,20 @@ func (w *sandboxWatcher) poll(ctx context.Context, offset int64) (int64, error) 
 	// Flush remaining batch
 	if len(batch) > 0 {
 		w.finalizeTimestamps(batch)
-		if err := w.sink.SaveEvents(ctx, batch); err != nil {
-			return offset, fmt.Errorf("save events final batch: %w", err)
+		if err := w.persist(ctx, batch); err != nil {
+			return offset, fmt.Errorf("log events final batch: %w", err)
 		}
 	}
 
 	return offset + decoder.InputOffset(), nil
+}
+
+func (w *sandboxWatcher) persist(_ context.Context, events []*model.SandboxEvent) error {
+	id := w.sandboxID.Hex()
+	for _, ev := range events {
+		log.Printf("[event_monitor] %s clh %s", id, ev.Event)
+	}
+	return nil
 }
 
 // finalizeTimestamps adjusts the event timestamps in a batch.
@@ -287,6 +295,10 @@ func (m *EventMonitor) SetRootContext(ctx context.Context) {
 	m.mu.Lock()
 	m.rootCtx = ctx
 	m.mu.Unlock()
+}
+
+func (m *EventMonitor) Sink() EventSink {
+	return m.sink
 }
 
 // Start begins watching the CLH event file for a newly created sandbox.

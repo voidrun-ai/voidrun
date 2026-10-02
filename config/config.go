@@ -67,7 +67,7 @@ type AutoLifecycleConfig struct {
 	Enabled                   bool
 	SnapshotAfterIdleSec      int // auto-snapshot after N seconds of inactivity (default: 60)
 	DeleteAfterSnapshottedSec int // auto-delete after N seconds of being snapshotted (default: 604800)
-	CheckIntervalSec          int // how often the manager scans (default: 30)
+	CheckIntervalSec          int // how often the no-supervisor backstop scans (default: 30)
 	Concurrency               int // max concurrent snapshot/delete operations (default: 10)
 }
 

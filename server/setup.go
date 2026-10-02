@@ -84,14 +84,10 @@ func InitServices(cfg *config.Config, repos *Repositories, metricsManager *metri
 		monitor.SetRootContext(context.Background())
 	}
 
-	// Per-sandbox lock for RefreshStatuses TryAcquire. API lifecycle ops
-	// serialize on the actor; the sweeper goes through SandboxService.
-	lifecycleLocks := service.NewSandboxLifecycleLocks()
-
 	// Build the sandbox service eagerly so the lifecycle manager can reuse its
 	// Snapshot implementation directly. This keeps the manual /snapshot API
 	// and the auto-snapshot sweep on a single shared code path.
-	sandboxSvc := service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor, lifecycleLocks)
+	sandboxSvc := service.NewSandboxService(cfg, repos.Sandbox, repos.Image, metricsManager, monitor)
 
 	return &Services{
 		User:             service.NewUserService(cfg, repos.User, clerkSvc, orgSvc),

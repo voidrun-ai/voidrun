@@ -10,12 +10,13 @@ require (
 	github.com/clerk/clerk-sdk-go/v2 v2.5.1
 	github.com/gorilla/websocket v1.5.1
 	github.com/joho/godotenv v1.5.1
+	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/mark3labs/mcp-go v0.30.0
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/vishvananda/netlink v1.3.1
 	go.mongodb.org/mongo-driver v1.16.1
 	golang.org/x/crypto v0.46.0
-	golang.org/x/sync v0.19.0
+	golang.org/x/sync v0.19.0 // indirect
 )
 
 require (
@@ -37,7 +38,6 @@ require (
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

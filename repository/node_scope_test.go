@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"testing"
-	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -41,48 +40,14 @@ func TestFindForHealthEmptyNodeReturnsNil(t *testing.T) {
 	}
 }
 
-func TestFindIdleRunningEmptyNodeReturnsNil(t *testing.T) {
+func TestFindSleepingEmptyNodeReturnsNil(t *testing.T) {
 	r := &SandboxRepository{}
-	got, err := r.FindIdleRunning(context.Background(), "", time.Now())
+	got, err := r.FindSleeping(context.Background(), "")
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if got != nil {
 		t.Fatalf("got = %#v, want nil", got)
-	}
-}
-
-func TestIdleRunningFilterScopesToNode(t *testing.T) {
-	got := idleRunningFilter("node-a", time.Unix(1, 0).UTC())
-	if got["nodeId"] != "node-a" {
-		t.Fatalf("nodeId = %v", got["nodeId"])
-	}
-	if got["status"] != "running" {
-		t.Fatalf("status = %v", got["status"])
-	}
-}
-
-func TestIdleRunningFilterExcludesAutoSleepFalse(t *testing.T) {
-	got := idleRunningFilter("node-a", time.Unix(1, 0).UTC())
-	or, ok := got["$or"].([]bson.M)
-	if !ok || len(or) != 2 {
-		t.Fatalf("$or = %#v, want two autoSleep clauses", got["$or"])
-	}
-	if or[0]["autoSleep"].(bson.M)["$ne"] != false {
-		t.Fatalf("first clause = %#v", or[0])
-	}
-	if or[1]["autoSleep"].(bson.M)["$exists"] != false {
-		t.Fatalf("second clause = %#v", or[1])
-	}
-}
-
-func TestStaleSnapshottedFilterScopesToNode(t *testing.T) {
-	got := staleSnapshottedFilter("node-b", time.Unix(1, 0).UTC())
-	if got["nodeId"] != "node-b" {
-		t.Fatalf("nodeId = %v", got["nodeId"])
-	}
-	if got["status"] != "snapshotted" {
-		t.Fatalf("status = %v", got["status"])
 	}
 }
 

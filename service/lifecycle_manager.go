@@ -2,9 +2,7 @@ package service
 
 import (
 	"context"
-	"errors"
 	"log"
-	"sync"
 	"time"
 
 	"voidrun/config"
@@ -15,14 +13,14 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-// Snapshotter is the subset of SandboxService used by auto-snapshot and auto-delete.
-// Implementations must be goroutine-safe and serialize per sandbox (actor inbox).
+// Snapshotter is the subset of SandboxService used by the sleep sweeper.
+// Implementations must be goroutine-safe and serialize per sandbox (supervisor inbox).
 type Snapshotter interface {
-	Snapshot(ctx context.Context, orgID primitive.ObjectID, id string) error
-	DeleteIfSnapshotted(ctx context.Context, orgID primitive.ObjectID, id string) (deleted bool, err error)
+	ApplySleep(ctx context.Context, orgID primitive.ObjectID, id string) error
 }
 
-// LifecycleManager runs periodic scans to auto-snapshot and auto-delete sandboxes.
+// LifecycleManager sweeps this node's snapshotted and archived sandboxes.
+// Idle snapshot stays on the supervisor. Delete runs here. Pack and S3 upload run in the EE packer.
 type LifecycleManager struct {
 	repo        repository.ISandboxRepository
 	cfg         config.AutoLifecycleConfig
@@ -30,11 +28,12 @@ type LifecycleManager struct {
 	monitor     *runtime.EventMonitor
 	metrics     *metrics.Manager
 	snapshotter Snapshotter
+	sem         chan struct{}
 }
 
 // NewLifecycleManager wires the sweeper. snapshotter must be the SandboxService
-// used for manual lifecycle ops so auto and API flows share the actor inbox.
-// hostID scopes idle/stale scans to this node's sandboxes only.
+// used for manual lifecycle ops so auto and API flows share the supervisor inbox.
+// hostID scopes scans to this node's sandboxes only.
 func NewLifecycleManager(
 	cfg config.AutoLifecycleConfig,
 	hostID *string,
@@ -43,6 +42,10 @@ func NewLifecycleManager(
 	metricsManager *metrics.Manager,
 	snapshotter Snapshotter,
 ) *LifecycleManager {
+	conc := cfg.Concurrency
+	if conc <= 0 {
+		conc = 10
+	}
 	return &LifecycleManager{
 		repo:        repo,
 		cfg:         cfg,
@@ -50,7 +53,15 @@ func NewLifecycleManager(
 		monitor:     monitor,
 		metrics:     metricsManager,
 		snapshotter: snapshotter,
+		sem:         make(chan struct{}, conc),
 	}
+}
+
+func sleepJobTimeout(act sleepAct) time.Duration {
+	if act == sleepArchive {
+		return time.Minute
+	}
+	return 30 * time.Minute
 }
 
 func (m *LifecycleManager) nodeID() string {
@@ -60,9 +71,9 @@ func (m *LifecycleManager) nodeID() string {
 	return *m.hostID
 }
 
-// Start launches the lifecycle scan loop in a background goroutine.
+// Start launches the sleep-stage scan loop in a background goroutine.
 func (m *LifecycleManager) Start(ctx context.Context) {
-	if !m.cfg.Enabled {
+	if m == nil || !m.cfg.Enabled {
 		log.Println("[lifecycle] auto-lifecycle management is disabled")
 		return
 	}
@@ -73,8 +84,8 @@ func (m *LifecycleManager) Start(ctx context.Context) {
 	}
 	interval := time.Duration(intervalSec) * time.Second
 
-	log.Printf("[lifecycle] started host=%s (check every %s, snapshot-idle=%ds, delete-snapshotted=%ds)",
-		m.nodeID(), interval, m.cfg.SnapshotAfterIdleSec, m.cfg.DeleteAfterSnapshottedSec)
+	log.Printf("[lifecycle] started host=%s (check every %s, delete=%ds)",
+		m.nodeID(), interval, m.cfg.DeleteAfterSnapshottedSec)
 
 	ticker := time.NewTicker(interval)
 	go func() {
@@ -85,118 +96,45 @@ func (m *LifecycleManager) Start(ctx context.Context) {
 				log.Println("[lifecycle] stopped")
 				return
 			case <-ticker.C:
-				m.tick(ctx)
+				m.sweepSleep(ctx)
 			}
 		}
 	}()
 }
 
-func (m *LifecycleManager) tick(ctx context.Context) {
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		m.autoSnapshot(ctx)
-	}()
-
-	go func() {
-		defer wg.Done()
-		m.autoDelete(ctx)
-	}()
-
-	wg.Wait()
-}
-
-// autoSnapshot snapshots running sandboxes that have been idle too long.
-func (m *LifecycleManager) autoSnapshot(ctx context.Context) {
-	if m.cfg.SnapshotAfterIdleSec <= 0 {
+func (m *LifecycleManager) sweepSleep(ctx context.Context) {
+	if m == nil || m.repo == nil || m.snapshotter == nil {
 		return
 	}
-
-	threshold := time.Now().Add(-time.Duration(m.cfg.SnapshotAfterIdleSec) * time.Second)
-	sandboxes, err := m.repo.FindIdleRunning(ctx, m.nodeID(), threshold)
+	sandboxes, err := m.repo.FindSleeping(ctx, m.nodeID())
 	if err != nil {
-		log.Printf("[lifecycle] auto-snapshot query failed: %v", err)
+		log.Printf("[lifecycle] sleep sweep query failed: %v", err)
 		return
 	}
 
-	maxConc := m.cfg.Concurrency
-	if maxConc <= 0 {
-		maxConc = 10
-	}
-	sem := make(chan struct{}, maxConc)
-	var wg sync.WaitGroup
-
+	now := time.Now()
 	for _, sb := range sandboxes {
-		sb := sb
-		wg.Add(1)
-		sem <- struct{}{}
-
+		if sb == nil {
+			continue
+		}
+		act := dueSleepAction(sb, m.cfg.DeleteAfterSnapshottedSec, 0, 0, false, now)
+		if act == sleepNone {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case m.sem <- struct{}{}:
+		default:
+			continue
+		}
 		go func() {
-			defer func() { <-sem; wg.Done() }()
-
-			id := sb.ID.Hex()
-
-			// Delegate to the public Snapshot path so manual + auto flows can't drift.
-			// Races against concurrent transitions surface as ErrSandboxNotFound /
-			// ErrSandboxNotRunning and are expected here.
-			if err := m.snapshotter.Snapshot(ctx, sb.OrgID, id); err != nil {
-				switch {
-				case errors.Is(err, ErrSandboxNotFound), errors.Is(err, ErrSandboxNotRunning):
-					return
-				default:
-					log.Printf("[lifecycle] auto-snapshot failed for %s (%s): %v", sb.Name, id, err)
-					return
-				}
-			}
-			log.Printf("[lifecycle] auto-snapshotted sandbox %s (%s) after %ds idle", sb.Name, id, m.cfg.SnapshotAfterIdleSec)
-		}()
-	}
-	wg.Wait()
-}
-
-// autoDelete deletes snapshotted sandboxes that have been snapshotted too long.
-func (m *LifecycleManager) autoDelete(ctx context.Context) {
-	if m.cfg.DeleteAfterSnapshottedSec <= 0 {
-		return
-	}
-
-	threshold := time.Now().Add(-time.Duration(m.cfg.DeleteAfterSnapshottedSec) * time.Second)
-	sandboxes, err := m.repo.FindStaleSnapshotted(ctx, m.nodeID(), threshold)
-	if err != nil {
-		log.Printf("[lifecycle] auto-delete query failed: %v", err)
-		return
-	}
-
-	maxConc := m.cfg.Concurrency
-	if maxConc <= 0 {
-		maxConc = 10
-	}
-	sem := make(chan struct{}, maxConc)
-	var wg sync.WaitGroup
-
-	for _, sb := range sandboxes {
-		sb := sb
-		wg.Add(1)
-		sem <- struct{}{}
-
-		go func() {
-			defer func() { <-sem; wg.Done() }()
-
-			id := sb.ID.Hex()
-			deleted, err := m.snapshotter.DeleteIfSnapshotted(ctx, sb.OrgID, id)
-			if err != nil {
-				if errors.Is(err, ErrSandboxNotFound) {
-					return
-				}
-				log.Printf("[lifecycle] auto-delete failed for %s (%s): %v", sb.Name, id, err)
-				return
-			}
-			if deleted {
-				log.Printf("[lifecycle] auto-deleted sandbox %s (%s) after %ds snapshotted", sb.Name, id, m.cfg.DeleteAfterSnapshottedSec)
+			defer func() { <-m.sem }()
+			jobCtx, cancel := context.WithTimeout(context.Background(), sleepJobTimeout(act))
+			defer cancel()
+			if err := m.snapshotter.ApplySleep(jobCtx, sb.OrgID, sb.ID.Hex()); err != nil {
+				log.Printf("[lifecycle] sleep sweep failed for %s: %v", sb.ID.Hex(), err)
 			}
 		}()
 	}
-	wg.Wait()
 }

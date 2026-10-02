@@ -20,6 +20,11 @@ type Sandbox struct {
 	ConsoleLogEnabled bool               `bson:"consoleLogEnabled" json:"-"`
 	LastActivityAt    *time.Time         `bson:"lastActivityAt,omitempty" json:"-"`
 	SnapshottedAt     *time.Time         `bson:"snapshottedAt,omitempty" json:"-"`
+	Packed            bool               `bson:"packed,omitempty" json:"-"`
+	PackPath          string             `bson:"packPath,omitempty" json:"-"`
+	ArchiveKey        string             `bson:"archiveKey,omitempty" json:"-"`
+	ArchivedAt        *time.Time         `bson:"archivedAt,omitempty" json:"-"`
+	ColdCleared       bool               `bson:"coldCleared,omitempty" json:"-"`
 	CreatedAt         time.Time          `bson:"createdAt" json:"createdAt"`
 	UpdatedAt         time.Time          `bson:"updatedAt,omitempty" json:"updatedAt,omitempty"`
 	CreatedBy         primitive.ObjectID `bson:"createdBy" json:"createdBy"`
