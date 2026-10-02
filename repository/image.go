@@ -181,26 +181,11 @@ func (r *ImageRepository) EnsureSystemImage(img model.Image) error {
 	return err
 }
 
-// DeactivateStaleSystemImages deactivates any system images that are not in the validImages list.
-// It also ensures the Active status matches for images that ARE in the list.
+// DeactivateStaleSystemImages sets Active to match validImages and turns off
+// older tags of those names. System image names missing from validImages are
+// left unchanged, including when validImages is empty.
 func (r *ImageRepository) DeactivateStaleSystemImages(ctx context.Context, validImages []model.Image) error {
-	// 1. Build a list of valid (name, tag) pairs that should remain active or exist
-	type imgKey struct {
-		Name string
-		Tag  string
-	}
-	validMap := make(map[imgKey]bool)
-	activeKeys := make(map[imgKey]bool)
-
-	for _, img := range validImages {
-		key := imgKey{img.Name, img.Tag}
-		validMap[key] = true
-		if img.Active {
-			activeKeys[key] = true
-		}
-	}
-
-	// 2. Update Active status for all images in the list
+	// Update Active status for images this seed listed.
 	for _, img := range validImages {
 		filter := bson.M{"name": img.Name, "tag": img.Tag, "system": true}
 		update := bson.M{"$set": bson.M{"active": img.Active}}
@@ -210,8 +195,9 @@ func (r *ImageRepository) DeactivateStaleSystemImages(ctx context.Context, valid
 		}
 	}
 
-	// 3. Deactivate any system image NOT in the valid list
-	// This handles cases where images were removed from the upstream source
+	// 3. Deactivate stale tags of names this seed actually listed.
+	// Names absent from validImages are left active: an empty or partial
+	// listing must not wipe the rest of the catalog.
 	cursor, err := r.collection.Find(ctx, bson.M{"system": true})
 	if err != nil {
 		return err
@@ -223,13 +209,28 @@ func (r *ImageRepository) DeactivateStaleSystemImages(ctx context.Context, valid
 		if err := cursor.Decode(&img); err != nil {
 			continue
 		}
-		key := imgKey{img.Name, img.Tag}
-		if !validMap[key] && img.Active {
+		if img.Active && shouldDeactivateStaleSystemImage(img.Name, img.Tag, validImages) {
 			_, _ = r.collection.UpdateOne(ctx, bson.M{"_id": img.ID}, bson.M{"$set": bson.M{"active": false}})
 		}
 	}
 
 	return nil
+}
+
+// shouldDeactivateStaleSystemImage reports whether an active system row is a
+// stale tag of a name present in this seed. Names the seed did not list stay.
+func shouldDeactivateStaleSystemImage(name, tag string, valid []model.Image) bool {
+	listed := false
+	for _, v := range valid {
+		if v.Name != name {
+			continue
+		}
+		listed = true
+		if v.Tag == tag {
+			return false
+		}
+	}
+	return listed
 }
 
 // Exists checks if an image exists
