@@ -30,6 +30,8 @@ type ISandboxRepository interface {
 	UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error)
 	UpdatePublishPortsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, ports []int) (bool, error)
 	UpdateFieldsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error)
+	CommitCreate(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error)
+	DeleteCreatingForNode(ctx context.Context, nodeID string) ([]primitive.ObjectID, error)
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 	FindForHealth(ctx context.Context, nodeID string, opts options.FindOptions) ([]*model.Sandbox, error)
@@ -88,6 +90,10 @@ func (r *SandboxRepository) Init(ctx context.Context) error {
 		{
 			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "status", Value: 1}, {Key: "_id", Value: -1}},
 			Options: options.Index().SetName("orgId_1_status_1__id_-1").SetUnique(false),
+		},
+		{
+			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "createdAt", Value: -1}},
+			Options: options.Index().SetName("orgId_1_createdAt_-1").SetUnique(false),
 		},
 		{
 			Keys:    bson.D{{Key: "nodeId", Value: 1}, {Key: "status", Value: 1}},
@@ -337,6 +343,50 @@ func (r *SandboxRepository) UpdateFieldsByIDAndOrg(ctx context.Context, id, orgI
 		return false, err
 	}
 	return res.MatchedCount > 0, nil
+}
+
+// CommitCreate moves a row out of "creating"; false means Delete or a startup sweep took it first.
+func (r *SandboxRepository) CommitCreate(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error) {
+	set := bson.M{}
+	for k, v := range fields {
+		set[k] = v
+	}
+	set["updatedAt"] = time.Now()
+	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID, "status": "creating"}, bson.M{"$set": set})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+// DeleteCreatingForNode removes rows a crashed process left in "creating" on nodeID.
+// Call only before this node serves requests.
+func (r *SandboxRepository) DeleteCreatingForNode(ctx context.Context, nodeID string) ([]primitive.ObjectID, error) {
+	if nodeID == "" {
+		return nil, nil
+	}
+	filter := bson.M{"nodeId": nodeID, "status": "creating"}
+	cur, err := r.collection.Find(ctx, filter, options.Find().SetProjection(bson.M{"_id": 1}))
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		ID primitive.ObjectID `bson:"_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	ids := make([]primitive.ObjectID, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	if _, err := r.collection.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}, "status": "creating"}); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
 
 func (r *SandboxRepository) UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error) {

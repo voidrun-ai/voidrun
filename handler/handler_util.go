@@ -43,6 +43,32 @@ func admissionDenied(err error) error {
 	return nil
 }
 
+func resumeDenied(err error) error {
+	switch {
+	case errors.Is(err, service.ErrResumeBalance):
+		return util.ErrPaymentRequired(service.ErrResumeBalance.Error())
+	case errors.Is(err, service.ErrCreateGateUnavailable):
+		return util.ErrServiceUnavailable(service.ErrCreateGateUnavailable.Error())
+	default:
+		return admissionDenied(err)
+	}
+}
+
+func sandboxCreateError(err error) error {
+	switch {
+	case errors.Is(err, service.ErrRateLimited):
+		return util.ErrTooManyRequests(service.ErrRateLimited.Error())
+	case errors.Is(err, service.ErrInsufficientBalance):
+		return util.ErrPaymentRequired(service.ErrInsufficientBalance.Error())
+	case errors.Is(err, service.ErrQuotaExceeded):
+		return util.ErrForbidden(err.Error())
+	case errors.Is(err, service.ErrCreateGateUnavailable):
+		return util.ErrServiceUnavailable(service.ErrCreateGateUnavailable.Error())
+	default:
+		return admissionDenied(err)
+	}
+}
+
 func ensureSandboxRunning(
 	c *gin.Context,
 	sandboxSvc *service.SandboxService,
@@ -54,7 +80,7 @@ func ensureSandboxRunning(
 	}
 
 	if err = sandboxSvc.EnsureRunning(c.Request.Context(), orgID, sandboxID); err != nil {
-		if d := admissionDenied(err); d != nil {
+		if d := resumeDenied(err); d != nil {
 			return d
 		}
 		return util.ErrNotFound(err.Error())

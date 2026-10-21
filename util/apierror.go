@@ -98,6 +98,16 @@ func ErrOverloaded(msg string) *APIError {
 	return &APIError{StatusOverloaded, msg, ""}
 }
 
+// ErrTooManyRequests returns a 429 error.
+func ErrTooManyRequests(msg string) *APIError {
+	return &APIError{http.StatusTooManyRequests, msg, ""}
+}
+
+// ErrPaymentRequired returns a 402 error.
+func ErrPaymentRequired(msg string) *APIError {
+	return &APIError{http.StatusPaymentRequired, msg, ""}
+}
+
 // ---------------------------------------------------------------------------
 // WriteError
 // ---------------------------------------------------------------------------
