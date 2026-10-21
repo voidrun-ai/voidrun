@@ -90,7 +90,7 @@ func (h *SandboxHandler) Create(c *gin.Context) error {
 
 	spec, err := h.sandboxService.Create(c.Request.Context(), req)
 	if err != nil {
-		if d := admissionDenied(err); d != nil {
+		if d := sandboxCreateError(err); d != nil {
 			return d
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -135,6 +135,9 @@ func (h *SandboxHandler) Delete(c *gin.Context) error {
 	}
 
 	if err := h.sandboxService.Delete(c.Request.Context(), orgID, id); err != nil {
+		if errors.Is(err, service.ErrSandboxCreating) {
+			return util.ErrConflict(err.Error())
+		}
 		return util.ErrInternal("Delete failed", err)
 	}
 
@@ -166,7 +169,7 @@ func (h *SandboxHandler) Restore(c *gin.Context) error {
 	}
 
 	if err := h.sandboxService.Restore(c.Request.Context(), orgID, id); err != nil {
-		if d := admissionDenied(err); d != nil {
+		if d := resumeDenied(err); d != nil {
 			return d
 		}
 		return util.ErrInternal("Restore failed", err)
@@ -245,7 +248,7 @@ func (h *SandboxHandler) Start(c *gin.Context) error {
 	}
 
 	if err := h.sandboxService.Start(c.Request.Context(), orgID, id); err != nil {
-		if d := admissionDenied(err); d != nil {
+		if d := resumeDenied(err); d != nil {
 			return d
 		}
 		return util.ErrInternal("Start failed", err)

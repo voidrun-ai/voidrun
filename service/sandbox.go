@@ -29,6 +29,7 @@ import (
 var (
 	ErrSandboxNotFound   = errors.New("sandbox not found")
 	ErrSandboxNotRunning = errors.New("sandbox is not running")
+	ErrSandboxCreating   = errors.New("sandbox is still being created")
 	errIdleNotDue        = errors.New("idle snapshot not due")
 	errAutoSleepOff      = errors.New("auto-sleep disabled")
 )
@@ -336,12 +337,6 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		defer cancel()
 	}
 
-	ip, err := s.repo.NextAvailableIP()
-	if err != nil {
-		return nil, fmt.Errorf("IP allocation failed: %w", err)
-	}
-
-	// Generate ObjectID for filesystem-safe directory name
 	objID := util.GenerateObjectID()
 	instanceID := objID.Hex()
 
@@ -371,18 +366,57 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		}
 	}
 	diskMB := diskMBForCreate(s.cfg.Sandbox.DefaultDiskMB, img)
+	consoleLogEnabled := s.cfg.Sandbox.ConsoleLogEnabled
+	autoSleep := true
+	if req.AutoSleep != nil {
+		autoSleep = *req.AutoSleep
+	}
+	now := time.Now()
+	sandbox := &model.Sandbox{
+		ID:                objID,
+		Name:              req.Name,
+		Image:             imageName,
+		CPU:               cpu,
+		Mem:               mem,
+		DiskMB:            diskMB,
+		OrgID:             req.OrgID,
+		EnvVars:           req.EnvVars,
+		AutoSleep:         autoSleep,
+		ConsoleLogEnabled: consoleLogEnabled,
+		Region:            req.Region,
+		NodeID:            s.cfg.HostID,
+		PublishPorts:      req.PublishPorts,
+		Labels:            req.Labels,
+		LastActivityAt:    &now,
+		Status:            "creating",
+		CreatedAt:         now,
+		CreatedBy:         req.UserID,
+	}
 
+	ctx = WithCreateOrg(ctx, req.OrgID)
 	if err := s.supervisors.BeforeCreate(ctx, cpu, mem, diskMB); err != nil {
 		return nil, err
 	}
 	created := false
 	defer func() {
-		if !created {
-			s.supervisors.AfterCreateFailed(cpu, mem, diskMB)
+		if created {
+			return
 		}
+		s.supervisors.AfterCreateFailed(cpu, mem, diskMB)
+		_, _ = s.repo.DeleteByIDAndOrg(context.Background(), sandbox.ID, req.OrgID)
 	}()
+	if err := s.repo.Create(ctx, sandbox); err != nil {
+		return nil, fmt.Errorf("DB save failed: %w", err)
+	}
+	if err := s.supervisors.BeforeCreate(WithCreateHeld(ctx, sandbox.ID), cpu, mem, diskMB); err != nil {
+		return nil, err
+	}
 
-	consoleLogEnabled := s.cfg.Sandbox.ConsoleLogEnabled
+	ip, err := s.repo.NextAvailableIP()
+	if err != nil {
+		return nil, fmt.Errorf("IP allocation failed: %w", err)
+	}
+	sandbox.IP = ip
 
 	spec := model.SandboxSpec{
 		ID:                instanceID,
@@ -487,46 +521,32 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		return nil, err
 	}
 
-	autoSleep := true
-	if req.AutoSleep != nil {
-		autoSleep = *req.AutoSleep
-	}
-
-	now := time.Now()
-	sandbox := &model.Sandbox{
-		ID:                objID,
-		Name:              req.Name,
-		Image:             imageName,
-		IP:                ip,
-		CPU:               cpu,
-		Mem:               mem,
-		DiskMB:            diskMB,
-		OrgID:             req.OrgID,
-		EnvVars:           req.EnvVars,
-		AutoSleep:         autoSleep,
-		ConsoleLogEnabled: consoleLogEnabled,
-		Region:            req.Region,
-		NodeID:            s.cfg.HostID,
-		PublishPorts:      req.PublishPorts,
-		Labels:            req.Labels,
-		TapName:           spec.TapName,
-		NetNSName:         spec.NetNSName,
-		MacAddress:        spec.MacAddress, // persist so Restore doesn't need to re-derive it
-		LastActivityAt:    &now,
-		Status:            "running",
-		CreatedAt:         now,
-		CreatedBy:         req.UserID,
-	}
+	status := "running"
 	if !syncEnabled {
-		sandbox.Status = "booting"
+		status = "booting"
 	}
-
-	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), sandbox.OrgID.Hex())
-	err = s.repo.Create(ctx, sandbox)
+	committedAt := time.Now()
+	ok, err := s.repo.CommitCreate(ctx, sandbox.ID, req.OrgID, bson.M{
+		"status":         status,
+		"ip":             ip,
+		"tapName":        spec.TapName,
+		"netnsName":      spec.NetNSName,
+		"macAddress":     spec.MacAddress,
+		"lastActivityAt": committedAt,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("DB save failed: %w", err)
 	}
+	if !ok {
+		return nil, fmt.Errorf("DB save failed: sandbox left creating state")
+	}
+	sandbox.Status = status
+	sandbox.TapName = spec.TapName
+	sandbox.NetNSName = spec.NetNSName
+	sandbox.MacAddress = spec.MacAddress
+	sandbox.LastActivityAt = &committedAt
 	created = true
+	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), ip)
 	s.emitLife(ctx, spec.ID, lifeFrom(sandbox, model.OpCreate, model.PhaseCommitted, "", sandbox.Status))
 
 	if s.metrics != nil {
@@ -761,6 +781,9 @@ func (s *SandboxService) deleteLocked(ctx context.Context, orgID primitive.Objec
 }
 
 func (s *SandboxService) deleteLockedSandbox(ctx context.Context, orgID primitive.ObjectID, id string, sandbox *model.Sandbox) (err error) {
+	if sandbox.Status == "creating" {
+		return ErrSandboxCreating
+	}
 	start := time.Now()
 	defer func() { s.recordLifecycleOp(id, "delete", start, err) }()
 
@@ -1807,6 +1830,7 @@ func (s *SandboxService) AdoptLocal(ctx context.Context) error {
 	if s.cfg != nil {
 		hostID = s.cfg.HostID
 	}
+	s.clearStaleCreates(ctx, hostID)
 	sandboxes, err := s.repo.FindForHealth(ctx, hostID, options.FindOptions{})
 	if err != nil {
 		return fmt.Errorf("adopt local: %w", err)
@@ -1856,6 +1880,28 @@ func (s *SandboxService) AdoptLocal(ctx context.Context) error {
 		log.Printf("[adopt] adopted %d local sandboxes", n)
 	}
 	return nil
+}
+
+// clearStaleCreates drops "creating" rows a crashed process left behind so they
+// stop holding quota. Runs before the listener, so no create on this host is in flight.
+func (s *SandboxService) clearStaleCreates(ctx context.Context, hostID string) {
+	ids, err := s.repo.DeleteCreatingForNode(ctx, hostID)
+	if err != nil {
+		log.Printf("[adopt] clear stale creates: %v", err)
+		return
+	}
+	for _, oid := range ids {
+		id := oid.Hex()
+		if err := runtime.Delete(id, "", ""); err != nil {
+			log.Printf("[adopt] stale create %s stop: %v", id, err)
+		}
+		if err := runtime.Cleanup(id); err != nil {
+			log.Printf("[adopt] stale create %s cleanup: %v", id, err)
+		}
+	}
+	if len(ids) > 0 {
+		log.Printf("[adopt] cleared %d stale creating sandboxes", len(ids))
+	}
 }
 
 // adoptRunning creates the supervisor, watches a live CLH pid if present, and arms

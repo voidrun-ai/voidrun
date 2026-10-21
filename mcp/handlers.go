@@ -55,10 +55,16 @@ func (h *Handlers) ensureRunning(ctx context.Context, orgID primitive.ObjectID, 
 }
 
 func toolWakeErr(err error) *mcp.CallToolResult {
-	if errors.Is(err, service.ErrAdmissionDenied) {
+	switch {
+	case errors.Is(err, service.ErrResumeBalance):
+		return mcp.NewToolResultError(service.ErrResumeBalance.Error())
+	case errors.Is(err, service.ErrCreateGateUnavailable):
+		return mcp.NewToolResultError(service.ErrCreateGateUnavailable.Error())
+	case errors.Is(err, service.ErrAdmissionDenied):
 		return mcp.NewToolResultError("scheduler unavailable")
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error()))
 	}
-	return mcp.NewToolResultError(fmt.Sprintf("Sandbox not running: %s", err.Error()))
 }
 
 // readAgentJSON reads and returns the JSON body from an agent *http.Response.
@@ -252,6 +258,23 @@ func requiredNumber(req mcp.CallToolRequest, key string) (int, error) {
 
 // --- Sandbox Management Handlers ---
 
+func createGateMessage(err error) string {
+	switch {
+	case errors.Is(err, service.ErrRateLimited):
+		return service.ErrRateLimited.Error()
+	case errors.Is(err, service.ErrInsufficientBalance):
+		return service.ErrInsufficientBalance.Error()
+	case errors.Is(err, service.ErrQuotaExceeded):
+		return err.Error()
+	case errors.Is(err, service.ErrCreateGateUnavailable):
+		return service.ErrCreateGateUnavailable.Error()
+	case errors.Is(err, service.ErrAdmissionDenied):
+		return "scheduler unavailable"
+	default:
+		return ""
+	}
+}
+
 // HandleCreateSandbox creates a new sandbox VM.
 func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	orgID, err := requireOrgID(ctx)
@@ -304,8 +327,8 @@ func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequ
 
 	sandbox, err := h.SandboxService.Create(ctx, createReq)
 	if err != nil {
-		if errors.Is(err, service.ErrAdmissionDenied) {
-			return mcp.NewToolResultError("scheduler unavailable"), nil
+		if msg := createGateMessage(err); msg != "" {
+			return mcp.NewToolResultError(msg), nil
 		}
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to create sandbox: %s", err.Error())), nil
 	}
