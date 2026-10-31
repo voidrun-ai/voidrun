@@ -104,10 +104,11 @@ func (s *UserService) FindOrCreateByClerkExtID(ctx context.Context, userId, emai
 	return user, nil
 }
 
-func (s *UserService) CreateNewUserAndDefaultOrg(ctx context.Context, clerkID string, claims *ClerkClaims) (*model.User, error) {
+// CreateNewUserAndDefaultOrg returns the user and, when this call inserted the default org, that org.
+func (s *UserService) CreateNewUserAndDefaultOrg(ctx context.Context, clerkID string, claims *ClerkClaims) (*model.User, *model.Org, error) {
 	user, err := s.repo.FindOne(ctx, bson.M{"clerkId": clerkID}, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if user == nil {
@@ -124,27 +125,26 @@ func (s *UserService) CreateNewUserAndDefaultOrg(ctx context.Context, clerkID st
 		user, err = s.repo.Create(ctx, user)
 
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
-		// create default org for this user
-		_, err = s.orgSvc.EnsureDefaultOrg(ctx, user.ID, strings.ReplaceAll(strings.Split(user.Name, " ")[0]+"-Org", " ", "-"))
+		org, err := s.orgSvc.EnsureDefaultOrg(ctx, user.ID, strings.ReplaceAll(strings.Split(user.Name, " ")[0]+"-Org", " ", "-"))
 		if err != nil {
-			return nil, fmt.Errorf("failed to create default organization: %w", err)
+			return nil, nil, fmt.Errorf("failed to create default organization: %w", err)
 		}
 
 		// Update external ID in Clerk
 		if s.clerkSvc != nil {
 			err = s.clerkSvc.UpdateExternalID(ctx, clerkID, user.ID.Hex())
 			if err != nil {
-				return nil, fmt.Errorf("failed to update clerk external ID: %w", err)
+				return nil, nil, fmt.Errorf("failed to update clerk external ID: %w", err)
 			}
 		}
 
-		return user, nil
+		return user, org, nil
 	}
 
-	return user, nil
+	return user, nil, nil
 
 }
 

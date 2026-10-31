@@ -43,7 +43,7 @@ func toolCreateSandbox() mcp.Tool {
 		mcp.WithNumber("cpu",
 			mcp.Description("Number of vCPUs (1-8). Defaults to 1."),
 		),
-		mcp.WithNumber("mem",
+		mcp.WithNumber("memMB",
 			mcp.Description("Memory in MiB (1024-16384). Defaults to 1024."),
 		),
 		mcp.WithString("orgId",

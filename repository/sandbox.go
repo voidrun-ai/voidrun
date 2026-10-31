@@ -24,14 +24,18 @@ type ISandboxRepository interface {
 	Create(ctx context.Context, sandbox *model.Sandbox) error
 	FindByIDAndOrg(ctx context.Context, orgID primitive.ObjectID, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
 	FindAndOrg(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error)
+	Find(ctx context.Context, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error)
+	SumUsage(ctx context.Context, orgID primitive.ObjectID) (SandboxUsage, error)
 	DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	UpdateStatusByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, status string) (bool, error)
+	MarkDeleted(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	UpdateTapNameByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName string) (bool, error)
 	UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error)
 	UpdatePublishPortsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, ports []int) (bool, error)
 	UpdateFieldsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error)
 	CommitCreate(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error)
-	DeleteCreatingForNode(ctx context.Context, nodeID string) ([]primitive.ObjectID, error)
+	ListCreatingForNode(ctx context.Context, nodeID string) ([]StaleCreate, error)
+	DeleteStillCreating(ctx context.Context, ids []primitive.ObjectID) error
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 	FindForHealth(ctx context.Context, nodeID string, opts options.FindOptions) ([]*model.Sandbox, error)
@@ -50,6 +54,12 @@ type ISandboxRepository interface {
 	ClearPackFieldsAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	FindSleeping(ctx context.Context, nodeID string) ([]*model.Sandbox, error)
 	FindByID(ctx context.Context, id primitive.ObjectID, opts options.FindOneOptions) (*model.Sandbox, error)
+	SetBillingCompleted(ctx context.Context, id primitive.ObjectID, completed bool) error
+	EnsureBillingIndex(ctx context.Context) error
+	ListBillingOpen(ctx context.Context) ([]*model.Sandbox, error)
+	ListTerminalTaps(ctx context.Context, limit int64) ([]*model.Sandbox, error)
+	MarkTapDeleted(ctx context.Context, id primitive.ObjectID) error
+	AggregateHostUsage(ctx context.Context, hostID string) (SandboxHostUsage, error)
 	FreeIP(ctx context.Context, ip string)
 	ListWithPublishPorts(ctx context.Context, statuses []string) ([]*model.Sandbox, error)
 	ListWithPublishPortsForNode(ctx context.Context, nodeID string, statuses []string) ([]*model.Sandbox, error)
@@ -67,13 +77,16 @@ type SandboxRepository struct {
 
 // NewSandboxRepository creates a new sandbox repository
 func NewSandboxRepository(cfg *config.Config, db *mongo.Database) *SandboxRepository {
-	return &SandboxRepository{
-		instancesDir: cfg.Paths.InstancesDir,
-		networkCIDR:  cfg.Network.NetworkCIDR,
+	r := &SandboxRepository{
 		cfg:          cfg,
 		collection:   db.Collection("sandboxes"),
 		allocatedIPs: make(map[string]bool),
 	}
+	if cfg != nil {
+		r.instancesDir = cfg.Paths.InstancesDir
+		r.networkCIDR = cfg.Network.NetworkCIDR
+	}
+	return r
 }
 
 // Init initializes the repository by loading all allocated IPs from the database
@@ -90,10 +103,6 @@ func (r *SandboxRepository) Init(ctx context.Context) error {
 		{
 			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "status", Value: 1}, {Key: "_id", Value: -1}},
 			Options: options.Index().SetName("orgId_1_status_1__id_-1").SetUnique(false),
-		},
-		{
-			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "createdAt", Value: -1}},
-			Options: options.Index().SetName("orgId_1_createdAt_-1").SetUnique(false),
 		},
 		{
 			Keys:    bson.D{{Key: "nodeId", Value: 1}, {Key: "status", Value: 1}},
@@ -243,6 +252,63 @@ func (r *SandboxRepository) FindAndOrg(ctx context.Context, orgID primitive.Obje
 	return sandboxes, nil
 }
 
+func (r *SandboxRepository) Find(ctx context.Context, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error) {
+	if filter == nil {
+		filter = bson.M{}
+	}
+	cursor, err := r.collection.Find(ctx, filter, &opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var sandboxes []*model.Sandbox
+	if err = cursor.All(ctx, &sandboxes); err != nil {
+		return nil, err
+	}
+	return sandboxes, nil
+}
+
+// SandboxUsage is the total count, CPU, memory, and disk of one org's non-deleted sandboxes.
+type SandboxUsage struct {
+	Count  int64
+	CPU    int64
+	MemMB  int64
+	DiskMB int64
+}
+
+func (r *SandboxRepository) SumUsage(ctx context.Context, orgID primitive.ObjectID) (SandboxUsage, error) {
+	cur, err := r.collection.Aggregate(ctx, mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.M{"orgId": orgID, "status": bson.M{"$ne": "deleted"}}}},
+		bson.D{{Key: "$group", Value: bson.M{
+			"_id":   nil,
+			"count": bson.M{"$sum": 1},
+			"cpu":   bson.M{"$sum": "$cpu"},
+			"mem":   bson.M{"$sum": "$memMB"},
+			"disk":  bson.M{"$sum": "$diskMB"},
+		}}},
+	})
+	if err != nil {
+		return SandboxUsage{}, err
+	}
+	defer cur.Close(ctx)
+	if !cur.Next(ctx) {
+		if err := cur.Err(); err != nil {
+			return SandboxUsage{}, err
+		}
+		return SandboxUsage{}, nil
+	}
+	var doc struct {
+		Count  int64 `bson:"count"`
+		CPU    int64 `bson:"cpu"`
+		MemMB  int64 `bson:"mem"`
+		DiskMB int64 `bson:"disk"`
+	}
+	if err := cur.Decode(&doc); err != nil {
+		return SandboxUsage{}, err
+	}
+	return SandboxUsage{Count: doc.Count, CPU: doc.CPU, MemMB: doc.MemMB, DiskMB: doc.DiskMB}, nil
+}
+
 func (r *SandboxRepository) DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
 	res, err := r.collection.DeleteOne(ctx, bson.M{"_id": id, "orgId": orgID})
 	if err != nil {
@@ -285,6 +351,22 @@ func (r *SandboxRepository) UpdateStatusFrom(ctx context.Context, id primitive.O
 func (r *SandboxRepository) UpdateStatusByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, status string) (bool, error) {
 	res, err := r.collection.UpdateOne(ctx, bson.M{"_id": id, "orgId": orgID}, bson.M{"$set": bson.M{
 		"status":    status,
+		"updatedAt": time.Now(),
+	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
+// MarkDeleted moves a row to "deleted" once. A second call matches nothing.
+func (r *SandboxRepository) MarkDeleted(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
+	res, err := r.collection.UpdateOne(ctx, bson.M{
+		"_id":    id,
+		"orgId":  orgID,
+		"status": bson.M{"$ne": "deleted"},
+	}, bson.M{"$set": bson.M{
+		"status":    "deleted",
 		"updatedAt": time.Now(),
 	}})
 	if err != nil {
@@ -359,19 +441,38 @@ func (r *SandboxRepository) CommitCreate(ctx context.Context, id, orgID primitiv
 	return res.MatchedCount > 0, nil
 }
 
-// DeleteCreatingForNode removes rows a crashed process left in "creating" on nodeID.
+// StaleCreate is a "creating" row left by a crashed process.
+type StaleCreate struct {
+	ID     primitive.ObjectID
+	OrgID  primitive.ObjectID
+	CPU    int
+	MemMB  int
+	DiskMB int
+}
+
+// ListCreatingForNode returns rows a crashed process left in "creating" on nodeID.
 // Call only before this node serves requests.
-func (r *SandboxRepository) DeleteCreatingForNode(ctx context.Context, nodeID string) ([]primitive.ObjectID, error) {
+func (r *SandboxRepository) ListCreatingForNode(ctx context.Context, nodeID string) ([]StaleCreate, error) {
 	if nodeID == "" {
 		return nil, nil
 	}
 	filter := bson.M{"nodeId": nodeID, "status": "creating"}
-	cur, err := r.collection.Find(ctx, filter, options.Find().SetProjection(bson.M{"_id": 1}))
+	cur, err := r.collection.Find(ctx, filter, options.Find().SetProjection(bson.M{
+		"_id":    1,
+		"orgId":  1,
+		"cpu":    1,
+		"memMB":  1,
+		"diskMB": 1,
+	}))
 	if err != nil {
 		return nil, err
 	}
 	var rows []struct {
-		ID primitive.ObjectID `bson:"_id"`
+		ID     primitive.ObjectID `bson:"_id"`
+		OrgID  primitive.ObjectID `bson:"orgId"`
+		CPU    int                `bson:"cpu"`
+		MemMB  int                `bson:"memMB"`
+		DiskMB int                `bson:"diskMB"`
 	}
 	if err := cur.All(ctx, &rows); err != nil {
 		return nil, err
@@ -379,14 +480,26 @@ func (r *SandboxRepository) DeleteCreatingForNode(ctx context.Context, nodeID st
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	ids := make([]primitive.ObjectID, 0, len(rows))
+	out := make([]StaleCreate, 0, len(rows))
 	for _, row := range rows {
-		ids = append(ids, row.ID)
+		out = append(out, StaleCreate{
+			ID:     row.ID,
+			OrgID:  row.OrgID,
+			CPU:    row.CPU,
+			MemMB:  row.MemMB,
+			DiskMB: row.DiskMB,
+		})
 	}
-	if _, err := r.collection.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}, "status": "creating"}); err != nil {
-		return nil, err
+	return out, nil
+}
+
+// DeleteStillCreating removes the given rows only while they are still "creating".
+func (r *SandboxRepository) DeleteStillCreating(ctx context.Context, ids []primitive.ObjectID) error {
+	if len(ids) == 0 {
+		return nil
 	}
-	return ids, nil
+	_, err := r.collection.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}, "status": "creating"})
+	return err
 }
 
 func (r *SandboxRepository) UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error) {
@@ -594,4 +707,103 @@ func (r *SandboxRepository) ListWithPublishPortsForNode(ctx context.Context, nod
 		return nil, err
 	}
 	return out, nil
+}
+
+// SandboxHostUsage is live sandbox spend on one node.
+// CPU and memory count running and booting rows. Disk and count include paused and snapshotted rows.
+type SandboxHostUsage struct {
+	DiskMB int
+	Count  int
+	CPU    int
+	MemMB  int
+}
+
+func (r *SandboxRepository) SetBillingCompleted(ctx context.Context, id primitive.ObjectID, completed bool) error {
+	_, err := r.collection.UpdateByID(ctx, id, bson.M{
+		"$set": bson.M{"billingCompleted": completed},
+	})
+	return err
+}
+
+func (r *SandboxRepository) EnsureBillingIndex(ctx context.Context) error {
+	_, err := r.collection.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "billingCompleted", Value: 1},
+			{Key: "updatedAt", Value: 1},
+		},
+		Options: options.Index().SetName("billingCompleted_1_updatedAt_1"),
+	})
+	return err
+}
+
+func (r *SandboxRepository) ListBillingOpen(ctx context.Context) ([]*model.Sandbox, error) {
+	return r.Find(ctx, bson.M{"billingCompleted": bson.M{"$ne": true}}, options.FindOptions{})
+}
+
+func (r *SandboxRepository) ListTerminalTaps(ctx context.Context, limit int64) ([]*model.Sandbox, error) {
+	// $nor drops only tapDeleted:true. A false value must still match.
+	filter := bson.M{
+		"$and": []bson.M{
+			{"status": bson.M{"$in": []string{"deleted", "killed"}}},
+			{"tapName": bson.M{"$exists": true, "$ne": ""}},
+			{"$nor": []bson.M{{"tapDeleted": true}}},
+		},
+	}
+	opts := options.Find().SetProjection(bson.M{"_id": 1, "tapName": 1})
+	if limit > 0 {
+		opts.SetLimit(limit)
+	}
+	return r.Find(ctx, filter, *opts)
+}
+
+func (r *SandboxRepository) MarkTapDeleted(ctx context.Context, id primitive.ObjectID) error {
+	_, err := r.collection.UpdateOne(ctx, bson.M{"_id": id}, bson.M{
+		"$set": bson.M{
+			"tapDeleted": true,
+			"updatedAt":  time.Now(),
+		},
+	})
+	return err
+}
+
+func (r *SandboxRepository) AggregateHostUsage(ctx context.Context, hostID string) (SandboxHostUsage, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"nodeId": hostID,
+			"status": bson.M{"$in": []string{"running", "booting", "snapshotted", "paused"}},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":   nil,
+			"disk":  bson.M{"$sum": "$diskMB"},
+			"count": bson.M{"$sum": 1},
+			"cpu": bson.M{"$sum": bson.M{"$cond": bson.A{
+				bson.M{"$in": bson.A{"$status", bson.A{"running", "booting"}}},
+				"$cpu",
+				0,
+			}}},
+			"mem": bson.M{"$sum": bson.M{"$cond": bson.A{
+				bson.M{"$in": bson.A{"$status", bson.A{"running", "booting"}}},
+				"$memMB",
+				0,
+			}}},
+		}}},
+	}
+	cur, err := r.collection.Aggregate(ctx, pipeline)
+	if err != nil {
+		return SandboxHostUsage{}, err
+	}
+	defer cur.Close(ctx)
+	if !cur.Next(ctx) {
+		return SandboxHostUsage{}, cur.Err()
+	}
+	var row struct {
+		Disk  int `bson:"disk"`
+		Count int `bson:"count"`
+		CPU   int `bson:"cpu"`
+		Mem   int `bson:"mem"`
+	}
+	if err := cur.Decode(&row); err != nil {
+		return SandboxHostUsage{}, err
+	}
+	return SandboxHostUsage{DiskMB: row.Disk, Count: row.Count, CPU: row.CPU, MemMB: row.Mem}, cur.Err()
 }

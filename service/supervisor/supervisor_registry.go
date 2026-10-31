@@ -16,14 +16,15 @@ var ErrAdmissionDenied = errors.New("admission denied")
 
 // Admission is an optional plugin called at lifecycle check-in points.
 type Admission interface {
-	BeforeCreate(ctx context.Context, cpu, mem, diskMB int) error
+	PrepareCreate(ctx context.Context, sb *model.Sandbox) error
+	BeforeCreate(ctx context.Context, sb *model.Sandbox) error
 	AfterCreate(cpu, mem, diskMB int)
-	AfterCreateFailed(cpu, mem, diskMB int)
+	AfterCreateFailed(ctx context.Context, sb *model.Sandbox)
 	BeforeBoot(ctx context.Context, cpu, mem int) error
 	AfterBoot(cpu, mem int)
 	AfterBootFailed(cpu, mem int)
 	AfterSnapshot(cpu, mem int)
-	AfterDelete(wasRunning bool, cpu, mem, diskMB int)
+	AfterDelete(ctx context.Context, sb *model.Sandbox, wasRunning bool)
 	// BeforeWake prepares files for a sleeping sandbox. EE downloads and unpacks.
 	BeforeWake(ctx context.Context, sb *model.Sandbox) error
 	// AfterWake runs after a successful wake. EE drops the local pack and remote object.
@@ -204,12 +205,20 @@ func (r *SupervisorRegistry) size() int {
 	return len(r.supervisors)
 }
 
-func (r *SupervisorRegistry) BeforeCreate(ctx context.Context, cpu, mem, diskMB int) error {
+func (r *SupervisorRegistry) PrepareCreate(ctx context.Context, sb *model.Sandbox) error {
 	a := r.adm()
 	if a == nil {
 		return nil
 	}
-	return a.BeforeCreate(ctx, cpu, mem, diskMB)
+	return a.PrepareCreate(ctx, sb)
+}
+
+func (r *SupervisorRegistry) BeforeCreate(ctx context.Context, sb *model.Sandbox) error {
+	a := r.adm()
+	if a == nil {
+		return nil
+	}
+	return a.BeforeCreate(ctx, sb)
 }
 
 func (r *SupervisorRegistry) AfterCreate(cpu, mem, diskMB int) {
@@ -218,8 +227,8 @@ func (r *SupervisorRegistry) AfterCreate(cpu, mem, diskMB int) {
 	}
 }
 
-func (r *SupervisorRegistry) AfterCreateFailed(cpu, mem, diskMB int) {
+func (r *SupervisorRegistry) AfterCreateFailed(ctx context.Context, sb *model.Sandbox) {
 	if a := r.adm(); a != nil {
-		a.AfterCreateFailed(cpu, mem, diskMB)
+		a.AfterCreateFailed(ctx, sb)
 	}
 }

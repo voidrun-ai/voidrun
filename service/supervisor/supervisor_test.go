@@ -470,7 +470,7 @@ func TestSupervisorAdmissionNilIsNoop(t *testing.T) {
 	a.AfterBoot(1, 512)
 	a.AfterBootFailed(1, 512)
 	a.AfterSnapshot(1, 512)
-	a.AfterDelete(true, 1, 512, 1024)
+	a.AfterDelete(context.Background(), &model.Sandbox{CPU: 1, MemMB: 512, DiskMB: 1024}, true)
 }
 
 func TestSupervisorAdmissionBootPath(t *testing.T) {
@@ -508,8 +508,8 @@ func TestSupervisorAdmissionSnapshotAndDelete(t *testing.T) {
 	r.SetAdmission(rec)
 	a := r.GetOrCreate("sbx-1")
 	a.AfterSnapshot(2, 4096)
-	a.AfterDelete(true, 2, 4096, 1024)
-	a.AfterDelete(false, 2, 4096, 1024)
+	a.AfterDelete(context.Background(), &model.Sandbox{CPU: 2, MemMB: 4096, DiskMB: 1024}, true)
+	a.AfterDelete(context.Background(), &model.Sandbox{CPU: 2, MemMB: 4096, DiskMB: 1024}, false)
 	if rec.afterSnapshot != 1 || rec.afterDelete != 2 || rec.deleteRunning != 1 {
 		t.Fatalf("snapshot=%d delete=%d running=%d", rec.afterSnapshot, rec.afterDelete, rec.deleteRunning)
 	}
@@ -519,14 +519,15 @@ func TestRegistryAdmissionCreate(t *testing.T) {
 	rec := &recordingAdmission{}
 	r := NewSupervisorRegistry()
 	r.SetAdmission(rec)
-	if err := r.BeforeCreate(context.Background(), 1, 512, 1024); err != nil {
+	sb := &model.Sandbox{CPU: 1, MemMB: 512, DiskMB: 1024}
+	if err := r.BeforeCreate(context.Background(), sb); err != nil {
 		t.Fatal(err)
 	}
 	r.AfterCreate(1, 512, 1024)
 	if rec.beforeCreate != 1 || rec.afterCreate != 1 {
 		t.Fatalf("create success before=%d after=%d", rec.beforeCreate, rec.afterCreate)
 	}
-	r.AfterCreateFailed(1, 512, 1024)
+	r.AfterCreateFailed(context.Background(), sb)
 	if rec.afterCreateFailed != 1 {
 		t.Fatalf("afterCreateFailed = %d", rec.afterCreateFailed)
 	}
@@ -626,15 +627,18 @@ type recordingAdmission struct {
 	deleteRunning     int
 }
 
-func (r *recordingAdmission) BeforeCreate(context.Context, int, int, int) error {
+func (r *recordingAdmission) PrepareCreate(context.Context, *model.Sandbox) error { return nil }
+func (r *recordingAdmission) BeforeCreate(context.Context, *model.Sandbox) error {
 	r.beforeCreate++
 	if r.deny {
 		return ErrAdmissionDenied
 	}
 	return nil
 }
-func (r *recordingAdmission) AfterCreate(int, int, int)       { r.afterCreate++ }
-func (r *recordingAdmission) AfterCreateFailed(int, int, int) { r.afterCreateFailed++ }
+func (r *recordingAdmission) AfterCreate(int, int, int) { r.afterCreate++ }
+func (r *recordingAdmission) AfterCreateFailed(context.Context, *model.Sandbox) {
+	r.afterCreateFailed++
+}
 func (r *recordingAdmission) BeforeBoot(context.Context, int, int) error {
 	r.beforeBoot++
 	if r.deny {
@@ -645,7 +649,7 @@ func (r *recordingAdmission) BeforeBoot(context.Context, int, int) error {
 func (r *recordingAdmission) AfterBoot(int, int)       { r.afterBoot++ }
 func (r *recordingAdmission) AfterBootFailed(int, int) { r.afterBootFailed++ }
 func (r *recordingAdmission) AfterSnapshot(int, int)   { r.afterSnapshot++ }
-func (r *recordingAdmission) AfterDelete(wasRunning bool, _, _, _ int) {
+func (r *recordingAdmission) AfterDelete(_ context.Context, _ *model.Sandbox, wasRunning bool) {
 	r.afterDelete++
 	if wasRunning {
 		r.deleteRunning++

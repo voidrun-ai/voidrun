@@ -97,7 +97,7 @@ func NewSandboxService(
 			"image":             1,
 			"ip":                1,
 			"cpu":               1,
-			"mem":               1,
+			"memMB":             1,
 			"diskMB":            1,
 			"status":            1,
 			"autoSleep":         1,
@@ -345,7 +345,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	if cpu == 0 {
 		cpu = s.cfg.Sandbox.DefaultVCPUs
 	}
-	mem := req.Mem
+	mem := req.MemMB
 	if mem == 0 {
 		mem = s.cfg.Sandbox.DefaultMemoryMB
 	}
@@ -377,7 +377,7 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		Name:              req.Name,
 		Image:             imageName,
 		CPU:               cpu,
-		Mem:               mem,
+		MemMB:             mem,
 		DiskMB:            diskMB,
 		OrgID:             req.OrgID,
 		EnvVars:           req.EnvVars,
@@ -393,25 +393,30 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 		CreatedBy:         req.UserID,
 	}
 
-	ctx = WithCreateOrg(ctx, req.OrgID)
-	if err := s.supervisors.BeforeCreate(ctx, cpu, mem, diskMB); err != nil {
+	// Balance and the one-time usage total run before the row exists, so that
+	// total does not include this sandbox. The slot itself is taken after the
+	// row is saved, so a crash still leaves a row startup can release.
+	if err := s.supervisors.PrepareCreate(ctx, sandbox); err != nil {
 		return nil, err
 	}
 	created := false
+	reserved := false
 	defer func() {
 		if created {
 			return
 		}
-		s.supervisors.AfterCreateFailed(cpu, mem, diskMB)
+		if reserved {
+			s.supervisors.AfterCreateFailed(context.Background(), sandbox)
+		}
 		_, _ = s.repo.DeleteByIDAndOrg(context.Background(), sandbox.ID, req.OrgID)
 	}()
 	if err := s.repo.Create(ctx, sandbox); err != nil {
 		return nil, fmt.Errorf("DB save failed: %w", err)
 	}
-	if err := s.supervisors.BeforeCreate(WithCreateHeld(ctx, sandbox.ID), cpu, mem, diskMB); err != nil {
+	if err := s.supervisors.BeforeCreate(ctx, sandbox); err != nil {
 		return nil, err
 	}
-
+	reserved = true
 	ip, err := s.repo.NextAvailableIP()
 	if err != nil {
 		return nil, fmt.Errorf("IP allocation failed: %w", err)
@@ -540,12 +545,12 @@ func (s *SandboxService) Create(ctx context.Context, req model.CreateSandboxRequ
 	if !ok {
 		return nil, fmt.Errorf("DB save failed: sandbox left creating state")
 	}
+	created = true
 	sandbox.Status = status
 	sandbox.TapName = spec.TapName
 	sandbox.NetNSName = spec.NetNSName
 	sandbox.MacAddress = spec.MacAddress
 	sandbox.LastActivityAt = &committedAt
-	created = true
 	log.Printf("   [SandboxService] Created sandbox %s with IP %s\n", sandbox.ID.Hex(), ip)
 	s.emitLife(ctx, spec.ID, lifeFrom(sandbox, model.OpCreate, model.PhaseCommitted, "", sandbox.Status))
 
@@ -784,6 +789,9 @@ func (s *SandboxService) deleteLockedSandbox(ctx context.Context, orgID primitiv
 	if sandbox.Status == "creating" {
 		return ErrSandboxCreating
 	}
+	if sandbox.Status == "deleted" {
+		return nil
+	}
 	start := time.Now()
 	defer func() { s.recordLifecycleOp(id, "delete", start, err) }()
 
@@ -793,14 +801,13 @@ func (s *SandboxService) deleteLockedSandbox(ctx context.Context, orgID primitiv
 	// Commit the status before releasing the IP. Freeing first would return the
 	// address to the pool while the row still reads snapshotted, so a failed
 	// status write could hand the same IP to another sandbox.
-	ok, err := s.repo.UpdateStatusByIDAndOrg(ctx, sandbox.ID, orgID, "deleted")
+	ok, err := s.repo.MarkDeleted(ctx, sandbox.ID, orgID)
 	if err != nil {
 		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpDelete, model.PhaseFailed, from, from))
 		return err
 	}
 	if !ok {
-		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpDelete, model.PhaseFailed, from, from))
-		return ErrSandboxNotFound
+		return nil
 	}
 	s.repo.FreeIP(ctx, sandbox.IP)
 	s.emitLife(ctx, id, lifeFrom(sandbox, model.OpDelete, model.PhaseCommitted, from, "deleted"))
@@ -822,7 +829,7 @@ func (s *SandboxService) deleteLockedSandbox(ctx context.Context, orgID primitiv
 		fmt.Printf("[WARN] Failed to cleanup files for %s: %v\n", id, err)
 	}
 
-	s.supervisors.GetOrCreate(id).AfterDelete(sandbox.Status == "running" || sandbox.Status == "booting", sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
+	s.supervisors.GetOrCreate(id).AfterDelete(ctx, sandbox, sandbox.Status == "running" || sandbox.Status == "booting")
 	s.supervisors.Unregister(id)
 	return nil
 }
@@ -906,7 +913,7 @@ func (s *SandboxService) snapshotLocked(ctx context.Context, orgID primitive.Obj
 		s.metrics.UnregisterSandbox(sandbox.ID.Hex())
 	}
 
-	s.supervisors.GetOrCreate(id).AfterSnapshot(sandbox.CPU, sandbox.Mem)
+	s.supervisors.GetOrCreate(id).AfterSnapshot(sandbox.CPU, sandbox.MemMB)
 	now := time.Now()
 	sandbox.Status = "snapshotted"
 	sandbox.SnapshottedAt = &now
@@ -929,7 +936,7 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 		var opErr error
 		defer func() { s.recordLifecycleOp(id, "wake", start, opErr) }()
 
-		if err := a.BeforeBoot(ctx, sandbox.CPU, sandbox.Mem); err != nil {
+		if err := a.BeforeBoot(ctx, sandbox.CPU, sandbox.MemMB); err != nil {
 			opErr = err
 			return err
 		}
@@ -938,10 +945,10 @@ func (s *SandboxService) Restore(ctx context.Context, orgID primitive.ObjectID, 
 		opErr = s.restoreLocked(ctx, orgID, sandbox)
 		if opErr != nil {
 			s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseFailed, from, from))
-			a.AfterBootFailed(sandbox.CPU, sandbox.Mem)
+			a.AfterBootFailed(sandbox.CPU, sandbox.MemMB)
 			return opErr
 		}
-		a.AfterBoot(sandbox.CPU, sandbox.Mem)
+		a.AfterBoot(sandbox.CPU, sandbox.MemMB)
 		return nil
 	})
 	if errors.Is(err, ErrSandboxNotFound) {
@@ -999,7 +1006,7 @@ func (s *SandboxService) startLocked(ctx context.Context, a *Supervisor, orgID p
 			sandbox.LastActivityAt = &now
 			s.adoptRunning(sandbox)
 			if s.metrics != nil {
-				s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
+				s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.MemMB, sandbox.DiskMB)
 			}
 			if s.monitor != nil {
 				s.monitor.Start(ctx, sandbox.ID, sandbox.OrgID, sandbox.CreatedBy)
@@ -1010,16 +1017,16 @@ func (s *SandboxService) startLocked(ctx context.Context, a *Supervisor, orgID p
 
 	from := sandbox.Status
 	boot := func(fn func() error) error {
-		if berr := a.BeforeBoot(ctx, sandbox.CPU, sandbox.Mem); berr != nil {
+		if berr := a.BeforeBoot(ctx, sandbox.CPU, sandbox.MemMB); berr != nil {
 			return berr
 		}
 		s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseStarting, from, "running"))
 		if berr := fn(); berr != nil {
 			s.emitLife(ctx, id, lifeFrom(sandbox, model.OpWake, model.PhaseFailed, from, from))
-			a.AfterBootFailed(sandbox.CPU, sandbox.Mem)
+			a.AfterBootFailed(sandbox.CPU, sandbox.MemMB)
 			return berr
 		}
-		a.AfterBoot(sandbox.CPU, sandbox.Mem)
+		a.AfterBoot(sandbox.CPU, sandbox.MemMB)
 		return nil
 	}
 
@@ -1072,7 +1079,7 @@ func (s *SandboxService) bootFromDiskLocked(ctx context.Context, orgID primitive
 		ID:                id,
 		Type:              sandbox.Image,
 		CPUs:              sandbox.CPU,
-		MemoryMB:          sandbox.Mem,
+		MemoryMB:          sandbox.MemMB,
 		IPAddress:         sandbox.IP,
 		TapName:           sandbox.TapName,
 		MacAddress:        macAddr,
@@ -1123,7 +1130,7 @@ func (s *SandboxService) bootFromDiskLocked(ctx context.Context, orgID primitive
 	s.syncAutoTimers(sandbox)
 
 	if s.metrics != nil {
-		s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
+		s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.MemMB, sandbox.DiskMB)
 	}
 
 	if s.monitor != nil {
@@ -1174,7 +1181,7 @@ func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.Obje
 		ID:                id,
 		Type:              imageName,
 		CPUs:              sandbox.CPU,
-		MemoryMB:          sandbox.Mem,
+		MemoryMB:          sandbox.MemMB,
 		IPAddress:         sandbox.IP,
 		TapName:           sandbox.TapName,
 		MacAddress:        macAddr,
@@ -1239,7 +1246,7 @@ func (s *SandboxService) restoreLocked(ctx context.Context, orgID primitive.Obje
 
 	// Register with metrics
 	if s.metrics != nil {
-		s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.Mem, sandbox.DiskMB)
+		s.metrics.RegisterSandbox(id, sandbox.Name, runtime.GetSocketPath(id), sandbox.CPU, sandbox.MemMB, sandbox.DiskMB)
 	}
 
 	// Restart CLH event monitor so restored sandboxes get event tracking
@@ -1272,16 +1279,16 @@ func (s *SandboxService) EnsureRunning(ctx context.Context, orgID primitive.Obje
 			return fmt.Errorf("sandbox in unexpected state for auto-restore: %s", cur.Status)
 		}
 
-		if err := a.BeforeBoot(bgCtx, cur.CPU, cur.Mem); err != nil {
+		if err := a.BeforeBoot(bgCtx, cur.CPU, cur.MemMB); err != nil {
 			return err
 		}
 
 		log.Printf("[Auto-Restore] Sandbox %s is snapshotted, restoring...\n", id)
 		if err := s.restoreLocked(bgCtx, orgID, cur); err != nil {
-			a.AfterBootFailed(cur.CPU, cur.Mem)
+			a.AfterBootFailed(cur.CPU, cur.MemMB)
 			return fmt.Errorf("failed to auto-restore sandbox: %w", err)
 		}
-		a.AfterBoot(cur.CPU, cur.Mem)
+		a.AfterBoot(cur.CPU, cur.MemMB)
 		log.Printf("[Auto-Restore] Sandbox %s restored and ready\n", id)
 		return nil
 	})
@@ -1366,7 +1373,7 @@ func (s *SandboxService) RefreshStatuses(ctx context.Context) error {
 					return
 				}
 				if s.metrics != nil {
-					s.metrics.RegisterSandbox(id, cur.Name, runtime.GetSocketPath(id), cur.CPU, cur.Mem, cur.DiskMB)
+					s.metrics.RegisterSandbox(id, cur.Name, runtime.GetSocketPath(id), cur.CPU, cur.MemMB, cur.DiskMB)
 				}
 				if s.monitor != nil {
 					s.monitor.Start(ctx, cur.ID, cur.OrgID, cur.CreatedBy)
@@ -1868,7 +1875,7 @@ func (s *SandboxService) AdoptLocal(ctx context.Context) error {
 			sb.LastActivityAt = &now
 			s.adoptRunning(sb)
 			if s.metrics != nil {
-				s.metrics.RegisterSandbox(id, sb.Name, runtime.GetSocketPath(id), sb.CPU, sb.Mem, sb.DiskMB)
+				s.metrics.RegisterSandbox(id, sb.Name, runtime.GetSocketPath(id), sb.CPU, sb.MemMB, sb.DiskMB)
 			}
 			if s.monitor != nil {
 				s.monitor.Start(ctx, sb.ID, sb.OrgID, sb.CreatedBy)
@@ -1882,25 +1889,32 @@ func (s *SandboxService) AdoptLocal(ctx context.Context) error {
 	return nil
 }
 
-// clearStaleCreates drops "creating" rows a crashed process left behind so they
-// stop holding quota. Runs before the listener, so no create on this host is in flight.
+// clearStaleCreates drops "creating" rows a crashed process left behind.
+// Quota counters stay until an admin refresh. Runs before the listener, so no
+// create on this host is in flight.
 func (s *SandboxService) clearStaleCreates(ctx context.Context, hostID string) {
-	ids, err := s.repo.DeleteCreatingForNode(ctx, hostID)
+	rows, err := s.repo.ListCreatingForNode(ctx, hostID)
 	if err != nil {
 		log.Printf("[adopt] clear stale creates: %v", err)
 		return
 	}
-	for _, oid := range ids {
-		id := oid.Hex()
+	released := make([]primitive.ObjectID, 0, len(rows))
+	for _, row := range rows {
+		id := row.ID.Hex()
 		if err := runtime.Delete(id, "", ""); err != nil {
 			log.Printf("[adopt] stale create %s stop: %v", id, err)
 		}
 		if err := runtime.Cleanup(id); err != nil {
 			log.Printf("[adopt] stale create %s cleanup: %v", id, err)
 		}
+		released = append(released, row.ID)
 	}
-	if len(ids) > 0 {
-		log.Printf("[adopt] cleared %d stale creating sandboxes", len(ids))
+	if err := s.repo.DeleteStillCreating(ctx, released); err != nil {
+		log.Printf("[adopt] clear stale creates: %v", err)
+		return
+	}
+	if len(released) > 0 {
+		log.Printf("[adopt] cleared %d stale creating sandboxes", len(released))
 	}
 }
 

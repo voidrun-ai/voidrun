@@ -7,6 +7,8 @@ import (
 	"voidrun/config"
 	"voidrun/model"
 
+	"strconv"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -20,8 +22,13 @@ type IOrgRepository interface {
 	FindByOwner(ctx context.Context, ownerID primitive.ObjectID) (*model.Org, error)
 	FindByID(ctx context.Context, id primitive.ObjectID) (*model.Org, error)
 	FindByMember(ctx context.Context, memberID primitive.ObjectID) ([]*model.Org, error)
+	Find(ctx context.Context, filter interface{}, opts options.FindOptions) ([]*model.Org, error)
 	FindByClerkOrgID(ctx context.Context, clerkOrgID string) (*model.Org, error)
 	Update(ctx context.Context, org *model.Org) error
+	// BalanceHeld is true when balance is stored and not above zero.
+	// A missing org or a missing balance is not held.
+	BalanceHeld(ctx context.Context, id primitive.ObjectID) (bool, error)
+	ChargeUsage(ctx context.Context, amounts map[primitive.ObjectID]float64) error
 }
 
 // OrgRepository implements org persistence
@@ -84,6 +91,22 @@ func (r *OrgRepository) FindByID(ctx context.Context, id primitive.ObjectID) (*m
 	return org, nil
 }
 
+func (r *OrgRepository) Find(ctx context.Context, filter interface{}, opts options.FindOptions) ([]*model.Org, error) {
+	if filter == nil {
+		filter = bson.M{}
+	}
+	cursor, err := r.collection.Find(ctx, filter, &opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var orgs []*model.Org
+	if err = cursor.All(ctx, &orgs); err != nil {
+		return nil, err
+	}
+	return orgs, nil
+}
+
 func (r *OrgRepository) FindByMember(ctx context.Context, memberID primitive.ObjectID) ([]*model.Org, error) {
 	cursor, err := r.collection.Find(ctx, bson.M{"members": memberID}, options.Find().SetSort(bson.M{"_id": -1}))
 	if err != nil {
@@ -124,4 +147,63 @@ func (r *OrgRepository) Update(ctx context.Context, org *model.Org) error {
 	}}
 	_, err := r.collection.UpdateOne(ctx, filter, update)
 	return err
+}
+
+func (r *OrgRepository) BalanceHeld(ctx context.Context, id primitive.ObjectID) (bool, error) {
+	if id.IsZero() {
+		return false, nil
+	}
+	var doc bson.M
+	err := r.collection.FindOne(ctx, bson.M{"_id": id}, options.FindOne().SetProjection(bson.M{"balance": 1})).Decode(&doc)
+	if err == mongo.ErrNoDocuments {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	v, ok := doc["balance"]
+	if !ok || v == nil {
+		return false, nil
+	}
+	return numericBalance(v) <= 0, nil
+}
+
+func (r *OrgRepository) ChargeUsage(ctx context.Context, amounts map[primitive.ObjectID]float64) error {
+	models := make([]mongo.WriteModel, 0, len(amounts))
+	for orgID, amount := range amounts {
+		if amount <= 0 {
+			continue
+		}
+		models = append(models, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"_id": orgID}).
+			SetUpdate(bson.M{"$inc": bson.M{"usage": amount, "balance": -amount}}))
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	_, err := r.collection.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
+	return err
+}
+
+func numericBalance(v any) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int32:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case primitive.Decimal128:
+		f, err := strconv.ParseFloat(t.String(), 64)
+		if err != nil {
+			return 0
+		}
+		return f
+	default:
+		return 0
+	}
 }

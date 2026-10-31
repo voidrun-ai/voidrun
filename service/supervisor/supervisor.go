@@ -227,12 +227,12 @@ func (a *Supervisor) AfterSnapshot(cpu, mem int) {
 	}
 }
 
-func (a *Supervisor) AfterDelete(wasRunning bool, cpu, mem, diskMB int) {
+func (a *Supervisor) AfterDelete(ctx context.Context, sb *model.Sandbox, wasRunning bool) {
 	if a.reg == nil {
 		return
 	}
 	if adm := a.reg.adm(); adm != nil {
-		adm.AfterDelete(wasRunning, cpu, mem, diskMB)
+		adm.AfterDelete(ctx, sb, wasRunning)
 	}
 }
 

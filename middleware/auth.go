@@ -108,10 +108,13 @@ func handleClerkAuth(c *gin.Context, userSvc *service.UserService, clerkSvc *ser
 	}
 
 	clerkID := claims.Sub
-	user, err := userSvc.CreateNewUserAndDefaultOrg(ctx, clerkID, claims)
+	user, createdOrg, err := userSvc.CreateNewUserAndDefaultOrg(ctx, clerkID, claims)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to provision user"})
 		return "", ""
+	}
+	if createdOrg != nil {
+		c.Set("createdOrgID", createdOrg.ID.Hex())
 	}
 
 	userID := user.ID.Hex()

@@ -260,8 +260,6 @@ func requiredNumber(req mcp.CallToolRequest, key string) (int, error) {
 
 func createGateMessage(err error) string {
 	switch {
-	case errors.Is(err, service.ErrRateLimited):
-		return service.ErrRateLimited.Error()
 	case errors.Is(err, service.ErrInsufficientBalance):
 		return service.ErrInsufficientBalance.Error()
 	case errors.Is(err, service.ErrQuotaExceeded):
@@ -293,7 +291,7 @@ func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequ
 
 	image := optionalString(req, "image", "code")
 	cpu := optionalNumber(req, "cpu", 1)
-	mem := optionalNumber(req, "mem", config.DefaultSandboxMemoryMB)
+	mem := optionalNumber(req, "memMB", config.DefaultSandboxMemoryMB)
 
 	sync := optionalBoolPtr(req, "sync")
 	autoSleep := optionalBoolPtr(req, "autoSleep")
@@ -314,7 +312,7 @@ func (h *Handlers) HandleCreateSandbox(ctx context.Context, req mcp.CallToolRequ
 		Name:         name,
 		Image:        image,
 		CPU:          cpu,
-		Mem:          mem,
+		MemMB:        mem,
 		OrgID:        orgID,
 		UserID:       userID,
 		Sync:         sync,

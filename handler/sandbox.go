@@ -72,7 +72,7 @@ func (h *SandboxHandler) Create(c *gin.Context) error {
 		return util.ErrBadRequest(err.Error())
 	}
 
-	if err := util.ValidateCreateSandboxRequest(req.Name, req.CPU, req.Mem, req.PublishPorts, req.Labels); err != nil {
+	if err := util.ValidateCreateSandboxRequest(req.Name, req.CPU, req.MemMB, req.PublishPorts, req.Labels); err != nil {
 		return util.ErrBadRequest(err.Error())
 	}
 

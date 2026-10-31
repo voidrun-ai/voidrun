@@ -15,7 +15,6 @@ type (
 
 var (
 	ErrAdmissionDenied       = supervisor.ErrAdmissionDenied
-	ErrRateLimited           = errors.New("sandbox create rate limit exceeded")
 	ErrInsufficientBalance   = errors.New("organization balance is too low to create a sandbox")
 	ErrResumeBalance         = errors.New("organization balance is too low to resume a sandbox")
 	ErrQuotaExceeded         = errors.New("organization sandbox quota exceeded")
