@@ -26,12 +26,14 @@ type ISandboxRepository interface {
 	FindAndOrg(ctx context.Context, orgID primitive.ObjectID, filter interface{}, opts options.FindOptions) ([]*model.Sandbox, error)
 	DeleteByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	UpdateStatusByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, status string) (bool, error)
+	MarkDeleted(ctx context.Context, id, orgID primitive.ObjectID) (bool, error)
 	UpdateTapNameByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName string) (bool, error)
 	UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error)
 	UpdatePublishPortsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, ports []int) (bool, error)
 	UpdateFieldsByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error)
 	CommitCreate(ctx context.Context, id, orgID primitive.ObjectID, fields bson.M) (bool, error)
-	DeleteCreatingForNode(ctx context.Context, nodeID string) ([]primitive.ObjectID, error)
+	ListCreatingForNode(ctx context.Context, nodeID string) ([]StaleCreate, error)
+	DeleteStillCreating(ctx context.Context, ids []primitive.ObjectID) error
 	Count(ctx context.Context, orgID primitive.ObjectID, filter interface{}) (int64, error)
 	Exists(ctx context.Context, orgID primitive.ObjectID, id string) bool
 	FindForHealth(ctx context.Context, nodeID string, opts options.FindOptions) ([]*model.Sandbox, error)
@@ -90,10 +92,6 @@ func (r *SandboxRepository) Init(ctx context.Context) error {
 		{
 			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "status", Value: 1}, {Key: "_id", Value: -1}},
 			Options: options.Index().SetName("orgId_1_status_1__id_-1").SetUnique(false),
-		},
-		{
-			Keys:    bson.D{{Key: "orgId", Value: 1}, {Key: "createdAt", Value: -1}},
-			Options: options.Index().SetName("orgId_1_createdAt_-1").SetUnique(false),
 		},
 		{
 			Keys:    bson.D{{Key: "nodeId", Value: 1}, {Key: "status", Value: 1}},
@@ -293,6 +291,22 @@ func (r *SandboxRepository) UpdateStatusByIDAndOrg(ctx context.Context, id, orgI
 	return res.MatchedCount > 0, nil
 }
 
+// MarkDeleted moves a row to "deleted" once. A second call matches nothing.
+func (r *SandboxRepository) MarkDeleted(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
+	res, err := r.collection.UpdateOne(ctx, bson.M{
+		"_id":    id,
+		"orgId":  orgID,
+		"status": bson.M{"$ne": "deleted"},
+	}, bson.M{"$set": bson.M{
+		"status":    "deleted",
+		"updatedAt": time.Now(),
+	}})
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
+}
+
 // SetRunning marks the sandbox running and stamps lastActivityAt in one write.
 func (r *SandboxRepository) SetRunning(ctx context.Context, id, orgID primitive.ObjectID) (bool, error) {
 	now := time.Now()
@@ -359,19 +373,38 @@ func (r *SandboxRepository) CommitCreate(ctx context.Context, id, orgID primitiv
 	return res.MatchedCount > 0, nil
 }
 
-// DeleteCreatingForNode removes rows a crashed process left in "creating" on nodeID.
+// StaleCreate is a "creating" row left by a crashed process.
+type StaleCreate struct {
+	ID     primitive.ObjectID
+	OrgID  primitive.ObjectID
+	CPU    int
+	MemMB  int
+	DiskMB int
+}
+
+// ListCreatingForNode returns rows a crashed process left in "creating" on nodeID.
 // Call only before this node serves requests.
-func (r *SandboxRepository) DeleteCreatingForNode(ctx context.Context, nodeID string) ([]primitive.ObjectID, error) {
+func (r *SandboxRepository) ListCreatingForNode(ctx context.Context, nodeID string) ([]StaleCreate, error) {
 	if nodeID == "" {
 		return nil, nil
 	}
 	filter := bson.M{"nodeId": nodeID, "status": "creating"}
-	cur, err := r.collection.Find(ctx, filter, options.Find().SetProjection(bson.M{"_id": 1}))
+	cur, err := r.collection.Find(ctx, filter, options.Find().SetProjection(bson.M{
+		"_id":    1,
+		"orgId":  1,
+		"cpu":    1,
+		"memMB":  1,
+		"diskMB": 1,
+	}))
 	if err != nil {
 		return nil, err
 	}
 	var rows []struct {
-		ID primitive.ObjectID `bson:"_id"`
+		ID     primitive.ObjectID `bson:"_id"`
+		OrgID  primitive.ObjectID `bson:"orgId"`
+		CPU    int                `bson:"cpu"`
+		MemMB  int                `bson:"memMB"`
+		DiskMB int                `bson:"diskMB"`
 	}
 	if err := cur.All(ctx, &rows); err != nil {
 		return nil, err
@@ -379,14 +412,26 @@ func (r *SandboxRepository) DeleteCreatingForNode(ctx context.Context, nodeID st
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	ids := make([]primitive.ObjectID, 0, len(rows))
+	out := make([]StaleCreate, 0, len(rows))
 	for _, row := range rows {
-		ids = append(ids, row.ID)
+		out = append(out, StaleCreate{
+			ID:     row.ID,
+			OrgID:  row.OrgID,
+			CPU:    row.CPU,
+			MemMB:  row.MemMB,
+			DiskMB: row.DiskMB,
+		})
 	}
-	if _, err := r.collection.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}, "status": "creating"}); err != nil {
-		return nil, err
+	return out, nil
+}
+
+// DeleteStillCreating removes the given rows only while they are still "creating".
+func (r *SandboxRepository) DeleteStillCreating(ctx context.Context, ids []primitive.ObjectID) error {
+	if len(ids) == 0 {
+		return nil
 	}
-	return ids, nil
+	_, err := r.collection.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}, "status": "creating"})
+	return err
 }
 
 func (r *SandboxRepository) UpdateNetNSByIDAndOrg(ctx context.Context, id, orgID primitive.ObjectID, tapName, netnsName string) (bool, error) {

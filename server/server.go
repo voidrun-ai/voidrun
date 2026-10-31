@@ -217,7 +217,7 @@ func (s *Server) resumeEventWatchers() {
 		}
 		id := sb.ID.Hex()
 		if sb.Status == "running" || sb.Status == "booting" {
-			s.metrics.RegisterSandbox(id, sb.Name, runtime.GetSocketPath(id), sb.CPU, sb.Mem, sb.DiskMB)
+			s.metrics.RegisterSandbox(id, sb.Name, runtime.GetSocketPath(id), sb.CPU, sb.MemMB, sb.DiskMB)
 			if sb.Status == "booting" {
 				s.metrics.SetSandboxStatus(id, sb.Name, "booting")
 			}

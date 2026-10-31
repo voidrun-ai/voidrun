@@ -204,7 +204,7 @@ components:
           maximum: 8
           example: 2
           description: Number of vCPUs
-        mem:
+        memMB:
           type: integer
           minimum: 1024
           maximum: 16384
@@ -301,7 +301,7 @@ components:
           type: integer
           description: Number of vCPUs allocated
           example: 2
-        mem:
+        memMB:
           type: integer
           description: Memory in MiB
           example: 2048

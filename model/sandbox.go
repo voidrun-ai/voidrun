@@ -13,7 +13,7 @@ type Sandbox struct {
 	Image             string             `bson:"image" json:"image"`
 	IP                string             `bson:"ip" json:"-"`
 	CPU               int                `bson:"cpu" json:"cpu"`
-	Mem               int                `bson:"mem" json:"mem"`
+	MemMB             int                `bson:"memMB" json:"memMB"`
 	DiskMB            int                `bson:"diskMB" json:"diskMB"`
 	Status            string             `bson:"status" json:"status"`
 	AutoSleep         bool               `bson:"autoSleep" json:"autoSleep"`

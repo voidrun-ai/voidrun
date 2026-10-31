@@ -7,7 +7,7 @@ type CreateSandboxRequest struct {
 	Name         string             `json:"name" binding:"required"`
 	Image        string             `json:"image,omitempty"`
 	CPU          int                `json:"cpu" binding:"min=1,max=8"`
-	Mem          int                `json:"mem" binding:"min=1024,max=16384"`
+	MemMB        int                `json:"memMB" binding:"min=1024,max=16384"`
 	OrgID        primitive.ObjectID `json:"orgId,omitempty"`
 	UserID       primitive.ObjectID `json:"userId,omitempty"`
 	Sync         *bool              `json:"sync"`

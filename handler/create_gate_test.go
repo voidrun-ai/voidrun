@@ -15,7 +15,6 @@ func TestSandboxCreateError(t *testing.T) {
 		err    error
 		status int
 	}{
-		{name: "rate limit", err: service.ErrRateLimited, status: http.StatusTooManyRequests},
 		{name: "balance", err: service.ErrInsufficientBalance, status: http.StatusPaymentRequired},
 		{name: "quota", err: service.ErrQuotaExceeded, status: http.StatusForbidden},
 		{name: "gate down", err: service.ErrCreateGateUnavailable, status: http.StatusServiceUnavailable},

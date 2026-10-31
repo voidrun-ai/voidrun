@@ -68,6 +68,25 @@ func TestCommitCreateOnlyFromCreating(t *testing.T) {
 	}
 }
 
+func TestMarkDeletedOnce(t *testing.T) {
+	col := creatingTestCollection(t)
+	r := &SandboxRepository{collection: col}
+	ctx := context.Background()
+	orgID := primitive.NewObjectID()
+	id := primitive.NewObjectID()
+	if _, err := col.InsertOne(ctx, bson.M{"_id": id, "orgId": orgID, "status": "running"}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := r.MarkDeleted(ctx, id, orgID)
+	if err != nil || !ok {
+		t.Fatalf("first delete: ok=%v err=%v", ok, err)
+	}
+	ok, err = r.MarkDeleted(ctx, id, orgID)
+	if err != nil || ok {
+		t.Fatalf("second delete: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestDeleteCreatingForNodeScopesToNode(t *testing.T) {
 	col := creatingTestCollection(t)
 	r := &SandboxRepository{collection: col}
@@ -83,12 +102,15 @@ func TestDeleteCreatingForNodeScopesToNode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids, err := r.DeleteCreatingForNode(ctx, "host-a")
+	ids, err := r.ListCreatingForNode(ctx, "host-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0] != mine {
+	if len(ids) != 1 || ids[0].ID != mine {
 		t.Fatalf("ids = %v", ids)
+	}
+	if err := r.DeleteStillCreating(ctx, []primitive.ObjectID{mine}); err != nil {
+		t.Fatal(err)
 	}
 	n, err := col.CountDocuments(ctx, bson.M{})
 	if err != nil {
@@ -97,7 +119,7 @@ func TestDeleteCreatingForNodeScopesToNode(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("remaining rows = %d, want 2", n)
 	}
-	if ids, err := r.DeleteCreatingForNode(ctx, ""); err != nil || ids != nil {
+	if ids, err := r.ListCreatingForNode(ctx, ""); err != nil || ids != nil {
 		t.Fatalf("empty node: ids=%v err=%v", ids, err)
 	}
 }
